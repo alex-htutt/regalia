@@ -4,7 +4,7 @@ tags: [area/projects, type/reference]
 status: active
 topic: "Self-hosted agentic workspace built on the vault dashboard (Odysseus-inspired)"
 deadline:
-related: []
+related: ["[[dashboard/PRODUCT_VISION.md]]"]
 ---
 
 # Dashboard — Context
