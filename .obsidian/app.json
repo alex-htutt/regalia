@@ -1,0 +1,8 @@
+{
+  "userIgnoreFilters": [
+    "archive/",
+    "Internship-Projects/example-project/",
+    "templates/"
+  ],
+  "alwaysUpdateLinks": true
+}

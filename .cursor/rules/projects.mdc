@@ -1,0 +1,11 @@
+---
+description: Personal / side projects
+globs: projects/**
+---
+
+Side projects outside the internship: competitive programming (C++, LeetCode), algorithmic trading (IMC Prosperity), embedded systems tinkering.
+
+Conventions:
+- C++ for competitive programming unless told otherwise; prefer idiomatic, contest-style code.
+- Each project gets a folder with a _context_<folder>.md (copy templates/_context_TEMPLATE.md and rename) and notes via templates/project-note.md.
+- Tag with area/projects plus a project-specific subtag.

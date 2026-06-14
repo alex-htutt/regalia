@@ -1,0 +1,30 @@
+# --- Secrets (never commit) ---
+.env
+*.env
+.env.*
+*.key
+*secret*
+
+# --- Python / dashboard ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+
+# --- Obsidian (per-machine UI state & cache) ---
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.trash/
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Logs ---
+*.log

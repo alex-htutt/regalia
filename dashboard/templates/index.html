@@ -1,0 +1,1381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Work Vault</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f7f7f6;
+    --surface: #ffffff;
+    --border: #e8e8e6;
+    --border-hover: #c8c8c4;
+    --text: #1a1a18;
+    --muted: #7a7a74;
+    --faint: #b0b0aa;
+    --accent: #1a1a18;
+    --red: #dc2626;
+    --amber: #d97706;
+    --green: #16a34a;
+    --blue-bg: #dbeafe;
+    --blue-fg: #1d4ed8;
+    --green-bg: #dcfce7;
+    --green-fg: #15803d;
+    --purple-bg: #ede9fe;
+    --purple-fg: #6d28d9;
+    --amber-bg: #fef3c7;
+    --amber-fg: #b45309;
+    --gray-bg: #f1f1ef;
+    --gray-fg: #555550;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
+  .search-wrap { margin-left: auto; position: relative; }
+  .search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  #search {
+    padding: 6px 10px 6px 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    width: 220px;
+    background: var(--bg);
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  #search:focus { border-color: var(--border-hover); }
+
+  /* ── Stats ── */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    padding: 20px 24px 0;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .stat .num { font-size: 26px; font-weight: 700; letter-spacing: -1px; line-height: 1; }
+  .stat .lbl { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .stat.warn .num { color: var(--red); }
+
+  /* -- Claude usage -- */
+  .usage { padding: 20px 24px 0; }
+  .usage-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .usage-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .usage-head h2 { font-size: 13px; font-weight: 600; }
+  .usage-head .sub { font-size: 11px; color: var(--faint); }
+  .usage-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .u-card { background: var(--gray-bg); border-radius: 8px; padding: 12px 14px; }
+  .u-card .num { font-size: 22px; font-weight: 700; letter-spacing: -0.6px; line-height: 1; }
+  .u-card .lbl { font-size: 10.5px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .u-card .num small { font-size: 13px; font-weight: 600; color: var(--muted); }
+
+  .usage-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 22px; }
+  @media (max-width: 720px) { .usage-cols { grid-template-columns: 1fr; } .usage-cards { grid-template-columns: repeat(2, 1fr); } }
+
+  .chart-title, .model-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
+  .bars { display: flex; align-items: flex-end; gap: 4px; height: 90px; }
+  .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+  .bar { width: 100%; background: var(--purple-fg); border-radius: 3px 3px 0 0; min-height: 2px; transition: opacity 0.12s; }
+  .bar-wrap:hover .bar { opacity: 0.75; }
+  .bar-x { font-size: 9px; color: var(--faint); white-space: nowrap; }
+
+  .model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .model-row:last-child { border-bottom: none; }
+  .model-name { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .model-tok { color: var(--muted); flex-shrink: 0; }
+  .usage-foot { font-size: 10.5px; color: var(--faint); margin-top: 12px; }
+  .usage.empty-state { color: var(--faint); font-size: 12.5px; }
+
+  /* ── Browse ── */
+  .browse { padding: 16px 24px 0; }
+  .crumbs { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--muted); margin-bottom: 8px; flex-wrap: wrap; }
+  .crumb { cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+  .crumb:hover { background: var(--gray-bg); color: var(--text); }
+  .crumb.cur { color: var(--text); font-weight: 600; cursor: default; }
+  .crumb.cur:hover { background: none; }
+  .crumb-sep { color: var(--faint); }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+  .g-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    cursor: pointer;
+    display: flex; flex-direction: column; gap: 6px;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .g-card:hover { border-color: var(--border-hover); box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+  .g-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; letter-spacing: -0.1px; min-width: 0; }
+  .g-name span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .g-name svg { color: var(--faint); flex-shrink: 0; }
+  .g-excerpt {
+    font-size: 12px; color: var(--muted); line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .g-meta { font-size: 11px; color: var(--faint); margin-top: auto; padding-top: 2px; }
+
+  /* ── Context modal ── */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(26, 26, 24, 0.4);
+    z-index: 50;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 48px 16px;
+  }
+  .modal {
+    background: var(--surface);
+    border-radius: 12px;
+    max-width: 760px; width: 100%;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+    padding: 20px 26px 26px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+  }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .modal-close {
+    border: none; background: var(--gray-bg); color: var(--muted);
+    width: 28px; height: 28px; border-radius: 6px;
+    cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-subs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .sub-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px;
+    border: 1px solid var(--border); border-radius: 20px;
+    background: var(--bg); color: var(--text);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: border-color 0.12s;
+  }
+  .sub-chip:hover { border-color: var(--border-hover); }
+  .sub-chip svg { width: 12px; height: 12px; color: var(--faint); }
+  .no-ctx { color: var(--faint); font-size: 12.5px; }
+  .context-file { font-size: 11px; color: var(--faint); font-family: ui-monospace, monospace; margin-bottom: 10px; }
+
+  .md { font-size: 13px; line-height: 1.6; }
+  .md h1 { font-size: 16px; font-weight: 650; margin: 4px 0 8px; letter-spacing: -0.2px; }
+  .md h2 { font-size: 13.5px; font-weight: 600; margin: 14px 0 4px; }
+  .md h3, .md h4 { font-size: 12.5px; font-weight: 600; margin: 10px 0 3px; color: var(--gray-fg); }
+  .md p { margin: 4px 0; }
+  .md ul { margin: 2px 0 6px; padding-left: 20px; }
+  .md li { margin: 1px 0; }
+  .md blockquote { border-left: 3px solid var(--border); padding: 2px 12px; margin: 6px 0; color: var(--muted); }
+  .md code { background: var(--gray-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace; }
+  .md pre { background: var(--gray-bg); border-radius: 6px; padding: 10px 12px; margin: 6px 0; overflow-x: auto; }
+  .md pre code { background: none; padding: 0; }
+  .md a { color: var(--blue-fg); }
+  .md .wikilink { color: var(--purple-fg); background: var(--purple-bg); padding: 0 5px; border-radius: 4px; font-size: 12px; }
+
+  /* ── Filters ── */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 16px 24px 12px;
+    flex-wrap: wrap;
+  }
+  .filter-group { display: flex; gap: 4px; }
+  .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; align-self: center; }
+  .pill {
+    padding: 4px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 500;
+    transition: all 0.1s;
+    user-select: none;
+  }
+  .pill:hover { border-color: var(--border-hover); color: var(--text); }
+  .pill.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* ── Task list ── */
+  .task-list { padding: 0 24px 32px; display: flex; flex-direction: column; gap: 6px; }
+
+  .task {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    transition: border-color 0.12s;
+  }
+  .task:hover { border-color: var(--border-hover); }
+
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0; margin-top: 6px;
+  }
+  .dot.complete { background: var(--faint); }
+  .dot.archived { background: #d1d1cc; }
+
+  .task-body { flex: 1; min-width: 0; }
+  .task-title { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task-topic { font-size: 12px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .meta { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+
+  .tag {
+    font-size: 11px; padding: 2px 7px; border-radius: 4px;
+    background: var(--gray-bg); color: var(--gray-fg); font-weight: 500;
+  }
+  .tag.internship { background: var(--blue-bg); color: var(--blue-fg); }
+  .tag.projects    { background: var(--green-bg); color: var(--green-fg); }
+  .tag.research    { background: var(--purple-bg); color: var(--purple-fg); }
+  .tag.course      { background: var(--amber-bg); color: var(--amber-fg); }
+
+  .dl { font-size: 11px; color: var(--muted); }
+  .dl.overdue { color: var(--red); font-weight: 600; }
+  .dl.soon    { color: var(--amber); font-weight: 500; }
+
+  .filepath { font-size: 11px; color: var(--faint); font-family: ui-monospace, monospace; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── Empty / loading ── */
+  .empty { text-align: center; padding: 56px 0; color: var(--faint); font-size: 13px; }
+
+  /* ── Evil twin chat ── */
+  .twin-fab {
+    position: fixed; right: 24px; bottom: 24px; z-index: 60;
+    display: flex; align-items: center; gap: 8px;
+    padding: 11px 16px;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: 24px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.22);
+    transition: transform 0.12s, box-shadow 0.12s;
+  }
+  .twin-fab:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.28); }
+  .twin-fab .emoji { font-size: 15px; }
+
+  .twin-panel {
+    position: fixed; right: 24px; bottom: 24px; z-index: 61;
+    width: 390px; max-width: calc(100vw - 32px);
+    height: 600px; max-height: calc(100vh - 48px);
+    background: var(--surface);
+    border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.28);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .twin-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 13px 16px;
+    background: var(--accent); color: #fff;
+    flex-shrink: 0;
+  }
+  .twin-head .emoji { font-size: 18px; }
+  .twin-head .t { font-size: 13.5px; font-weight: 600; line-height: 1.2; }
+  .twin-head .s { font-size: 11px; opacity: 0.7; }
+  .twin-head .titles { flex: 1; min-width: 0; }
+  .twin-close {
+    border: none; background: rgba(255,255,255,0.15); color: #fff;
+    width: 26px; height: 26px; border-radius: 6px;
+    cursor: pointer; font-size: 13px; line-height: 1; flex-shrink: 0;
+  }
+  .twin-close:hover { background: rgba(255,255,255,0.28); }
+
+  .twin-log {
+    flex: 1; overflow-y: auto; padding: 14px;
+    display: flex; flex-direction: column; gap: 10px;
+    background: var(--bg);
+  }
+  .twin-msg { font-size: 13px; line-height: 1.55; max-width: 88%; }
+  .twin-msg.user {
+    align-self: flex-end;
+    background: var(--accent); color: #fff;
+    padding: 8px 12px; border-radius: 12px 12px 3px 12px;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .twin-msg.twin {
+    align-self: flex-start;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border);
+    padding: 10px 13px; border-radius: 12px 12px 12px 3px;
+  }
+  .twin-msg.twin .md { font-size: 13px; }
+  .twin-msg.twin .md p { margin: 4px 0; }
+  .twin-msg.twin .md ol, .twin-msg.twin .md ul { margin: 4px 0 4px; padding-left: 20px; }
+  .twin-msg.twin .md li { margin: 3px 0; }
+  .twin-msg.err {
+    align-self: stretch; max-width: 100%;
+    background: #fef2f2; color: var(--red);
+    border: 1px solid #fecaca;
+    padding: 8px 12px; border-radius: 8px; font-size: 12px;
+  }
+  .twin-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
+
+  .twin-input {
+    display: flex; gap: 8px; padding: 12px;
+    border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
+  }
+  .twin-input textarea {
+    flex: 1; resize: none; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; font-family: inherit;
+    background: var(--bg); color: var(--text); outline: none;
+    max-height: 120px; line-height: 1.4;
+  }
+  .twin-input textarea:focus { border-color: var(--border-hover); }
+  .twin-send {
+    border: none; background: var(--accent); color: #fff;
+    border-radius: 8px; padding: 0 14px; cursor: pointer;
+    font-size: 13px; font-weight: 600; flex-shrink: 0;
+  }
+  .twin-send:disabled { opacity: 0.45; cursor: default; }
+
+  /* ── Workspace shell (sidebar + views) ── */
+  .app { display: flex; align-items: flex-start; }
+  .sidebar {
+    width: 188px; flex-shrink: 0;
+    position: sticky; top: 52px;
+    height: calc(100vh - 52px);
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    padding: 14px 10px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .nav {
+    display: flex; align-items: center; gap: 9px;
+    width: 100%; text-align: left;
+    padding: 8px 11px; border: none; background: none;
+    border-radius: 7px; cursor: pointer;
+    font-size: 13px; font-weight: 500; color: var(--muted);
+    font-family: inherit;
+  }
+  .nav:hover { background: var(--gray-bg); color: var(--text); }
+  .nav.on { background: var(--accent); color: #fff; }
+  .main { flex: 1; min-width: 0; }
+  .view[hidden] { display: none; }
+  .view-head { padding: 20px 24px 0; }
+  .view-head h2 { font-size: 16px; font-weight: 650; letter-spacing: -0.2px; }
+  .view-head p { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+
+  /* ── New-project form ── */
+  .panel-wrap { padding: 16px 24px 32px; max-width: 880px; }
+  .np-form {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .np-form label {
+    display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--muted); font-weight: 600;
+  }
+  .np-form input, .np-form select {
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 8px 10px; font-size: 13px; font-family: inherit;
+    background: var(--bg); color: var(--text); outline: none;
+    text-transform: none; letter-spacing: 0; font-weight: 400;
+  }
+  .np-form input:focus, .np-form select:focus { border-color: var(--border-hover); }
+  .np-row { display: flex; gap: 12px; align-items: flex-end; }
+  .np-submit {
+    border: none; background: var(--accent); color: #fff;
+    border-radius: 7px; padding: 0 18px; height: 37px;
+    font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .np-submit:hover { opacity: 0.9; }
+  .np-msg { font-size: 12.5px; min-height: 1px; }
+  .np-msg.ok { color: var(--green-fg); }
+  .np-msg.err { color: var(--red); }
+  .proj-list-head, .activity-head {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--muted); font-weight: 600; margin: 22px 0 10px;
+  }
+  .empty-sm { color: var(--faint); font-size: 12.5px; }
+
+  /* ── Chat (model router) ── */
+  .tier-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tier-status { font-size: 12px; color: var(--muted); }
+  .tier-status .dot-sm { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  .tier-status .dot-sm.up { background: var(--green); }
+  .tier-status .dot-sm.down { background: var(--faint); }
+  .chat-clear {
+    margin-left: auto; border: 1px solid var(--border); background: var(--surface);
+    color: var(--muted); border-radius: 6px; padding: 5px 11px; font-size: 12px;
+    cursor: pointer; font-weight: 500;
+  }
+  .chat-clear:hover { border-color: var(--border-hover); color: var(--text); }
+  .chat-box {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    display: flex; flex-direction: column; height: calc(100vh - 280px); min-height: 380px; overflow: hidden;
+  }
+  .chat-log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); }
+  .chat-empty { color: var(--faint); font-size: 12.5px; margin: auto; text-align: center; max-width: 360px; }
+  .chat-msg { font-size: 13.5px; line-height: 1.55; max-width: 80%; }
+  .chat-msg.user {
+    align-self: flex-end; background: var(--accent); color: #fff;
+    padding: 9px 13px; border-radius: 12px 12px 3px 12px; white-space: pre-wrap; word-wrap: break-word;
+  }
+  .chat-msg.bot {
+    align-self: flex-start; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); padding: 10px 14px; border-radius: 12px 12px 12px 3px;
+  }
+  .chat-msg.bot .who { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--faint); margin-bottom: 4px; font-weight: 600; }
+  .chat-msg.bot .md p { margin: 4px 0; }
+  .chat-msg.bot .md ol, .chat-msg.bot .md ul { margin: 4px 0; padding-left: 20px; }
+  .chat-msg.err {
+    align-self: stretch; max-width: 100%; background: #fef2f2; color: var(--red);
+    border: 1px solid #fecaca; padding: 9px 13px; border-radius: 8px; font-size: 12.5px;
+  }
+  .chat-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
+  .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); }
+  .chat-input textarea {
+    flex: 1; resize: none; border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; font-size: 13.5px; font-family: inherit;
+    background: var(--bg); color: var(--text); outline: none; max-height: 140px; line-height: 1.4;
+  }
+  .chat-input textarea:focus { border-color: var(--border-hover); }
+
+  /* ── Agents ── */
+  .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 12px; }
+  .agent-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .agent-top { display: flex; align-items: center; gap: 8px; }
+  .agent-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
+  .agent-name { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; }
+  .tier {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px;
+  }
+  .tier.fast  { background: var(--green-bg); color: var(--green-fg); }
+  .tier.smart { background: var(--purple-bg); color: var(--purple-fg); }
+  .agent-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .agent-run { display: flex; gap: 6px; margin-top: 2px; }
+  .agent-run input {
+    flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 9px; font-size: 12.5px; font-family: inherit;
+    background: var(--bg); color: var(--text); outline: none;
+  }
+  .agent-run input:focus { border-color: var(--border-hover); }
+  .agent-run button {
+    border: none; background: var(--accent); color: #fff; border-radius: 6px;
+    padding: 0 13px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  }
+  .activity { margin-top: 6px; }
+  .activity-log { display: flex; flex-direction: column; gap: 6px; }
+  .activity-line {
+    font-size: 12px; font-family: ui-monospace, monospace; line-height: 1.4;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 11px;
+  }
+  .activity-line.err { color: var(--red); border-color: #fecaca; background: #fef2f2; }
+  .activity-line .ts { color: var(--faint); margin-right: 8px; }
+  .stub-badge {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700;
+    background: var(--amber-bg); color: var(--amber-fg);
+    padding: 2px 6px; border-radius: 4px; vertical-align: middle;
+  }
+  .agent-card.running { border-color: var(--purple-fg); }
+  .agent-card.running .agent-dot { background: var(--purple-fg); animation: pulse 1.1s ease-in-out infinite; }
+  .agent-card.error .agent-dot { background: var(--red); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  .agent-run button:disabled { opacity: 0.5; cursor: default; }
+
+  /* ── Agent run stream ── */
+  .run {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 9px; padding: 11px 13px; margin-bottom: 8px;
+  }
+  .run-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; font-weight: 600; margin-bottom: 8px;
+  }
+  .run-head .ts { color: var(--faint); font-weight: 400; font-family: ui-monospace, monospace; font-size: 11px; }
+  .run-state {
+    margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+    font-weight: 700; padding: 2px 7px; border-radius: 4px;
+  }
+  .run-state.running { background: var(--purple-bg); color: var(--purple-fg); }
+  .run-state.done    { background: var(--green-bg); color: var(--green-fg); }
+  .run-state.error   { background: #fef2f2; color: var(--red); }
+  .step {
+    display: flex; gap: 8px; font-size: 12px; line-height: 1.45;
+    padding: 4px 0; border-top: 1px dashed var(--border);
+  }
+  .step:first-of-type { border-top: none; }
+  .step .ic { flex-shrink: 0; width: 16px; text-align: center; }
+  .step .sx { min-width: 0; word-break: break-word; }
+  .step .sx .nm { font-family: ui-monospace, monospace; font-weight: 600; }
+  .step.tool .sx { color: var(--text); }
+  .step.tool_result .sx { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; white-space: pre-wrap; }
+  .step.think .sx, .step.final .sx { color: var(--text); }
+  .step.error .sx { color: var(--red); }
+  .run-final {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+    font-size: 12.5px; line-height: 1.5;
+  }
+  .run-final .md p { margin: 4px 0; }
+  .run-final .md ol, .run-final .md ul { margin: 4px 0; padding-left: 20px; }
+
+  @media (max-width: 720px) {
+    .app { flex-direction: column; }
+    .sidebar {
+      width: 100%; height: auto; position: static;
+      flex-direction: row; overflow-x: auto;
+      border-right: none; border-bottom: 1px solid var(--border);
+    }
+    .nav { width: auto; white-space: nowrap; }
+  }
+
+  @media (max-width: 640px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    header, .stats, .filter-bar, .task-list { padding-left: 16px; padding-right: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Work Vault</h1>
+  <div class="search-wrap">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+    <input id="search" type="text" placeholder="Search…" oninput="render()">
+  </div>
+</header>
+
+<div class="app">
+  <nav class="sidebar">
+    <button class="nav on" data-view="overview" onclick="setView('overview')">📋 Overview</button>
+    <button class="nav"    data-view="projects" onclick="setView('projects')">📁 Projects</button>
+    <button class="nav"    data-view="browse"   onclick="setView('browse')">🗂️ Browse</button>
+    <button class="nav"    data-view="chat"     onclick="setView('chat')">💬 Chat</button>
+    <button class="nav"    data-view="agents"   onclick="setView('agents')">🤖 Agents</button>
+  </nav>
+  <main class="main">
+
+    <section class="view" data-view="overview">
+      <div class="stats" id="stats"></div>
+      <div class="usage" id="usage"></div>
+      <div class="filter-bar">
+        <div class="filter-group" id="fg-status">
+          <button class="pill on"  data-k="status" data-v="all"      onclick="setFilter('status','all')">All</button>
+          <button class="pill"     data-k="status" data-v="active"   onclick="setFilter('status','active')">Active</button>
+          <button class="pill"     data-k="status" data-v="complete" onclick="setFilter('status','complete')">Complete</button>
+          <button class="pill"     data-k="status" data-v="archived" onclick="setFilter('status','archived')">Archived</button>
+        </div>
+        <div class="sep"></div>
+        <div class="filter-group" id="fg-area">
+          <button class="pill on"  data-k="area" data-v="all"        onclick="setFilter('area','all')">All areas</button>
+          <button class="pill"     data-k="area" data-v="internship" onclick="setFilter('area','internship')">Internship</button>
+          <button class="pill"     data-k="area" data-v="projects"   onclick="setFilter('area','projects')">Projects</button>
+          <button class="pill"     data-k="area" data-v="research"   onclick="setFilter('area','research')">Research</button>
+        </div>
+        <div id="course-wrap" style="display: none;">
+          <div class="sep"></div>
+          <div class="filter-group" id="fg-course"></div>
+        </div>
+      </div>
+      <div class="task-list" id="task-list"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="view" data-view="projects" hidden>
+      <div class="view-head">
+        <h2>Projects</h2>
+        <p>Spin up a new project folder — correct structure and frontmatter, linked into Home.</p>
+      </div>
+      <div class="panel-wrap">
+        <form class="np-form" id="np-form" onsubmit="createProject(event)">
+          <div class="np-row">
+            <label>Name<input id="np-name" type="text" placeholder="Self-Hosted Workspace" autocomplete="off"></label>
+            <label>Area<select id="np-area">
+              <option value="projects">Projects</option>
+              <option value="internship">Internship</option>
+              <option value="research">Research</option>
+            </select></label>
+          </div>
+          <label>Topic<input id="np-topic" type="text" placeholder="One-line description (optional)" autocomplete="off"></label>
+          <div class="np-row">
+            <label>Deadline<input id="np-deadline" type="date"></label>
+            <button class="np-submit" type="submit">Create project</button>
+          </div>
+          <div class="np-msg" id="np-msg"></div>
+        </form>
+        <div class="proj-list-head">Existing projects</div>
+        <div class="gallery" id="proj-list"><div class="empty-sm">Loading…</div></div>
+      </div>
+    </section>
+
+    <section class="view" data-view="browse" hidden>
+      <div class="view-head">
+        <h2>Browse</h2>
+        <p>Every top-level section of the vault. Click a card to read its context file.</p>
+      </div>
+      <div class="browse"><div class="gallery" id="gallery"></div></div>
+    </section>
+
+    <section class="view" data-view="chat" hidden>
+      <div class="view-head">
+        <h2>Chat</h2>
+        <p>One chat, two backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on Claude in the cloud.</p>
+      </div>
+      <div class="panel-wrap">
+        <div class="tier-bar">
+          <div class="filter-group">
+            <button class="pill on" id="tier-fast"  onclick="setTier('fast')">⚡ Fast · local</button>
+            <button class="pill"    id="tier-smart" onclick="setTier('smart')">✨ Smart · cloud</button>
+          </div>
+          <span class="tier-status" id="tier-status"></span>
+          <button class="chat-clear" onclick="clearChat()" title="Clear conversation">Clear</button>
+        </div>
+        <div class="chat-box">
+          <div class="chat-log" id="chat-log">
+            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; Smart reaches for Claude.</div>
+          </div>
+          <div class="chat-input">
+            <textarea id="chat-text" rows="1" placeholder="Message the model…"
+                      oninput="chatAutogrow()" onkeydown="chatKey(event)"></textarea>
+            <button class="twin-send" id="chat-send" onclick="chatSend()">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="agents" hidden>
+      <div class="view-head">
+        <h2>Agents</h2>
+        <p>Launch an agent against a task. It drives real vault tools through the model router and streams each step below.</p>
+      </div>
+      <div class="panel-wrap">
+        <div class="agent-grid" id="agent-grid"><div class="empty-sm">Loading…</div></div>
+        <div class="activity">
+          <div class="activity-head">Activity</div>
+          <div class="activity-log" id="activity-log"><div class="empty-sm">No runs yet.</div></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="modal-backdrop" id="modal" style="display: none;" onclick="if (event.target === this) closeModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="crumbs" id="crumbs"></div>
+      <button class="modal-close" onclick="closeModal()" title="Close (Esc)">✕</button>
+    </div>
+    <div class="modal-subs" id="modal-subs"></div>
+    <div class="context-file" id="context-file"></div>
+    <div class="md" id="context-md"></div>
+  </div>
+</div>
+
+<button class="twin-fab" id="twin-fab" onclick="openTwin()">
+  <span class="emoji">😈</span> Talk to your twin
+</button>
+
+<div class="twin-panel" id="twin-panel" style="display: none;">
+  <div class="twin-head">
+    <span class="emoji">😈</span>
+    <div class="titles">
+      <div class="t">Your Evil Twin</div>
+      <div class="s">the one who actually did it</div>
+    </div>
+    <button class="twin-close" onclick="closeTwin()" title="Close">✕</button>
+  </div>
+  <div class="twin-log" id="twin-log"></div>
+  <div class="twin-input">
+    <textarea id="twin-text" rows="1" placeholder="What are you working on?"
+              oninput="twinAutogrow()" onkeydown="twinKey(event)"></textarea>
+    <button class="twin-send" id="twin-send" onclick="twinSend()">Send</button>
+  </div>
+</div>
+
+<script>
+  /* ── Evil twin chat ── */
+  let twinMsgs = [];          // full history sent to the API
+  let twinBusy = false;
+  let twinStarted = false;
+
+  function openTwin() {
+    document.getElementById('twin-fab').style.display = 'none';
+    document.getElementById('twin-panel').style.display = 'flex';
+    if (!twinStarted) {
+      twinStarted = true;
+      addTwinBubble('twin',
+        "You finally opened this. Took you long enough, bum.\n\n" +
+        "Tell me what you're working on and I'll hand you 5 things you can start " +
+        "in the next 5 minutes — the smallest versions you can't talk yourself out of. " +
+        "Then I'll keep you moving.");
+    }
+    document.getElementById('twin-text').focus();
+  }
+
+  function closeTwin() {
+    document.getElementById('twin-panel').style.display = 'none';
+    document.getElementById('twin-fab').style.display = 'flex';
+  }
+
+  function twinAutogrow() {
+    const t = document.getElementById('twin-text');
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight, 120) + 'px';
+  }
+
+  function twinKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); twinSend(); }
+  }
+
+  function twinMd(src) {
+    // Render twin replies: paragraphs, **bold**, and numbered/bulleted lists.
+    let html = '', list = null;  // list = 'ol' | 'ul' | null
+    const close = () => { if (list) { html += `</${list}>`; list = null; } };
+    const inline = s => esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    for (const raw of src.split('\n')) {
+      const line = raw.trim();
+      const ol = line.match(/^\d+[.)]\s+(.*)/);
+      const ul = line.match(/^[-*•]\s+(.*)/);
+      if (ol) {
+        if (list !== 'ol') { close(); html += '<ol>'; list = 'ol'; }
+        html += '<li>' + inline(ol[1]) + '</li>';
+      } else if (ul) {
+        if (list !== 'ul') { close(); html += '<ul>'; list = 'ul'; }
+        html += '<li>' + inline(ul[1]) + '</li>';
+      } else if (line) {
+        close(); html += '<p>' + inline(line) + '</p>';
+      }
+    }
+    close();
+    return html;
+  }
+
+  function addTwinBubble(kind, text) {
+    const log = document.getElementById('twin-log');
+    const div = document.createElement('div');
+    div.className = 'twin-msg ' + kind;
+    if (kind === 'twin') div.innerHTML = '<div class="md">' + twinMd(text) + '</div>';
+    else div.textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
+  }
+
+  function twinSend() {
+    if (twinBusy) return;
+    const t = document.getElementById('twin-text');
+    const text = t.value.trim();
+    if (!text) return;
+
+    addTwinBubble('user', text);
+    twinMsgs.push({ role: 'user', content: text });
+    t.value = ''; twinAutogrow();
+
+    twinBusy = true;
+    document.getElementById('twin-send').disabled = true;
+    const log = document.getElementById('twin-log');
+    const typing = document.createElement('div');
+    typing.className = 'twin-typing';
+    typing.textContent = 'the twin is typing…';
+    log.appendChild(typing);
+    log.scrollTop = log.scrollHeight;
+
+    fetch('/api/twin/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: twinMsgs }),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        typing.remove();
+        if (!ok || d.error) {
+          addTwinBubble('err', d.error || 'Something went wrong reaching the twin.');
+          return;
+        }
+        addTwinBubble('twin', d.reply);
+        twinMsgs.push({ role: 'assistant', content: d.reply });
+      })
+      .catch(() => {
+        typing.remove();
+        addTwinBubble('err', "Couldn't reach the twin — is the dashboard server running?");
+      })
+      .finally(() => {
+        twinBusy = false;
+        document.getElementById('twin-send').disabled = false;
+        document.getElementById('twin-text').focus();
+      });
+  }
+</script>
+
+<script>
+  let all = [];
+  const filters = { status: 'all', area: 'all', course: 'all' };
+
+  function setFilter(k, v) {
+    filters[k] = v;
+    document.querySelectorAll(`[data-k="${k}"]`).forEach(b => b.classList.toggle('on', b.dataset.v === v));
+    render();
+  }
+
+  function area(tags) {
+    for (const t of (tags || [])) if (t.startsWith('area/')) return t.slice(5);
+    return '';
+  }
+
+  function types(tags) {
+    return (tags || []).filter(t => t.startsWith('type/')).map(t => t.slice(5));
+  }
+
+  function dlState(dl) {
+    if (!dl) return null;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const diff = Math.round((new Date(dl) - today) / 86400000);
+    return diff < 0 ? 'overdue' : diff <= 3 ? 'soon' : 'ok';
+  }
+
+  function dlLabel(dl) {
+    if (!dl) return '';
+    const today = new Date(); today.setHours(0,0,0,0);
+    const diff = Math.round((new Date(dl) - today) / 86400000);
+    if (diff < 0)  return `Overdue ${-diff}d`;
+    if (diff === 0) return 'Due today';
+    if (diff === 1) return 'Due tomorrow';
+    return `Due ${new Date(dl).toLocaleDateString('en-US',{month:'short',day:'numeric'})}`;
+  }
+
+  function render() {
+    const q = document.getElementById('search').value.toLowerCase();
+
+    const shown = all.filter(t => {
+      if (filters.status !== 'all' && t.status !== filters.status) return false;
+      if (filters.area   !== 'all' && area(t.tags) !== filters.area)  return false;
+      if (filters.course !== 'all' && t.course !== filters.course) return false;
+      if (q && !t.title.toLowerCase().includes(q) && !t.topic.toLowerCase().includes(q)) return false;
+      return true;
+    }).sort((a, b) => {
+      const da = a.deadline ? new Date(a.deadline) : null;
+      const db = b.deadline ? new Date(b.deadline) : null;
+      if (da && db) return da - db;
+      return da ? -1 : db ? 1 : 0;
+    });
+
+    // Stats (always off full dataset)
+    const active   = all.filter(t => t.status === 'active').length;
+    const overdue  = all.filter(t => t.deadline && dlState(t.deadline) === 'overdue').length;
+    const complete = all.filter(t => t.status === 'complete').length;
+    document.getElementById('stats').innerHTML = [
+      ['Active',   active,   false],
+      ['Overdue',  overdue,  overdue > 0],
+      ['Complete', complete, false],
+      ['Total',    all.length, false],
+    ].map(([lbl, n, warn]) =>
+      `<div class="stat${warn?' warn':''}"><div class="num">${n}</div><div class="lbl">${lbl}</div></div>`
+    ).join('');
+
+    const list = document.getElementById('task-list');
+    if (!shown.length) { list.innerHTML = '<div class="empty">No tasks match.</div>'; return; }
+
+    list.innerHTML = shown.map(t => {
+      const a = area(t.tags);
+      const ts = types(t.tags);
+      const ds = dlState(t.deadline);
+      return `<div class="task">
+        <div class="dot ${t.status}"></div>
+        <div class="task-body">
+          <div class="task-title">${esc(t.title)}</div>
+          ${t.topic ? `<div class="task-topic">${esc(t.topic)}</div>` : ''}
+          <div class="meta">
+            ${a  ? `<span class="tag ${a}">${a}</span>` : ''}
+            ${t.course ? `<span class="tag course">${esc(t.course)}</span>` : ''}
+            ${ts.map(tp => `<span class="tag">${esc(tp)}</span>`).join('')}
+            ${t.deadline ? `<span class="dl ${ds||''}">${dlLabel(t.deadline)}</span>` : ''}
+          </div>
+          <div class="filepath">${esc(t.file)}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  /* ── Folder browser ── */
+  const FOLDER_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+
+  function renderGallery(folders) {
+    document.getElementById('gallery').innerHTML = folders.map(f => `
+      <div class="g-card" onclick="openFolder('${esc(f.name)}')">
+        <div class="g-name">${FOLDER_ICON}<span>${esc(f.name)}</span></div>
+        ${f.excerpt ? `<div class="g-excerpt">${esc(f.excerpt)}</div>` : ''}
+        <div class="g-meta">${f.folders} folder${f.folders === 1 ? '' : 's'} · ${f.notes} note${f.notes === 1 ? '' : 's'}</div>
+      </div>`).join('');
+  }
+
+  function openFolder(path) {
+    fetch('/api/browse?path=' + encodeURIComponent(path))
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) return;
+        history.replaceState(null, '', d.path ? '?folder=' + encodeURIComponent(d.path) : location.pathname);
+        renderCrumbs(d.path);
+        document.getElementById('modal-subs').innerHTML = d.folders.map(f => {
+          const p = d.path ? d.path + '/' + f.name : f.name;
+          return `<button class="sub-chip" onclick="openFolder('${esc(p)}')">${FOLDER_ICON}${esc(f.name)}</button>`;
+        }).join('');
+        document.getElementById('context-file').textContent = d.context ? d.context.file : '';
+        document.getElementById('context-md').innerHTML = d.context
+          ? mdToHtml(d.context.content)
+          : '<p class="no-ctx">No context file in this folder.</p>';
+        const modal = document.getElementById('modal');
+        modal.style.display = 'flex';
+        modal.querySelector('.modal').scrollTop = 0;
+      });
+  }
+
+  function closeModal() {
+    document.getElementById('modal').style.display = 'none';
+    history.replaceState(null, '', location.pathname);
+  }
+
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+  function renderCrumbs(path) {
+    const parts = path ? path.split('/') : [];
+    let html = `<span class="crumb${parts.length ? '' : ' cur'}" onclick="closeModal()">Vault</span>`;
+    let acc = '';
+    parts.forEach((p, i) => {
+      acc = acc ? acc + '/' + p : p;
+      const cur = i === parts.length - 1;
+      html += `<span class="crumb-sep">/</span><span class="crumb${cur ? ' cur' : ''}" onclick="openFolder('${esc(acc)}')">${esc(p)}</span>`;
+    });
+    document.getElementById('crumbs').innerHTML = html;
+  }
+
+  function mdToHtml(src) {
+    let html = '', inCode = false, inList = false;
+    const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+    for (const raw of src.split('\n')) {
+      if (raw.trim().startsWith('```')) {
+        closeList();
+        html += inCode ? '</code></pre>' : '<pre><code>';
+        inCode = !inCode;
+        continue;
+      }
+      if (inCode) { html += esc(raw) + '\n'; continue; }
+      let l = esc(raw)
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, t, alias) => `<span class="wikilink">${alias || t}</span>`)
+        .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      const h = l.match(/^(#{1,4})\s+(.*)/);
+      if (h) { closeList(); html += `<h${h[1].length}>${h[2]}</h${h[1].length}>`; continue; }
+      if (/^\s*[-*]\s/.test(raw)) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += '<li>' + l.replace(/^\s*[-*]\s+/, '') + '</li>';
+        continue;
+      }
+      if (/^&gt;\s?/.test(l)) { closeList(); html += '<blockquote>' + l.replace(/^&gt;\s?/, '') + '</blockquote>'; continue; }
+      closeList();
+      if (l.trim()) html += '<p>' + l + '</p>';
+    }
+    closeList();
+    if (inCode) html += '</code></pre>';
+    return html;
+  }
+
+  function buildCoursePills() {
+    const courses = [...new Set(all.map(t => t.course).filter(Boolean))].sort();
+    const wrap = document.getElementById('course-wrap');
+    if (!courses.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'contents';
+    document.getElementById('fg-course').innerHTML =
+      `<button class="pill on" data-k="course" data-v="all" onclick="setFilter('course','all')">All courses</button>` +
+      courses.map(c =>
+        `<button class="pill" data-k="course" data-v="${esc(c)}" onclick="setFilter('course','${esc(c)}')">${esc(c)}</button>`
+      ).join('');
+  }
+
+  /* -- Claude usage -- */
+  function fmtTok(n) {
+    n = n || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+  function fmtCost(c) { return '$' + (c || 0).toFixed(2); }
+
+  function renderUsage(u) {
+    const el = document.getElementById('usage');
+    if (!u || !u.available) {
+      el.className = 'usage empty-state';
+      el.textContent = 'No Claude Code usage logs found (~/.claude/projects).';
+      return;
+    }
+    const t = u.totals;
+    const max = Math.max(1, ...u.by_day.map(d => d.total));
+    const bars = u.by_day.map(d => {
+      const h = d.total ? Math.max(2, Math.round((d.total / max) * 84)) : 0;
+      const lbl = d.day.slice(5).replace('-', '/');
+      return `<div class="bar-wrap" title="${d.day}: ${fmtTok(d.total)} tokens">
+        <div class="bar" style="height:${h}px"></div>
+        <div class="bar-x">${lbl}</div>
+      </div>`;
+    }).join('');
+    const models = u.by_model.length
+      ? u.by_model.map(m => `<div class="model-row">
+          <span class="model-name">${esc(m.model)}</span>
+          <span class="model-tok">${fmtTok(m.total)}${m.cost ? ' &middot; ' + fmtCost(m.cost) : ''}</span>
+        </div>`).join('')
+      : '<div class="no-ctx">No model data.</div>';
+    el.className = 'usage';
+    el.innerHTML = `<div class="usage-panel">
+      <div class="usage-head">
+        <h2>Claude token usage</h2>
+        <span class="sub">${u.sessions} session${u.sessions === 1 ? '' : 's'} &middot; ${u.messages.toLocaleString()} messages</span>
+      </div>
+      <div class="usage-cards">
+        <div class="u-card"><div class="num">${fmtTok(u.today.total)}</div><div class="lbl">Today</div></div>
+        <div class="u-card"><div class="num">${fmtTok(t.total)}</div><div class="lbl">Total tokens</div></div>
+        <div class="u-card"><div class="num">${fmtTok(t.cache_read)}</div><div class="lbl">Cache reads</div></div>
+        <div class="u-card"><div class="num"><small>est.</small> ${fmtCost(t.cost)}</div><div class="lbl">API cost</div></div>
+      </div>
+      <div class="usage-cols">
+        <div>
+          <div class="chart-title">Last ${u.by_day.length} days</div>
+          <div class="bars">${bars}</div>
+        </div>
+        <div>
+          <div class="model-title">By model</div>
+          ${models}
+        </div>
+      </div>
+      <div class="usage-foot">In ${fmtTok(t.input)} &middot; Out ${fmtTok(t.output)} &middot; Cache write ${fmtTok(t.cache_creation)} &middot; Cache read ${fmtTok(t.cache_read)}. Cost is an estimate from public API list prices; subscription plans differ.</div>
+    </div>`;
+  }
+
+  fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildCoursePills(); render(); });
+  fetch('/api/browse').then(r => r.json()).then(d => renderGallery(d.folders));
+  fetch('/api/usage').then(r => r.json()).then(renderUsage).catch(() => {});
+  const initialFolder = new URLSearchParams(location.search).get('folder');
+  if (initialFolder) openFolder(initialFolder);
+</script>
+
+<script>
+  /* ── Workspace shell: view switching + projects + agents ── */
+  const loaded = { projects: false, agents: false, chat: false };
+
+  function setView(v) {
+    document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.view === v));
+    document.querySelectorAll('.view').forEach(s => { s.hidden = s.dataset.view !== v; });
+    if (v === 'projects' && !loaded.projects) { loaded.projects = true; loadProjects(); }
+    if (v === 'agents'   && !loaded.agents)   { loaded.agents = true;   loadAgents(); }
+    if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); }
+  }
+
+  /* -- Generic chat (model router) -- */
+  let chatMsgs = [];
+  let chatBusy = false;
+  let chatTier = 'fast';
+  let routerStatus = null;
+
+  function loadRouterStatus() {
+    fetch('/api/router/status').then(r => r.json()).then(s => { routerStatus = s; renderTierStatus(); })
+      .catch(() => {});
+  }
+
+  function renderTierStatus() {
+    if (!routerStatus) return;
+    const t = routerStatus[chatTier];
+    if (!t) { document.getElementById('tier-status').textContent = ''; return; }
+    const cls = t.available ? 'up' : 'down';
+    const state = t.available ? 'ready' : (chatTier === 'fast' ? 'Ollama offline' : 'no API key');
+    document.getElementById('tier-status').innerHTML =
+      `<span class="dot-sm ${cls}"></span>${esc(t.model)} · ${state}`;
+  }
+
+  function setTier(tier) {
+    chatTier = tier;
+    document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
+    document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
+    renderTierStatus();
+  }
+
+  function clearChat() {
+    chatMsgs = [];
+    document.getElementById('chat-log').innerHTML =
+      '<div class="chat-empty">Cleared. Pick a tier and say something.</div>';
+  }
+
+  function chatAutogrow() {
+    const t = document.getElementById('chat-text');
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight, 140) + 'px';
+  }
+
+  function chatKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
+  }
+
+  function addChatBubble(kind, text, who) {
+    const log = document.getElementById('chat-log');
+    const empty = log.querySelector('.chat-empty');
+    if (empty) empty.remove();
+    const div = document.createElement('div');
+    div.className = 'chat-msg ' + kind;
+    if (kind === 'bot') {
+      div.innerHTML = (who ? `<div class="who">${esc(who)}</div>` : '') + '<div class="md">' + twinMd(text) + '</div>';
+    } else {
+      div.textContent = text;
+    }
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
+  }
+
+  function chatSend() {
+    if (chatBusy) return;
+    const t = document.getElementById('chat-text');
+    const text = t.value.trim();
+    if (!text) return;
+
+    addChatBubble('user', text);
+    chatMsgs.push({ role: 'user', content: text });
+    t.value = ''; chatAutogrow();
+
+    chatBusy = true;
+    document.getElementById('chat-send').disabled = true;
+    const log = document.getElementById('chat-log');
+    const typing = document.createElement('div');
+    typing.className = 'chat-typing';
+    typing.textContent = (chatTier === 'fast' ? 'local model' : 'Claude') + ' is thinking…';
+    log.appendChild(typing);
+    log.scrollTop = log.scrollHeight;
+
+    fetch('/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: chatMsgs, tier: chatTier }),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        typing.remove();
+        if (!ok || d.error) { addChatBubble('err', d.error || 'Something went wrong.'); return; }
+        addChatBubble('bot', d.reply, d.model);
+        chatMsgs.push({ role: 'assistant', content: d.reply });
+      })
+      .catch(() => { typing.remove(); addChatBubble('err', "Couldn't reach the server."); })
+      .finally(() => {
+        chatBusy = false;
+        document.getElementById('chat-send').disabled = false;
+        document.getElementById('chat-text').focus();
+      });
+  }
+
+  /* -- New project -- */
+  function createProject(e) {
+    e.preventDefault();
+    const msg = document.getElementById('np-msg');
+    const body = {
+      name: document.getElementById('np-name').value.trim(),
+      area: document.getElementById('np-area').value,
+      topic: document.getElementById('np-topic').value.trim(),
+      deadline: document.getElementById('np-deadline').value,
+    };
+    if (!body.name) { msg.className = 'np-msg err'; msg.textContent = 'Give it a name first.'; return; }
+    msg.className = 'np-msg'; msg.textContent = 'Creating…';
+    fetch('/api/project', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok || d.error) { msg.className = 'np-msg err'; msg.textContent = d.error || 'Could not create project.'; return; }
+        msg.className = 'np-msg ok';
+        msg.textContent = `Created ${d.path}${d.home_linked ? ' · linked in Home' : ''}.`;
+        document.getElementById('np-form').reset();
+        loadProjects();
+        // pull the new context file into the task list + gallery
+        fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildCoursePills(); render(); });
+        fetch('/api/browse').then(r => r.json()).then(d2 => renderGallery(d2.folders));
+      })
+      .catch(() => { msg.className = 'np-msg err'; msg.textContent = "Couldn't reach the server."; });
+  }
+
+  function loadProjects() {
+    const areas = ['projects', 'Internship-Projects', 'research'];
+    const el = document.getElementById('proj-list');
+    Promise.all(areas.map(a =>
+      fetch('/api/browse?path=' + encodeURIComponent(a)).then(r => r.json()).catch(() => ({ folders: [] }))
+    )).then(results => {
+      const cards = [];
+      results.forEach((d, i) => {
+        (d && d.folders ? d.folders : []).forEach(f => {
+          const p = areas[i] + '/' + f.name;
+          cards.push(`<div class="g-card" onclick="openFolder('${esc(p)}')">
+            <div class="g-name">${FOLDER_ICON}<span>${esc(f.name)}</span></div>
+            ${f.excerpt ? `<div class="g-excerpt">${esc(f.excerpt)}</div>` : ''}
+            <div class="g-meta">${esc(areas[i])} · ${f.notes} note${f.notes === 1 ? '' : 's'}</div>
+          </div>`);
+        });
+      });
+      el.innerHTML = cards.length ? cards.join('') : '<div class="empty-sm">No project folders yet.</div>';
+    });
+  }
+
+  /* -- Agents (live run loop) -- */
+  let agentList = [];
+  const agentBusy = {};   // id -> true while a run is in flight
+
+  function loadAgents() {
+    fetch('/api/agents').then(r => r.json()).then(d => { agentList = d.agents || []; renderAgents(); })
+      .catch(() => { document.getElementById('agent-grid').innerHTML = '<div class="empty-sm">Could not load agents.</div>'; });
+  }
+
+  function renderAgents() {
+    document.getElementById('agent-grid').innerHTML = agentList.map(a => `
+      <div class="agent-card" id="card-${esc(a.id)}">
+        <div class="agent-top">
+          <span class="agent-dot ${esc(a.status)}"></span>
+          <span class="agent-name">${esc(a.name)}</span>
+          <span class="tier ${esc(a.tier)}">${esc(a.tier)}</span>
+        </div>
+        <div class="agent-desc">${esc(a.desc)}</div>
+        <div class="agent-run">
+          <input id="task-${esc(a.id)}" type="text" placeholder="Give it a task…"
+                 onkeydown="if (event.key === 'Enter') runAgent('${esc(a.id)}')">
+          <button id="run-${esc(a.id)}" onclick="runAgent('${esc(a.id)}')">Run</button>
+        </div>
+      </div>`).join('');
+  }
+
+  function setAgentBusy(id, busy) {
+    agentBusy[id] = busy;
+    const card = document.getElementById('card-' + id);
+    const btn = document.getElementById('run-' + id);
+    if (btn) { btn.disabled = busy; btn.textContent = busy ? 'Running…' : 'Run'; }
+    if (card) card.classList.toggle('running', busy);
+  }
+
+  const STEP_ICON = { start: '▶', think: '💭', tool: '🔧', tool_result: '↳', final: '✅', error: '⚠️', limit: '⏹' };
+
+  function runAgent(id) {
+    if (agentBusy[id]) return;
+    const input = document.getElementById('task-' + id);
+    const task = input ? input.value.trim() : '';
+    const a = agentList.find(x => x.id === id) || {};
+
+    setAgentBusy(id, true);
+    const log = document.getElementById('activity-log');
+    const empty = log.querySelector('.empty-sm');
+    if (empty) empty.remove();
+    const runEl = document.createElement('div');
+    runEl.className = 'run';
+    runEl.innerHTML = '<div class="run-head">Starting…</div>';
+    log.prepend(runEl);
+
+    fetch('/api/agent/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: id, task: task, tier: a.tier }),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok || d.error) {
+          runEl.innerHTML = `<div class="run-head">${esc(a.name || id)}<span class="run-state error">error</span></div>
+            <div class="step error"><span class="ic">⚠️</span><span class="sx">${esc(d.error || 'Could not start the run.')}</span></div>`;
+          setAgentBusy(id, false);
+          return;
+        }
+        if (input) input.value = '';
+        pollRun(d.run_id, runEl, id);
+      })
+      .catch(() => {
+        runEl.innerHTML = '<div class="run-head">error</div><div class="step error"><span class="ic">⚠️</span><span class="sx">Could not reach the agent endpoint.</span></div>';
+        setAgentBusy(id, false);
+      });
+  }
+
+  function pollRun(runId, runEl, agentId) {
+    fetch('/api/agent/run/' + encodeURIComponent(runId))
+      .then(r => r.json())
+      .then(run => {
+        if (run.error && !run.steps) {
+          runEl.innerHTML = `<div class="run-head">error<span class="run-state error">error</span></div>
+            <div class="step error"><span class="ic">⚠️</span><span class="sx">${esc(run.error)}</span></div>`;
+          setAgentBusy(agentId, false);
+          return;
+        }
+        renderRun(run, runEl);
+        if (run.status === 'running') {
+          setTimeout(() => pollRun(runId, runEl, agentId), 900);
+        } else {
+          setAgentBusy(agentId, false);
+          const card = document.getElementById('card-' + agentId);
+          if (card && run.status === 'error') { card.classList.add('error'); setTimeout(() => card.classList.remove('error'), 4000); }
+        }
+      })
+      .catch(() => setTimeout(() => pollRun(runId, runEl, agentId), 1500));
+  }
+
+  function renderRun(run, runEl) {
+    const t = new Date(run.started).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const steps = (run.steps || []).map(ev => {
+      const ic = STEP_ICON[ev.type] || '·';
+      let body = '';
+      if (ev.type === 'start') body = `<span class="sx">on the <b>${esc(run.tier)}</b> tier — ${esc(ev.task || '')}</span>`;
+      else if (ev.type === 'tool') body = `<span class="sx">calling <span class="nm">${esc(ev.tool)}</span>(${esc(JSON.stringify(ev.input || {}))})</span>`;
+      else if (ev.type === 'tool_result') body = `<span class="sx">${esc(ev.output || '')}</span>`;
+      else if (ev.type === 'think') body = `<span class="sx">${esc(ev.text || '')}</span>`;
+      else if (ev.type === 'final' || ev.type === 'limit') return '';
+      else body = `<span class="sx">${esc(ev.text || '')}</span>`;
+      if (!body) return '';
+      return `<div class="step ${esc(ev.type)}"><span class="ic">${ic}</span>${body}</div>`;
+    }).join('');
+
+    let final = '';
+    if (run.status === 'done' && run.result && run.result.reply) {
+      final = `<div class="run-final"><div class="md">${twinMd(run.result.reply)}</div></div>`;
+    } else if (run.status === 'error' && run.error) {
+      final = `<div class="step error"><span class="ic">⚠️</span><span class="sx">${esc(run.error)}</span></div>`;
+    }
+
+    runEl.innerHTML =
+      `<div class="run-head">${esc(run.name)} <span class="ts">${t}</span>
+         <span class="run-state ${esc(run.status)}">${esc(run.status)}</span></div>
+       ${steps}${final}`;
+  }
+</script>
+</body>
+</html>

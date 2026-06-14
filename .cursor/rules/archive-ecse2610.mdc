@@ -1,0 +1,13 @@
+---
+description: "[ARCHIVED] ECSE-2610 digital logic context"
+globs: archive/courses/ecse2610/**
+---
+
+ARCHIVED — course complete. Reference only.
+
+Course: Digital Logic (ECSE-2610). Hardware: 7400-series TTL ICs.
+Design tools: Logisim for simulation, K-maps for minimization.
+State machines use D flip-flops with 3-bit encoding.
+IC references: 74x174 (D FF), 74x138 (3:8 decoder), 74x47 (BCD display).
+Notes include next-state equations, K-map tables, and pin diagrams.
+Final deliverable was: crosswalk FSM (5-state, COCO Omega lab).

@@ -1,0 +1,16 @@
+.obsidian/
+.trash/
+attachments/
+templates/
+*.canvas
+*.excalidraw
+*.base
+
+# Build artifacts & deps (co-located code folders)
+node_modules/
+__pycache__/
+.venv/
+venv/
+dist/
+build/
+*.log

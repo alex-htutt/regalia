@@ -1,0 +1,4 @@
+flask>=3.0.0
+pyyaml>=6.0.1
+anthropic>=0.40.0
+pywebview>=5.0  # desktop app shell (desktop.py); browser mode (app.py) needs only the above

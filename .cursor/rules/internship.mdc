@@ -1,0 +1,23 @@
+---
+description: Summer internship — active workspace
+globs: Internship-Projects/**
+---
+
+Active context: Alex's summer internship. This is the live work area.
+
+Scaffold note (generic for now — fill in as the internship ramps up):
+- Company / team: TBD
+- Tech stack: TBD
+- Current project(s): one subfolder per project under Internship-Projects/.
+- Each project folder carries its own _context_<project>.md (copy templates/_context_TEMPLATE.md and rename to match the folder).
+
+Project layout convention (follow example-project/):
+- Each project lives in Internship-Projects/<project>/ containing: _context_<project>.md (read it first), code/ (working files, indexed), data/ (scratch datasets, I/O), notes/ (project/lab/meeting notes), research/ (background reference material — papers, docs, API/portal write-ups, links).
+- Put new working files in that project's code/. Do not invent a different layout.
+- If a project maps to a company repo with its own remote, do not nest it here — its _context_<project>.md `repo:` field points to where it lives.
+
+Conventions:
+- Day-to-day work logged with templates/daily-log.md; standups with templates/standup-note.md.
+- Meetings (1:1s, syncs, reviews) go in meetings/ using templates/meeting-note.md, tagged area/internship.
+- When unsure of company-specific tooling or conventions, ask rather than assume.
+- Keep the project's _context_<project>.md current: active task, blockers, open questions, next deadline.

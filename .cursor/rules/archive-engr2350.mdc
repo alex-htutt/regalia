@@ -1,0 +1,13 @@
+---
+description: "[ARCHIVED] ENGR-2350 embedded systems context"
+globs: archive/courses/engr2350/**
+---
+
+ARCHIVED — course complete. Reference only.
+
+Course: Embedded Control (ENGR-2350), MSPM0G3507 microcontroller.
+HAL header: engr2350_mspm0.h
+Key peripherals: TIMG0, TIMG8, I2C1, UART debug.
+Labs followed HLD -> LLD -> pseudocode structure.
+PWM via SysConfig, not direct register writes.
+Final deliverable was: wall-following robot with PID gain scheduling, ultrasonic ranger over I2C, differential PWM drive.

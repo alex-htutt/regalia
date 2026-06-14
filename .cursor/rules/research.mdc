@@ -1,0 +1,13 @@
+---
+description: Self-directed research and learning
+globs: research/**
+---
+
+Topics Alex is learning independently outside coursework: RAG pipelines, ML, and related areas.
+
+Conventions:
+- Each subject gets a subfolder (e.g. `RAG-pipelines/`, `ML/`). When a subfolder gets dense, add a `_context_<folder>.md` (copy `templates/_context_TEMPLATE.md`).
+- Tag notes with `area/research` plus a subject subtag (e.g. `subject/rag`, `subject/ml`).
+- Notes can include paper summaries, implementation notes, experiment logs, or concept breakdowns.
+- Alex is comfortable with technical depth — don't over-explain fundamentals unless asked.
+- Prefer linking to related internship or project notes via [[wikilinks]] when concepts overlap.

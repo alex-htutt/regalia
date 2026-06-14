@@ -1,0 +1,17 @@
+---
+description: Global vault rules
+alwaysApply: true
+---
+
+This is an Obsidian knowledge vault and Alex's primary workspace for all work — currently a summer internship, plus side projects. All notes are Markdown.
+
+Behavior:
+- Do not create new files unless explicitly asked.
+- Answer from existing vault content first before generating new information.
+- Use [[wikilinks]] for internal references, not relative paths.
+- Each folder's context file is named `_context_<folder>.md` (e.g. `_context_pull_healthcare_card.md`, `_context_projects.md`). Read the nearest one before working in a folder. The master to copy for new folders is `templates/_context_TEMPLATE.md`.
+- Frontmatter is YAML with: date, tags, status, topic, deadline, related.
+- Tags follow `category/subcategory` (e.g. area/internship, type/meeting, status/active).
+- Be dense and factual. Alex is comfortable with technical depth; do not over-explain basics.
+
+Active scope is `Internship-Projects/`, `projects/`, and `research/`. The `archive/` tree (finished RPI coursework) is reference-only — search it when relevant, but do not treat it as active work.
