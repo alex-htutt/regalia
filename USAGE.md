@@ -56,7 +56,7 @@ Run `cd dashboard && python app.py` (or double-click `dashboard/start.bat`) → 
 - **Task list:** all vault notes with frontmatter, filterable by status / area / course, sortable by deadline, with live search. Overdue notes are red; due within 3 days are amber.
 - **Folder gallery:** browse top-level sections; click a card to open its context file in a modal with subfolder drill-down. `?folder=` in the URL preserves the open folder.
 - **Claude usage panel** (v1.3): reads `~/.claude/projects/**/*.jsonl` for token counts and shows today / all-time / cache-read totals, an estimated API cost, a 14-day bar chart, and a per-model breakdown. Message content is never read.
-- **Chat** (v1.2 router): one chat over two backends — **Fast** runs locally on Ollama (no API cost), **Smart** runs on Claude. Toggle the tier; a status dot shows what's live.
+- **Chat & Evil Twin** (v1.6 router): one chat over backends — **Fast** runs locally on Ollama (no API cost), **Claude** runs on Claude in the cloud billed to your **subscription** (not API credits, via the Claude Code CLI). Toggle the tier; a status dot shows what's live. (The **Agents** view still uses the API `smart` tier — its tool use needs it.)
 - **Agents** (v1.5): launch an agent against a task and watch it work. *Daily Summarizer* rolls recent daily-logs into a standup, *Project Scaffolder* turns a one-line brief into a project folder, *Research Agent* reads vault notes and writes a research note. Each run drives real vault tools through the model router and streams its steps live. Agents can read **and write** vault notes, so review what they produce.
 
 `_context_*.md` and `README*.md` files are excluded from the task list — they are reference docs, not tasks.

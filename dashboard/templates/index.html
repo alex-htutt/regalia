@@ -272,51 +272,7 @@
   /* ── Empty / loading ── */
   .empty { text-align: center; padding: 56px 0; color: var(--faint); font-size: 13px; }
 
-  /* ── Evil twin chat ── */
-  .twin-fab {
-    position: fixed; right: 24px; bottom: 24px; z-index: 60;
-    display: flex; align-items: center; gap: 8px;
-    padding: 11px 16px;
-    background: var(--accent); color: #fff;
-    border: none; border-radius: 24px;
-    font-size: 13px; font-weight: 600; cursor: pointer;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.22);
-    transition: transform 0.12s, box-shadow 0.12s;
-  }
-  .twin-fab:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.28); }
-  .twin-fab .emoji { font-size: 15px; }
-
-  .twin-panel {
-    position: fixed; right: 24px; bottom: 24px; z-index: 61;
-    width: 390px; max-width: calc(100vw - 32px);
-    height: 600px; max-height: calc(100vh - 48px);
-    background: var(--surface);
-    border: 1px solid var(--border); border-radius: 14px;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.28);
-    display: flex; flex-direction: column; overflow: hidden;
-  }
-  .twin-head {
-    display: flex; align-items: center; gap: 10px;
-    padding: 13px 16px;
-    background: var(--accent); color: #fff;
-    flex-shrink: 0;
-  }
-  .twin-head .emoji { font-size: 18px; }
-  .twin-head .t { font-size: 13.5px; font-weight: 600; line-height: 1.2; }
-  .twin-head .s { font-size: 11px; opacity: 0.7; }
-  .twin-head .titles { flex: 1; min-width: 0; }
-  .twin-close {
-    border: none; background: rgba(255,255,255,0.15); color: #fff;
-    width: 26px; height: 26px; border-radius: 6px;
-    cursor: pointer; font-size: 13px; line-height: 1; flex-shrink: 0;
-  }
-  .twin-close:hover { background: rgba(255,255,255,0.28); }
-
-  .twin-log {
-    flex: 1; overflow-y: auto; padding: 14px;
-    display: flex; flex-direction: column; gap: 10px;
-    background: var(--bg);
-  }
+  /* ── Evil twin chat (sidebar view; reuses the chat-box shell) ── */
   .twin-msg { font-size: 13px; line-height: 1.55; max-width: 88%; }
   .twin-msg.user {
     align-self: flex-end;
@@ -428,6 +384,13 @@
   .tier-status .dot-sm { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
   .tier-status .dot-sm.up { background: var(--green); }
   .tier-status .dot-sm.down { background: var(--faint); }
+  .model-select {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 8px; font-size: 12px; font-family: ui-monospace, monospace;
+    background: var(--surface); color: var(--text); outline: none; max-width: 220px;
+  }
+  .model-select:hover { border-color: var(--border-hover); }
+  .model-select:disabled { color: var(--faint); cursor: default; }
   .chat-clear {
     margin-left: auto; border: 1px solid var(--border); background: var(--surface);
     color: var(--muted); border-radius: 6px; padding: 5px 11px; font-size: 12px;
@@ -581,6 +544,7 @@
     <button class="nav"    data-view="projects" onclick="setView('projects')">📁 Projects</button>
     <button class="nav"    data-view="browse"   onclick="setView('browse')">🗂️ Browse</button>
     <button class="nav"    data-view="chat"     onclick="setView('chat')">💬 Chat</button>
+    <button class="nav"    data-view="twin"     onclick="setView('twin')">😈 Twin</button>
     <button class="nav"    data-view="agents"   onclick="setView('agents')">🤖 Agents</button>
   </nav>
   <main class="main">
@@ -648,25 +612,52 @@
     <section class="view" data-view="chat" hidden>
       <div class="view-head">
         <h2>Chat</h2>
-        <p>One chat, two backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on Claude in the cloud.</p>
+        <p>One chat, two backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Claude</b> runs on Claude in the cloud, billed to your subscription.</p>
       </div>
       <div class="panel-wrap">
         <div class="tier-bar">
           <div class="filter-group">
-            <button class="pill on" id="tier-fast"  onclick="setTier('fast')">⚡ Fast · local</button>
-            <button class="pill"    id="tier-smart" onclick="setTier('smart')">✨ Smart · cloud</button>
+            <button class="pill on" id="tier-fast"   onclick="setTier('fast')">⚡ Fast · local</button>
+            <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
           </div>
+          <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
           <span class="tier-status" id="tier-status"></span>
           <button class="chat-clear" onclick="clearChat()" title="Clear conversation">Clear</button>
         </div>
         <div class="chat-box">
           <div class="chat-log" id="chat-log">
-            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; Smart reaches for Claude.</div>
+            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; Claude reaches for the cloud on your plan.</div>
           </div>
           <div class="chat-input">
             <textarea id="chat-text" rows="1" placeholder="Message the model…"
                       oninput="chatAutogrow()" onkeydown="chatKey(event)"></textarea>
             <button class="twin-send" id="chat-send" onclick="chatSend()">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="twin" hidden>
+      <div class="view-head">
+        <h2>😈 Evil Twin</h2>
+        <p>The version of you that actually did it. Tell him what you're working on — he hands you 5 things to start in the next 5 minutes, then keeps you moving.</p>
+      </div>
+      <div class="panel-wrap">
+        <div class="tier-bar">
+          <div class="filter-group">
+            <button class="pill on" id="twin-tier-claude" onclick="setTwinTier('claude')">✨ Claude · plan</button>
+            <button class="pill"    id="twin-tier-fast"   onclick="setTwinTier('fast')">⚡ Fast · local</button>
+          </div>
+          <select class="model-select" id="twin-model-select" onchange="setTwinModel(this.value)" style="display:none;" title="Local model"></select>
+          <span class="tier-status" id="twin-tier-status"></span>
+          <button class="chat-clear" onclick="clearTwin()" title="Reset conversation">Reset</button>
+        </div>
+        <div class="chat-box">
+          <div class="chat-log" id="twin-log"></div>
+          <div class="chat-input">
+            <textarea id="twin-text" rows="1" placeholder="What are you working on?"
+                      oninput="twinAutogrow()" onkeydown="twinKey(event)"></textarea>
+            <button class="twin-send" id="twin-send" onclick="twinSend()">Send</button>
           </div>
         </div>
       </div>
@@ -701,36 +692,16 @@
   </div>
 </div>
 
-<button class="twin-fab" id="twin-fab" onclick="openTwin()">
-  <span class="emoji">😈</span> Talk to your twin
-</button>
-
-<div class="twin-panel" id="twin-panel" style="display: none;">
-  <div class="twin-head">
-    <span class="emoji">😈</span>
-    <div class="titles">
-      <div class="t">Your Evil Twin</div>
-      <div class="s">the one who actually did it</div>
-    </div>
-    <button class="twin-close" onclick="closeTwin()" title="Close">✕</button>
-  </div>
-  <div class="twin-log" id="twin-log"></div>
-  <div class="twin-input">
-    <textarea id="twin-text" rows="1" placeholder="What are you working on?"
-              oninput="twinAutogrow()" onkeydown="twinKey(event)"></textarea>
-    <button class="twin-send" id="twin-send" onclick="twinSend()">Send</button>
-  </div>
-</div>
-
 <script>
-  /* ── Evil twin chat ── */
+  /* ── Evil twin chat (sidebar view) ── */
   let twinMsgs = [];          // full history sent to the API
   let twinBusy = false;
   let twinStarted = false;
+  let twinTier = 'claude';    // defaults to Claude on your subscription; can drop to a local model
+  let twinModel = null;       // local model override on the fast tier
 
-  function openTwin() {
-    document.getElementById('twin-fab').style.display = 'none';
-    document.getElementById('twin-panel').style.display = 'flex';
+  // First time the Twin view opens: seed the intro, wire status + model picker.
+  function initTwin() {
     if (!twinStarted) {
       twinStarted = true;
       addTwinBubble('twin',
@@ -739,12 +710,56 @@
         "in the next 5 minutes — the smallest versions you can't talk yourself out of. " +
         "Then I'll keep you moving.");
     }
+    loadRouterStatus();
+    loadTwinModels();
     document.getElementById('twin-text').focus();
   }
 
-  function closeTwin() {
-    document.getElementById('twin-panel').style.display = 'none';
-    document.getElementById('twin-fab').style.display = 'flex';
+  function loadTwinModels() {
+    const sel = document.getElementById('twin-model-select');
+    fetch('/api/ollama/models').then(r => r.json()).then(d => {
+      const models = d.models || [];
+      if (!models.length) {
+        sel.innerHTML = '<option>no local models</option>';
+        sel.disabled = true; twinModel = null;
+      } else {
+        sel.disabled = false;
+        sel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+        const def = models.includes(d.default) ? d.default
+                  : (models.find(m => m.startsWith(d.default + ':')) || models[0]);
+        sel.value = def; twinModel = def;
+      }
+      sel.style.display = twinTier === 'fast' ? '' : 'none';
+      renderTwinTierStatus();
+    }).catch(() => {});
+  }
+
+  function setTwinModel(m) { twinModel = m; renderTwinTierStatus(); }
+
+  function renderTwinTierStatus() {
+    if (!routerStatus) return;
+    const t = routerStatus[twinTier];
+    if (!t) { document.getElementById('twin-tier-status').textContent = ''; return; }
+    const cls = t.available ? 'up' : 'down';
+    const state = t.available ? 'ready'
+      : (twinTier === 'fast' ? 'Ollama offline' : twinTier === 'claude' ? 'Claude CLI not found' : 'no API key');
+    const model = (twinTier === 'fast' && twinModel) ? twinModel : t.model;
+    document.getElementById('twin-tier-status').innerHTML =
+      `<span class="dot-sm ${cls}"></span>${esc(model)} · ${state}`;
+  }
+
+  function setTwinTier(tier) {
+    twinTier = tier;
+    document.getElementById('twin-tier-claude').classList.toggle('on', tier === 'claude');
+    document.getElementById('twin-tier-fast').classList.toggle('on', tier === 'fast');
+    document.getElementById('twin-model-select').style.display = tier === 'fast' ? '' : 'none';
+    renderTwinTierStatus();
+  }
+
+  function clearTwin() {
+    twinMsgs = [];
+    document.getElementById('twin-log').innerHTML = '';
+    addTwinBubble('twin', "Wiped it. So — what are you working on now, bum?");
   }
 
   function twinAutogrow() {
@@ -808,14 +823,14 @@
     const log = document.getElementById('twin-log');
     const typing = document.createElement('div');
     typing.className = 'twin-typing';
-    typing.textContent = 'the twin is typing…';
+    typing.textContent = (twinTier === 'fast' ? (twinModel || 'local model') : 'the twin') + ' is typing…';
     log.appendChild(typing);
     log.scrollTop = log.scrollHeight;
 
     fetch('/api/twin/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: twinMsgs }),
+      body: JSON.stringify({ messages: twinMsgs, tier: twinTier, model: twinTier === 'fast' ? twinModel : null }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
@@ -1096,41 +1111,71 @@
 
 <script>
   /* ── Workspace shell: view switching + projects + agents ── */
-  const loaded = { projects: false, agents: false, chat: false };
+  const loaded = { projects: false, agents: false, chat: false, twin: false };
 
   function setView(v) {
     document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.view === v));
     document.querySelectorAll('.view').forEach(s => { s.hidden = s.dataset.view !== v; });
     if (v === 'projects' && !loaded.projects) { loaded.projects = true; loadProjects(); }
     if (v === 'agents'   && !loaded.agents)   { loaded.agents = true;   loadAgents(); }
-    if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); }
+    if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); }
+    if (v === 'twin'     && !loaded.twin)     { loaded.twin = true;      initTwin(); }
   }
 
   /* -- Generic chat (model router) -- */
   let chatMsgs = [];
   let chatBusy = false;
   let chatTier = 'fast';
+  let chatModel = null;       // local model override (fast tier); null = server default
   let routerStatus = null;
 
   function loadRouterStatus() {
-    fetch('/api/router/status').then(r => r.json()).then(s => { routerStatus = s; renderTierStatus(); })
+    fetch('/api/router/status').then(r => r.json()).then(s => { routerStatus = s; renderTierStatus(); renderTwinTierStatus(); })
       .catch(() => {});
   }
+
+  // Populate the local-model picker from whatever Ollama has pulled.
+  function loadOllamaModels() {
+    const sel = document.getElementById('model-select');
+    fetch('/api/ollama/models').then(r => r.json()).then(d => {
+      const models = d.models || [];
+      if (!models.length) {
+        sel.innerHTML = '<option>no local models</option>';
+        sel.disabled = true;
+        chatModel = null;
+      } else {
+        sel.disabled = false;
+        sel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+        // Default to the server's configured model (exact, else tag-prefix match).
+        const def = models.includes(d.default) ? d.default
+                  : (models.find(m => m.startsWith(d.default + ':')) || models[0]);
+        sel.value = def;
+        chatModel = def;
+      }
+      sel.style.display = chatTier === 'fast' ? '' : 'none';
+      renderTierStatus();
+    }).catch(() => {});
+  }
+
+  function setModel(m) { chatModel = m; renderTierStatus(); }
 
   function renderTierStatus() {
     if (!routerStatus) return;
     const t = routerStatus[chatTier];
     if (!t) { document.getElementById('tier-status').textContent = ''; return; }
     const cls = t.available ? 'up' : 'down';
-    const state = t.available ? 'ready' : (chatTier === 'fast' ? 'Ollama offline' : 'no API key');
+    const state = t.available ? 'ready'
+      : (chatTier === 'fast' ? 'Ollama offline' : chatTier === 'claude' ? 'Claude CLI not found' : 'no API key');
+    const model = (chatTier === 'fast' && chatModel) ? chatModel : t.model;
     document.getElementById('tier-status').innerHTML =
-      `<span class="dot-sm ${cls}"></span>${esc(t.model)} · ${state}`;
+      `<span class="dot-sm ${cls}"></span>${esc(model)} · ${state}`;
   }
 
   function setTier(tier) {
     chatTier = tier;
     document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
-    document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
+    document.getElementById('tier-claude').classList.toggle('on', tier === 'claude');
+    document.getElementById('model-select').style.display = tier === 'fast' ? '' : 'none';
     renderTierStatus();
   }
 
@@ -1181,13 +1226,13 @@
     const log = document.getElementById('chat-log');
     const typing = document.createElement('div');
     typing.className = 'chat-typing';
-    typing.textContent = (chatTier === 'fast' ? 'local model' : 'Claude') + ' is thinking…';
+    typing.textContent = (chatTier === 'fast' ? (chatModel || 'local model') : 'Claude') + ' is thinking…';
     log.appendChild(typing);
     log.scrollTop = log.scrollHeight;
 
     fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatMsgs, tier: chatTier }),
+      body: JSON.stringify({ messages: chatMsgs, tier: chatTier, model: chatTier === 'fast' ? chatModel : null }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {

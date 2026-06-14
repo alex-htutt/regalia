@@ -597,17 +597,25 @@ def api_twin_chat():
         return jsonify({"error": "The conversation has to start with you telling "
                                  "the twin what you're working on."}), 400
 
-    # The twin is always on the smart (cloud) tier — its persona block is cached
-    # across turns and it needs the reasoning. It routes through chat() like
-    # everything else now, just with tier pinned.
+    # The twin defaults to the claude (subscription) tier — his persona is tuned
+    # for Claude, and routing through the Claude CLI bills your plan instead of
+    # API credits. You can still drop him onto a local model. On the cloud tiers
+    # we pin the Claude model; on fast we take the Ollama override (and
+    # _twin_system()'s blocks get flattened to a plain string by the router).
+    tier = str(data.get("tier") or "claude").strip().lower()
+    raw_model = data.get("model")
+    if tier == "fast":
+        model = raw_model.strip() if isinstance(raw_model, str) and raw_model.strip() else None
+    else:
+        model = TWIN_MODEL
     try:
         result = router.chat(
-            messages, tier="smart", system=_twin_system(),
-            max_tokens=2048, model=TWIN_MODEL,
+            messages, tier=tier, system=_twin_system(),
+            max_tokens=2048, model=model,
         )
     except router.RouterError as e:
         return jsonify({"error": e.message}), e.status
-    return jsonify({"reply": result["reply"]})
+    return jsonify({"reply": result["reply"], "model": result.get("model")})
 
 
 # ── Generic chat (model router) ─────────────────────────────────────────────
@@ -615,6 +623,12 @@ def api_twin_chat():
 @app.route("/api/router/status")
 def api_router_status():
     return jsonify(router.status())
+
+
+@app.route("/api/ollama/models")
+def api_ollama_models():
+    """Locally-pulled Ollama models + the configured default, for the model picker."""
+    return jsonify({"models": router.list_ollama_models(), "default": router.OLLAMA_MODEL})
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -630,8 +644,12 @@ def api_chat():
 
     tier = str(data.get("tier") or "fast").strip().lower()
     system = data.get("system") if isinstance(data.get("system"), str) else None
+    # A model override only applies to the local (fast) tier — guard it so an
+    # Ollama model name can never be handed to Anthropic on the smart tier.
+    raw_model = data.get("model")
+    model = raw_model.strip() if (tier == "fast" and isinstance(raw_model, str) and raw_model.strip()) else None
     try:
-        result = router.chat(messages, tier=tier, system=system, max_tokens=2048)
+        result = router.chat(messages, tier=tier, system=system, max_tokens=2048, model=model)
     except router.RouterError as e:
         return jsonify({"error": e.message}), e.status
     return jsonify(result)

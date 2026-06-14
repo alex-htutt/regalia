@@ -27,6 +27,6 @@ Map of content for the work vault. Start here.
 - [[README_HOME]] — vault structure, context model, tag taxonomy.
 
 ## Tools
-- `dashboard/` — local Flask cockpit (`python app.py` → localhost:5000). Task list + folder browser + Claude token-usage panel, plus a model-routed **Chat** (local Ollama `fast` / Claude `smart`) and **Agents** that run real vault tools (summarize logs, scaffold projects, synthesize research). See [[dashboard/_context_dashboard|Dashboard — Context]].
+- `dashboard/` — local Flask cockpit (`python app.py` → localhost:5000). Task list + folder browser + Claude token-usage panel, plus a model-routed **Chat** & **Evil Twin** (local Ollama `fast` / Claude-subscription `claude`) and **Agents** that run real vault tools (summarize logs, scaffold projects, synthesize research) on the API `smart` tier. See [[dashboard/_context_dashboard|Dashboard — Context]].
 
 > New notes creat

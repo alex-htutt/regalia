@@ -1,10 +1,13 @@
-"""Model router — one chat() over two backends.
+"""Model router — one chat() over three backends.
 
 This is the core primitive of the self-hosted workspace: every model call in the
 app goes through chat(), which picks a backend by tier.
 
-    tier="fast"  -> Ollama, local HTTP on :11434   (no API cost, needs Ollama)
-    tier="smart" -> Anthropic, cloud               (needs ANTHROPIC_API_KEY)
+    tier="fast"   -> Ollama, local HTTP on :11434  (no API cost, needs Ollama)
+    tier="smart"  -> Anthropic, cloud              (needs ANTHROPIC_API_KEY)
+    tier="claude" -> Claude Code CLI, subprocess   (bills your Claude subscription,
+                                                    not API credits; needs `claude`
+                                                    installed and signed in)
 
 chat() returns {"reply", "model", "tier"} on success, or raises RouterError with
 a user-facing message + HTTP status the Flask layer can hand straight to the UI.
@@ -15,6 +18,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -26,7 +31,15 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 # Cloud runtime. Smart tier defaults to the same model the twin uses.
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 
-TIERS = ("fast", "smart")
+# Subscription runtime. The `claude` tier shells out to the Claude Code CLI, which
+# bills your logged-in Claude subscription (Pro/Max) instead of API credits — the
+# same auth you use in Claude Code. CLAUDE_CLI_MODEL="" lets the CLI pick the
+# plan's default model.
+CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
+CLAUDE_CLI_MODEL = os.environ.get("CLAUDE_CLI_MODEL", "")
+CLAUDE_CLI_TIMEOUT = int(os.environ.get("CLAUDE_CLI_TIMEOUT", "180"))
+
+TIERS = ("fast", "smart", "claude")
 
 
 class RouterError(Exception):
@@ -49,6 +62,8 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None) -> dic
         tier = "fast"
     if tier == "smart":
         return _anthropic_chat(messages, system, max_tokens, model)
+    if tier == "claude":
+        return _claude_code_chat(messages, system, max_tokens, model)
     return _ollama_chat(messages, system, max_tokens, model)
 
 
@@ -87,6 +102,11 @@ def status() -> dict:
             "available": bool(
                 os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
             ),
+        },
+        "claude": {
+            "backend": "claude-code",
+            "model": CLAUDE_CLI_MODEL or "plan default",
+            "available": _claude_cli_path() is not None,
         },
     }
 
@@ -169,6 +189,103 @@ def _anthropic_chat_tools(messages, tools, system, max_tokens, model) -> dict:
     }
 
 
+# ── Subscription: Claude Code CLI ────────────────────────────────────────────
+
+def _claude_cli_path():
+    """Resolve the `claude` executable on PATH, or None if it isn't installed."""
+    return shutil.which(CLAUDE_CLI)
+
+
+def _flatten_conversation(messages) -> str:
+    """Collapse a string-content chat history into one prompt for `claude -p`.
+
+    The CLI takes a single prompt (read from stdin here), so prior turns are
+    folded in as a labeled transcript and the final user turn is the live
+    question. Only string content is supported — the claude tier is for plain
+    chat (the Agents view keeps using the smart tier for structured tool use).
+    """
+    turns = [m for m in messages if isinstance(m.get("content"), str)]
+    if len(turns) == 1 and turns[0].get("role") == "user":
+        return turns[0]["content"]
+    lines = []
+    for m in turns:
+        who = "User" if m.get("role") == "user" else "Assistant"
+        lines.append(f"{who}: {m['content']}")
+    return "\n\n".join(lines)
+
+
+def _claude_code_chat(messages, system, max_tokens, model) -> dict:
+    """Run a chat turn through the Claude Code CLI (subscription-billed).
+
+    max_tokens is accepted for signature parity but not forwarded — the CLI
+    manages its own output budget.
+    """
+    exe = _claude_cli_path()
+    if exe is None:
+        raise RouterError(
+            "The Claude CLI isn't installed or isn't on PATH. Install Claude Code "
+            "and sign in with your subscription, then restart the dashboard.",
+            503,
+        )
+
+    prompt = _flatten_conversation(messages)
+    if not prompt.strip():
+        raise RouterError("Nothing to send to Claude.", 400)
+
+    cmd = [exe, "-p", "--output-format", "json"]
+    sys_text = _flatten_system(system)
+    if sys_text:
+        cmd += ["--system-prompt", sys_text]
+    mdl = model or CLAUDE_CLI_MODEL
+    if mdl:
+        cmd += ["--model", mdl]
+
+    # Force subscription (OAuth) auth: if an API key is in the environment the CLI
+    # would bill it as API usage instead of the plan, defeating this tier's point.
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    }
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=CLAUDE_CLI_TIMEOUT,
+            env=env,
+        )
+    except FileNotFoundError:
+        raise RouterError("The Claude CLI vanished mid-call — is it still installed?", 503)
+    except subprocess.TimeoutExpired:
+        raise RouterError(
+            "The Claude CLI took too long to answer. Try again, or switch tiers.", 504
+        )
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RouterError(f"The Claude CLI failed: {detail or 'unknown error'}", 502)
+
+    try:
+        data = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        raise RouterError("Couldn't parse the Claude CLI response.", 502)
+
+    if data.get("is_error"):
+        why = data.get("result") or data.get("subtype") or "unknown error"
+        raise RouterError(f"The Claude CLI returned an error: {why}", 502)
+
+    reply = (data.get("result") or "").strip()
+    used_model = next(iter(data.get("modelUsage") or {}), None) or mdl or "claude (plan)"
+    return {
+        "reply": reply or "…(the model went quiet — try again)",
+        "model": used_model,
+        "tier": "claude",
+    }
+
+
 # ── Local: Ollama ────────────────────────────────────────────────────────────
 
 def _flatten_system(system) -> str:
@@ -188,6 +305,16 @@ def _ollama_up() -> bool:
             return True
     except (urllib.error.URLError, OSError):
         return False
+
+
+def list_ollama_models() -> list:
+    """Names of locally-pulled Ollama models ([] if Ollama is unreachable)."""
+    try:
+        with urllib.request.urlopen(OLLAMA_HOST + "/api/tags", timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError):
+        return []
+    return sorted(m.get("name") for m in (data.get("models") or []) if m.get("name"))
 
 
 def _ollama_chat(messages, system, max_tokens, model) -> dict:

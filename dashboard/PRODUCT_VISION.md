@@ -21,14 +21,16 @@ daily-driver for viewing and managing notes. It should feel less like a read-onl
 workspace that quietly keeps the vault in order.
 
 **Standing constraints (unchanged):** build solo on Flask + vanilla JS · hybrid models (Ollama `fast` /
-Claude `smart`) · vault-as-database (markdown + YAML frontmatter is the source of truth) · no Docker, no
-auth, no multi-user · defer a vector DB until retrieval actually hurts.
+Claude-subscription `claude` for chat / Anthropic-API `smart` for agent tool use) · vault-as-database
+(markdown + YAML frontmatter is the source of truth) · no Docker, no auth, no multi-user · defer a vector
+DB until retrieval actually hurts.
 
 ## Where we are
 
-**v1.5 / Stage 3 shipped** — task list, filters, folder browser, token-usage panel, dual-tier model
-router, and a real tool-using agent loop with three agents. See [[dashboard/_context_dashboard.md]]
-("Current state") for detail.
+**v1.6 / Stage 3 shipped** — task list, filters, folder browser, token-usage panel, a three-tier model
+router (local `fast` / subscription `claude` / API `smart`), and a real tool-using agent loop with three
+agents. As of v1.6 Chat + Twin run on the Claude subscription (CLI) rather than API credits. See
+[[dashboard/_context_dashboard.md]] ("Current state") for detail.
 
 The roadmap below leans on primitives that **already exist** — it mostly schedules, gates, and surfaces
 them rather than building new machinery:

@@ -47,14 +47,14 @@ related: []
 
 **Run:** `cd dashboard && python app.py` → http://localhost:5000, or double-click `dashboard/start.bat`. Native window: `dashboard/desktop.py` / `desktop.bat`.
 
-Features as of v1.5 (2026-06-13):
+Features as of v1.6 (2026-06-14):
 - **Overview:** stat cards (Active / Overdue / Complete / Total), filter by status / area / course, live search, deadline highlighting
 - **Folder gallery:** card grid of top-level sections with context-file excerpts and subfolder drill-down
 - **Claude token-usage panel:** aggregates `~/.claude/projects/**/*.jsonl` for today's tokens, all-time total, cache reads, estimated API cost, a 14-day chart, and a per-model breakdown (token counts + timestamps only — never message content)
-- **Chat:** one chat over two backends via the model router (`router.py`) — **Fast** = local Ollama (no API cost), **Smart** = Claude in the cloud
-- **Agents:** model-driven agents that run real, vault-confined tools (search/read/list/write notes, scaffold projects) in a tool-use loop (`agent.py`), streaming each step live. Built-ins: Daily Summarizer, Project Scaffolder, Research Agent. Agents can write notes — review their output.
+- **Chat & Evil Twin:** chat over the model router (`router.py`) — **Fast** = local Ollama (no API cost), **Claude** = Claude in the cloud billed to your **subscription** (via the Claude Code CLI, not API credits)
+- **Agents:** model-driven agents that run real, vault-confined tools (search/read/list/write notes, scaffold projects) in a tool-use loop (`agent.py`), streaming each step live. Built-ins: Daily Summarizer, Project Scaffolder, Research Agent. Agents can write notes — review their output. (Uses the API `smart` tier for tool use.)
 
-Needs `ANTHROPIC_API_KEY` for the smart tier; Ollama (`ollama pull llama3.2`) for the fast tier.
+Needs the Claude Code CLI signed in to a Claude subscription for the `claude` tier (Chat + Twin); `ANTHROPIC_API_KEY` for the `smart` tier (Agents); Ollama (`ollama pull llama3.2`) for the `fast` tier.
 
 ## Bases
 `Internship-Projects/internship.base` is a live table view (Obsidian 1.9+) filtering all `area/internship` notes — data lives in note frontmatter, not the `.base` file.

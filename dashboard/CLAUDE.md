@@ -9,7 +9,7 @@ Two ways to run the **same** app:
 
 ## Stack
 - Backend: Python / Flask (`app.py`)
-- Model router: `router.py` — `chat(messages, tier)` and `chat_tools(messages, tools, tier)` over two backends (`fast`=Ollama local, `smart`=Anthropic cloud). Every model call goes through here.
+- Model router: `router.py` — `chat(messages, tier)` and `chat_tools(messages, tools, tier)` over three backends: `fast`=Ollama local, `smart`=Anthropic cloud API (API-credit billed; used by the Agents view for tool use), `claude`=Claude Code CLI subprocess (bills your Claude subscription, not API credits; used by Chat + Twin). Every model call goes through here. The `claude` backend strips `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from the subprocess env so it always uses subscription (OAuth) auth, never API billing.
 - Agent loop: `agent.py` — vault tools + `AGENTS` registry + `run_agent()`; drives the model→tools→results cycle for the Agents view. Imports `app` lazily (inside tool fns) to avoid a circular import.
 - Frontend: vanilla JS + HTML in `templates/`
 - Desktop shell: `desktop.py` (pywebview) — runs Flask in a daemon thread, opens a native window. No effect on the browser path.
