@@ -29,3 +29,5 @@ Two ways to run the **same** app:
 **Version history matters:** See CLAUDE.md at vault root for the v1 / v1.1 / v1.2 / v1.3 feature log. Check it before adding features that might already exist.
 
 **Dev server:** `python app.py` — Flask runs in debug mode. Changes to `app.py` hot-reload automatically; template changes do too.
+
+**Tests:** `python -m unittest discover -s tests` (from this folder). Stdlib `unittest` only — no test-runner dependency. The smoke suite (`tests/test_smoke.py`) covers read-endpoint 200s + JSON shape and agent-tool / browser path-traversal safety. Run it before and after any change to `app.py`, `agent.py`, or `router.py`; it's the trust floor for the Stage-4 unattended automation (see `PRODUCT_VISION.md`).
