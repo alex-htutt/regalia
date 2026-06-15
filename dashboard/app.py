@@ -1,12 +1,17 @@
-"""Work Vault local task dashboard."""
+"""Regalia local task dashboard."""
 
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
+import time
+import urllib.error
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import threading
 import uuid
@@ -15,6 +20,7 @@ import yaml
 from flask import Flask, jsonify, render_template, request
 
 import agent
+import news_sources
 import router
 
 app = Flask(__name__)
@@ -32,6 +38,18 @@ TWIN_MODEL = "claude-opus-4-8"
 # message.usage block we aggregate. We read ONLY token counts / model /
 # timestamp — never message content.
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+# Chat attachments land here (gitignored). It lives under dashboard/, which is in
+# IGNORE_DIRS so the vault walk never surfaces uploads as notes — but it's still
+# inside the vault tree, so the claude CLI (cwd = vault root) can read the files.
+ATTACH_DIR = Path(__file__).parent / ".chat_attachments"
+MAX_ATTACH_BYTES = 25 * 1024 * 1024  # 25 MB per file
+ATTACH_MAX_AGE = 24 * 3600           # prune uploads older than a day
+ALLOWED_ATTACH_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",        # images
+    ".pdf",                                            # docs
+    ".txt", ".md", ".csv", ".json", ".log", ".py",    # text
+}
 
 # Approx Anthropic API list prices, USD per million tokens, matched by model
 # family substring: (input, output, cache_write_5m, cache_read).
@@ -186,6 +204,75 @@ def api_browse():
     )
 
 
+def _rel_time(epoch: float) -> str:
+    """Human 'time since' for a file mtime — coarse, no external deps."""
+    delta = max(0.0, time.time() - epoch)
+    if delta < 90:
+        return "just now"
+    if delta < 3600:
+        m = int(delta // 60)
+        return f"{m} min ago"
+    if delta < 86400:
+        h = int(delta // 3600)
+        return f"{h} hour{'s' if h != 1 else ''} ago"
+    days = int(delta // 86400)
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return f"{days} days ago"
+    if days < 30:
+        w = days // 7
+        return f"{w} week{'s' if w != 1 else ''} ago"
+    mo = days // 30
+    return f"{mo} month{'s' if mo != 1 else ''} ago"
+
+
+@app.route("/api/recent-folders")
+def api_recent_folders():
+    """Folders worked in most recently, ranked by the newest note mtime inside
+    them. Groups notes by their immediate containing folder (loose vault-root
+    notes are skipped — those aren't a folder to 'work in')."""
+    root = VAULT_ROOT.resolve()
+    folders: dict[str, dict] = {}
+    for md_file in root.rglob("*.md"):
+        rel = md_file.relative_to(root)
+        if any(part in IGNORE_DIRS for part in rel.parts):
+            continue
+        name = md_file.name.lower()
+        if md_file.name in IGNORE_FILES or name.startswith("_context_") or name.startswith("readme"):
+            continue
+        parent = rel.parent
+        if parent == Path("."):
+            continue
+        try:
+            mtime = md_file.stat().st_mtime
+        except OSError:
+            continue
+        # Group at project level: cap the key at the first two path segments so
+        # deep vendored/resource subtrees roll up into their project instead of
+        # flooding the list (e.g. research/RAG-pipelines/resources/... → research/RAG-pipelines).
+        key_parts = parent.parts[:2]
+        path = "/".join(key_parts)
+        info = folders.get(path)
+        if info is None:
+            folders[path] = {
+                "path": path,
+                "name": key_parts[-1],
+                "parent": "/".join(key_parts[:-1]),
+                "mtime": mtime,
+                "notes": 1,
+            }
+        else:
+            info["notes"] += 1
+            info["mtime"] = max(info["mtime"], mtime)
+
+    items = sorted(folders.values(), key=lambda f: f["mtime"], reverse=True)[:6]
+    for it in items:
+        it["ago"] = _rel_time(it["mtime"])
+        it["mtime"] = round(it["mtime"])
+    return jsonify(items)
+
+
 def _price_for(model: str) -> tuple[float, float, float, float] | None:
     m = (model or "").lower()
     if "opus" in m:
@@ -303,6 +390,157 @@ def load_usage(days: int = 14) -> dict:
 @app.route("/api/usage")
 def api_usage():
     return jsonify(load_usage())
+
+
+# ── Home-page briefing: tech news + Bluesky/blogs + job openings ─────────────
+#
+# All fetched with stdlib only (urllib + xml.etree + json); no API keys. These
+# are slow, rate-limited network calls, so the result is cached in-process with
+# a TTL — that cache IS the "routine". The first request after the TTL expires
+# triggers a refresh; everything in between is served from memory. Every source
+# is wrapped so one dead feed degrades to a skipped section, never a 500.
+
+NEWS_TTL = int(os.environ.get("NEWS_TTL", "1800"))  # seconds; default 30 min
+_HTTP_TIMEOUT = 6
+_UA = "WorkVaultDashboard/1.0 (+local)"
+_NEWS_CACHE = {"data": None, "ts": 0.0}
+_NEWS_LOCK = threading.Lock()
+
+
+def _http_get(url: str, accept: str = "*/*") -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept": accept})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+        return resp.read()
+
+
+def _localname(tag: str) -> str:
+    return tag.split("}", 1)[-1] if "}" in tag else tag
+
+
+def _parse_feed(xml_bytes: bytes, limit: int) -> list[dict]:
+    """Parse RSS <item> or Atom <entry> into [{title, url, time}], namespace-agnostic."""
+    root = ET.fromstring(xml_bytes)
+    items = [e for e in root.iter() if _localname(e.tag) in ("item", "entry")]
+    out = []
+    for it in items[:limit]:
+        title = ""
+        url = ""
+        ts = ""
+        for child in it:
+            ln = _localname(child.tag)
+            if ln == "title" and child.text:
+                title = child.text.strip()
+            elif ln == "link":
+                href = child.get("href")  # Atom
+                if href:
+                    url = href
+                elif child.text:  # RSS
+                    url = child.text.strip()
+            elif ln in ("pubDate", "published", "updated") and child.text and not ts:
+                ts = child.text.strip()
+        if title:
+            out.append({"title": title, "url": url, "time": ts})
+    return out
+
+
+def _fetch_rss_group(feeds, limit) -> tuple[list[dict], list[str]]:
+    items, errors = [], []
+    for source, url in feeds:
+        try:
+            for it in _parse_feed(_http_get(url, "application/rss+xml, application/xml, */*"), limit):
+                it["source"] = source
+                items.append(it)
+        except Exception as e:  # noqa: BLE001 — one bad feed shouldn't sink the panel
+            errors.append(f"{source}: {type(e).__name__}")
+    return items, errors
+
+
+def _fetch_bluesky() -> tuple[list[dict], list[str]]:
+    items, errors = [], []
+    base = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+    for handle in news_sources.BLUESKY_HANDLES:
+        try:
+            raw = _http_get(f"{base}?actor={handle}&limit={news_sources.MAX_PER_BLUESKY}&filter=posts_no_replies")
+            feed = json.loads(raw).get("feed", [])
+            for entry in feed[: news_sources.MAX_PER_BLUESKY]:
+                post = entry.get("post", {})
+                rec = post.get("record", {})
+                text = (rec.get("text") or "").strip()
+                if not text:
+                    continue
+                rkey = (post.get("uri") or "").rsplit("/", 1)[-1]
+                items.append({
+                    "source": "🦋 " + (post.get("author", {}).get("handle") or handle),
+                    "title": text if len(text) <= 180 else text[:177] + "…",
+                    "url": f"https://bsky.app/profile/{handle}/post/{rkey}" if rkey else "",
+                    "time": rec.get("createdAt", ""),
+                })
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"bsky/{handle}: {type(e).__name__}")
+    return items, errors
+
+
+def _fetch_jobs() -> tuple[list[dict], list[str]]:
+    items, errors = [], []
+    for board in news_sources.GREENHOUSE_BOARDS:
+        try:
+            raw = _http_get(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs")
+            for job in json.loads(raw).get("jobs", [])[: news_sources.MAX_PER_BOARD]:
+                items.append({
+                    "source": board,
+                    "title": job.get("title", "").strip(),
+                    "url": job.get("absolute_url", ""),
+                    "location": (job.get("location") or {}).get("name", ""),
+                })
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"gh/{board}: {type(e).__name__}")
+    for board in news_sources.LEVER_BOARDS:
+        try:
+            raw = _http_get(f"https://api.lever.co/v0/postings/{board}?mode=json")
+            for job in json.loads(raw)[: news_sources.MAX_PER_BOARD]:
+                cats = job.get("categories") or {}
+                items.append({
+                    "source": board,
+                    "title": job.get("text", "").strip(),
+                    "url": job.get("hostedUrl", ""),
+                    "location": cats.get("location", ""),
+                })
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"lever/{board}: {type(e).__name__}")
+    return items, errors
+
+
+def _build_briefing() -> dict:
+    news, e1 = _fetch_rss_group(news_sources.NEWS_FEEDS, news_sources.MAX_PER_NEWS_FEED)
+    blogs, e2 = _fetch_rss_group(news_sources.BLOG_FEEDS, news_sources.MAX_PER_BLOG)
+    posts, e3 = _fetch_bluesky()
+    jobs, e4 = _fetch_jobs()
+    return {
+        "available": True,
+        "fetched": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "news": news,
+        "social": posts + blogs,
+        "jobs": jobs,
+        "errors": e1 + e2 + e3 + e4,
+    }
+
+
+def load_briefing(force: bool = False) -> dict:
+    """Return the cached briefing, refreshing if older than NEWS_TTL (or forced)."""
+    with _NEWS_LOCK:
+        fresh = _NEWS_CACHE["data"] is not None and (time.time() - _NEWS_CACHE["ts"]) < NEWS_TTL
+        if fresh and not force:
+            return _NEWS_CACHE["data"]
+    data = _build_briefing()  # network I/O outside the lock
+    with _NEWS_LOCK:
+        _NEWS_CACHE["data"] = data
+        _NEWS_CACHE["ts"] = time.time()
+    return data
+
+
+@app.route("/api/news")
+def api_news():
+    return jsonify(load_briefing(force=request.args.get("refresh") == "1"))
 
 
 # ── Projects & agents ───────────────────────────────────────────────────────
@@ -423,7 +661,10 @@ def api_create_project():
     data = request.get_json(silent=True) or {}
     try:
         result = create_project_core(
-            data.get("name"), data.get("area"), data.get("topic"), data.get("deadline")
+            data.get("name", ""),
+            data.get("area", ""),
+            data.get("topic", ""),
+            data.get("deadline", ""),
         )
     except ValueError as e:
         msg = str(e)
@@ -620,6 +861,62 @@ def api_twin_chat():
 
 # ── Generic chat (model router) ─────────────────────────────────────────────
 
+VAULT_CHAT_PREAMBLE = (
+    "You are a helpful assistant answering questions about Alex's personal "
+    "Obsidian knowledge vault. Below is the current folder-and-file structure of "
+    "the vault — use it to answer questions about what the vault contains, where "
+    "things live, and how it's organized. You can see the structure but not the "
+    "contents of individual notes, so if asked what a specific note actually says, "
+    "tell the user you can see the file exists but can't read its contents from "
+    "here.\n\n=== VAULT STRUCTURE ===\n{outline}\n=== END VAULT STRUCTURE ==="
+)
+
+
+def _vault_outline(max_lines: int = 250) -> str:
+    """A compact, indented tree of vault folders and note filenames.
+
+    Injected into the local (fast) chat system prompt so the weak local model can
+    answer questions about what's in the vault without any tool calls. Honors the
+    same IGNORE_DIRS / dotfile skips as the rest of the app, lists each folder's
+    notes adjacent to its header, and is hard-capped so it can never blow up a
+    small model's context window. Read fresh per request, like everything else."""
+    root = VAULT_ROOT.resolve()
+    lines: list[str] = []
+
+    def walk(d: Path, depth: int) -> None:
+        if len(lines) >= max_lines:
+            return
+        pad = "  " * depth
+        notes = sorted(
+            (f for f in d.iterdir()
+             if f.is_file() and f.suffix.lower() == ".md" and not f.name.startswith(".")),
+            key=lambda p: p.name.lower(),
+        )
+        for f in notes:
+            if len(lines) >= max_lines:
+                return
+            lines.append(f"{pad}{f.name}")
+        for sub in _subdirs(d):
+            if len(lines) >= max_lines:
+                return
+            lines.append(f"{pad}{sub.name}/")
+            walk(sub, depth + 1)
+
+    walk(root, 0)
+    out = "\n".join(lines) or "(vault is empty)"
+    if len(lines) >= max_lines:
+        out += "\n…(structure truncated)"
+    return out
+
+
+def _vault_chat_system(user_system: str | None) -> str:
+    """Build the fast-tier chat system prompt: vault structure + any caller system."""
+    base = VAULT_CHAT_PREAMBLE.format(outline=_vault_outline())
+    if user_system and user_system.strip():
+        return base + "\n\n" + user_system.strip()
+    return base
+
+
 @app.route("/api/router/status")
 def api_router_status():
     return jsonify(router.status())
@@ -631,6 +928,83 @@ def api_ollama_models():
     return jsonify({"models": router.list_ollama_models(), "default": router.OLLAMA_MODEL})
 
 
+# ── Chat attachments ────────────────────────────────────────────────────────
+
+def _prune_attachments() -> None:
+    """Best-effort cleanup of old uploads so the folder never grows unbounded."""
+    try:
+        now = time.time()
+        for p in ATTACH_DIR.glob("*"):
+            if p.is_file() and now - p.stat().st_mtime > ATTACH_MAX_AGE:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+@app.route("/api/chat/upload", methods=["POST"])
+def api_chat_upload():
+    """Accept a single chat attachment, store it, return a handle for /api/chat.
+
+    The frontend uploads each picked file here first; the returned `id` is what it
+    later sends in the message's `attachments` list. Files are validated by
+    extension + size and stored under a randomized name to avoid collisions and
+    path games."""
+    f = request.files.get("file")
+    if f is None or not (f.filename or "").strip():
+        return jsonify({"error": "No file uploaded."}), 400
+
+    name = os.path.basename(f.filename or "")
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in ALLOWED_ATTACH_EXTS:
+        allowed = ", ".join(sorted(ALLOWED_ATTACH_EXTS))
+        return jsonify({"error": f"Can't attach {ext or 'that file'} — allowed: {allowed}."}), 400
+
+    # Size check without trusting any client-sent length.
+    f.seek(0, os.SEEK_END)
+    size = f.tell()
+    f.seek(0)
+    if size == 0:
+        return jsonify({"error": "That file is empty."}), 400
+    if size > MAX_ATTACH_BYTES:
+        return jsonify({"error": "File is too large (max 25 MB)."}), 400
+
+    ATTACH_DIR.mkdir(parents=True, exist_ok=True)
+    _prune_attachments()
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name) or f"file{ext}"
+    stored = f"{uuid.uuid4().hex}_{safe}"
+    f.save(str(ATTACH_DIR / stored))
+
+    mime = f.mimetype or mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return jsonify({"id": stored, "name": name, "mime": mime, "size": size})
+
+
+def _resolve_attachments(raw) -> list:
+    """Turn client attachment handles into {path, name, mime}, traversal-safe.
+
+    Only ids that resolve to an existing file *inside* ATTACH_DIR survive — a
+    crafted id can't point the router at an arbitrary file."""
+    base = ATTACH_DIR.resolve()
+    out = []
+    for a in raw or []:
+        if not isinstance(a, dict):
+            continue
+        aid = a.get("id")
+        if not isinstance(aid, str) or not aid:
+            continue
+        p = (ATTACH_DIR / aid).resolve()
+        try:
+            p.relative_to(base)
+        except ValueError:
+            continue
+        if not p.is_file():
+            continue
+        out.append({"path": str(p), "name": a.get("name") or aid, "mime": a.get("mime") or ""})
+    return out
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """Tier-routed chat for the generic cockpit chat panel."""
@@ -639,17 +1013,30 @@ def api_chat():
         return jsonify({"error": "No messages provided."}), 400
 
     messages = _clean_messages(data["messages"])
+    attachments = _resolve_attachments(data.get("attachments"))
+    # An attachment-only turn (no typed text) is valid — _clean_messages drops the
+    # empty user message, so re-add one for the model to anchor the files to.
+    if attachments and (not messages or messages[-1]["role"] != "user"):
+        messages.append({"role": "user", "content": "(see attached file(s))"})
     if not messages or messages[0]["role"] != "user":
         return jsonify({"error": "Say something to start the conversation."}), 400
 
     tier = str(data.get("tier") or "fast").strip().lower()
     system = data.get("system") if isinstance(data.get("system"), str) else None
+    # The weak local model is blind on its own, so ground it with the live vault
+    # structure. The cloud/subscription tiers can read files themselves, so they
+    # keep the caller's system prompt untouched.
+    if tier == "fast":
+        system = _vault_chat_system(system)
     # A model override only applies to the local (fast) tier — guard it so an
     # Ollama model name can never be handed to Anthropic on the smart tier.
     raw_model = data.get("model")
     model = raw_model.strip() if (tier == "fast" and isinstance(raw_model, str) and raw_model.strip()) else None
     try:
-        result = router.chat(messages, tier=tier, system=system, max_tokens=2048, model=model)
+        result = router.chat(
+            messages, tier=tier, system=system, max_tokens=2048,
+            model=model, attachments=attachments,
+        )
     except router.RouterError as e:
         return jsonify({"error": e.message}), e.status
     return jsonify(result)

@@ -3,57 +3,95 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Work Vault</title>
+<title>Regalia</title>
+<link rel="icon" type="image/png" href="/static/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Compiled Tailwind (standalone CLI → static/tailwind.css). Utilities only,
+     no preflight; the hand-written <style> below stays authoritative. Rebuild
+     after changing markup: see dashboard/CLAUDE.md "Tailwind". -->
+<link rel="stylesheet" href="/static/tailwind.css">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg: #f7f7f6;
-    --surface: #ffffff;
-    --border: #e8e8e6;
-    --border-hover: #c8c8c4;
-    --text: #1a1a18;
-    --muted: #7a7a74;
-    --faint: #b0b0aa;
-    --accent: #1a1a18;
-    --red: #dc2626;
-    --amber: #d97706;
-    --green: #16a34a;
-    --blue-bg: #dbeafe;
-    --blue-fg: #1d4ed8;
-    --green-bg: #dcfce7;
-    --green-fg: #15803d;
-    --purple-bg: #ede9fe;
-    --purple-fg: #6d28d9;
-    --amber-bg: #fef3c7;
-    --amber-fg: #b45309;
-    --gray-bg: #f1f1ef;
-    --gray-fg: #555550;
+    /* ── Hyperstudio — designer's midnight gallery (dark) ── */
+    --bg: #101010;            /* obsidian canvas */
+    --surface: #181818;       /* card / panel surface */
+    --elevated: #212121;      /* hover + elevated surface */
+    --border: #2a2a2a;        /* onyx hairline (visible against surface) */
+    --border-hover: #4a4a4a;  /* ash focus border */
+    --text: #f3f3f3;          /* frost text */
+    --muted: #949494;         /* smoke — secondary copy */
+    --faint: #6e6e6e;         /* graphite — captions, timestamps */
+    --accent: #f3f3f3;        /* high-emphasis fills (white button) */
+    --accent-fg: #101010;     /* canvas-dark text on accent fills */
+    --amber: #e7c59a;         /* amber whisper — sole chromatic accent */
+    --red: #e08a78;           /* desaturated overdue signal */
+    --green: #6fbf8a;         /* status dot */
+
+    /* liquid glass — translucent surfaces so the background beams read through */
+    --glass: rgba(22,22,22,0.50);       /* card / panel glass */
+    --glass-elev: rgba(38,38,38,0.55);  /* hover / raised glass */
+    --glass-inset: rgba(40,40,40,0.40); /* glass-on-glass mini cards */
+    --glass-border: rgba(255,255,255,0.08); /* lit glass edge */
+    --glass-blur: blur(16px) saturate(125%);
+
+    /* tag chips — subdued for the dark canvas */
+    --blue-bg: rgba(140,170,220,0.12);  --blue-fg: #9fbbe6;
+    --green-bg: rgba(120,200,150,0.12); --green-fg: #8fd0a4;
+    --purple-bg: rgba(178,158,224,0.12);--purple-fg: #bda9e6;
+    --amber-bg: rgba(231,197,154,0.13); --amber-fg: #e7c59a;
+    --gray-bg: #212121;                 --gray-fg: #b4b4ae;
+
+    /* error surfaces (dark) */
+    --err-bg: rgba(224,138,120,0.10);
+    --err-border: rgba(224,138,120,0.32);
+
+    /* typography — Aeonik→Inter, Input→JetBrains Mono substitutes */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-family: var(--font-sans);
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
     font-size: 14px;
     line-height: 1.5;
+    letter-spacing: -0.011em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
+
+  /* dark scrollbars */
+  * { scrollbar-color: #3a3a3a transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 99px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #444; }
 
   /* ── Header ── */
   header {
-    background: var(--surface);
+    background: var(--bg);
     border-bottom: 1px solid var(--border);
     padding: 0 24px;
-    height: 52px;
+    height: 56px;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
     position: sticky;
     top: 0;
     z-index: 10;
   }
-  header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
+  header .logo { width: 26px; height: 26px; border-radius: 6px; display: block; flex-shrink: 0; }
+  header h1 { font-size: 18px; font-weight: 400; letter-spacing: -0.011em; }
+  header .wordmark-sep { width: 1px; height: 20px; background: var(--border); }
+  header .tagline {
+    font-family: var(--font-mono); font-size: 11px; color: var(--faint);
+    letter-spacing: -0.037em; text-transform: uppercase;
+  }
   .search-wrap { margin-left: auto; position: relative; }
   .search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   #search {
@@ -69,28 +107,25 @@
   }
   #search:focus { border-color: var(--border-hover); }
 
-  /* ── Stats ── */
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    padding: 20px 24px 0;
+  /* ── Stats ── (converted to Tailwind utilities — see #stats markup + render()) */
+
+  /* Reusable liquid-glass surface. Unlayered, so it overrides Tailwind's
+     bg-surface on the stat cards. backdrop-filter samples the fixed .beams
+     layer painted behind .app, so the amber waves blur through. */
+  .glass {
+    background: var(--glass) !important;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-color: var(--glass-border) !important;
   }
-  .stat {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 18px;
-  }
-  .stat .num { font-size: 26px; font-weight: 700; letter-spacing: -1px; line-height: 1; }
-  .stat .lbl { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
-  .stat.warn .num { color: var(--red); }
 
   /* -- Claude usage -- */
   .usage { padding: 20px 24px 0; }
   .usage-panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--glass);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
     border-radius: 10px;
     padding: 16px 18px;
   }
@@ -98,8 +133,8 @@
   .usage-head h2 { font-size: 13px; font-weight: 600; }
   .usage-head .sub { font-size: 11px; color: var(--faint); }
   .usage-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
-  .u-card { background: var(--gray-bg); border-radius: 8px; padding: 12px 14px; }
-  .u-card .num { font-size: 22px; font-weight: 700; letter-spacing: -0.6px; line-height: 1; }
+  .u-card { background: var(--glass-inset); border: 1px solid var(--glass-border); border-radius: 8px; padding: 12px 14px; }
+  .u-card .num { font-size: 24px; font-weight: 400; letter-spacing: -0.02em; line-height: 1; }
   .u-card .lbl { font-size: 10.5px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
   .u-card .num small { font-size: 13px; font-weight: 600; color: var(--muted); }
 
@@ -109,7 +144,7 @@
   .chart-title, .model-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
   .bars { display: flex; align-items: flex-end; gap: 4px; height: 90px; }
   .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
-  .bar { width: 100%; background: var(--purple-fg); border-radius: 3px 3px 0 0; min-height: 2px; transition: opacity 0.12s; }
+  .bar { width: 100%; background: var(--amber); border-radius: 3px 3px 0 0; min-height: 2px; transition: opacity 0.12s; }
   .bar-wrap:hover .bar { opacity: 0.75; }
   .bar-x { font-size: 9px; color: var(--faint); white-space: nowrap; }
 
@@ -119,6 +154,25 @@
   .model-tok { color: var(--muted); flex-shrink: 0; }
   .usage-foot { font-size: 10.5px; color: var(--faint); margin-top: 12px; }
   .usage.empty-state { color: var(--faint); font-size: 12.5px; }
+
+  /* -- Briefing (tech news / social / jobs) -- */
+  .news { padding: 20px 24px 0; }
+  .news-panel { background: var(--glass); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); border-radius: 10px; padding: 16px 18px; }
+  .news-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .news-head h2 { font-size: 13px; font-weight: 600; }
+  .news-head .sub { font-size: 11px; color: var(--faint); }
+  .news-head .refresh { margin-left: auto; font-size: 11px; color: var(--muted); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+  .news-head .refresh:hover { color: var(--text); border-color: var(--muted); }
+  .news-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  @media (max-width: 860px) { .news-cols { grid-template-columns: 1fr; } }
+  .news-col h3 { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
+  .news-item { padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .news-item:last-child { border-bottom: none; }
+  .news-item a { font-size: 12.5px; color: var(--text); text-decoration: none; line-height: 1.35; display: block; }
+  .news-item a:hover { color: var(--purple-fg); }
+  .news-item .meta { font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+  .news-foot { font-size: 10.5px; color: var(--faint); margin-top: 12px; }
+  .news.empty-state { color: var(--faint); font-size: 12.5px; }
 
   /* ── Browse ── */
   .browse { padding: 16px 24px 0; }
@@ -130,15 +184,17 @@
   .crumb-sep { color: var(--faint); }
   .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
   .g-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--glass);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
     border-radius: 10px;
     padding: 16px 18px;
     cursor: pointer;
     display: flex; flex-direction: column; gap: 6px;
-    transition: border-color 0.12s, box-shadow 0.12s;
+    transition: border-color 0.12s, background 0.12s;
   }
-  .g-card:hover { border-color: var(--border-hover); box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+  .g-card:hover { border-color: var(--border-hover); background: var(--glass-elev); }
   .g-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; letter-spacing: -0.1px; min-width: 0; }
   .g-name span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .g-name svg { color: var(--faint); flex-shrink: 0; }
@@ -151,19 +207,19 @@
   /* ── Context modal ── */
   .modal-backdrop {
     position: fixed; inset: 0;
-    background: rgba(26, 26, 24, 0.4);
+    background: rgba(8, 8, 8, 0.72);
     z-index: 50;
     display: flex; align-items: flex-start; justify-content: center;
     padding: 48px 16px;
   }
   .modal {
     background: var(--surface);
-    border-radius: 12px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
     max-width: 760px; width: 100%;
     max-height: calc(100vh - 96px);
     overflow-y: auto;
     padding: 20px 26px 26px;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
   }
   .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
   .modal-close {
@@ -223,14 +279,16 @@
     user-select: none;
   }
   .pill:hover { border-color: var(--border-hover); color: var(--text); }
-  .pill.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .pill.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
   /* ── Task list ── */
   .task-list { padding: 0 24px 32px; display: flex; flex-direction: column; gap: 6px; }
 
   .task {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--glass);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
     border-radius: 8px;
     padding: 12px 16px;
     display: flex;
@@ -246,7 +304,7 @@
     flex-shrink: 0; margin-top: 6px;
   }
   .dot.complete { background: var(--faint); }
-  .dot.archived { background: #d1d1cc; }
+  .dot.archived { background: #4a4a4a; }
 
   .task-body { flex: 1; min-width: 0; }
   .task-title { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -276,7 +334,7 @@
   .twin-msg { font-size: 13px; line-height: 1.55; max-width: 88%; }
   .twin-msg.user {
     align-self: flex-end;
-    background: var(--accent); color: #fff;
+    background: var(--accent); color: var(--accent-fg);
     padding: 8px 12px; border-radius: 12px 12px 3px 12px;
     white-space: pre-wrap; word-wrap: break-word;
   }
@@ -292,8 +350,8 @@
   .twin-msg.twin .md li { margin: 3px 0; }
   .twin-msg.err {
     align-self: stretch; max-width: 100%;
-    background: #fef2f2; color: var(--red);
-    border: 1px solid #fecaca;
+    background: var(--err-bg); color: var(--red);
+    border: 1px solid var(--err-border);
     padding: 8px 12px; border-radius: 8px; font-size: 12px;
   }
   .twin-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
@@ -310,14 +368,14 @@
   }
   .twin-input textarea:focus { border-color: var(--border-hover); }
   .twin-send {
-    border: none; background: var(--accent); color: #fff;
+    border: none; background: var(--accent); color: var(--accent-fg);
     border-radius: 8px; padding: 0 14px; cursor: pointer;
     font-size: 13px; font-weight: 600; flex-shrink: 0;
   }
   .twin-send:disabled { opacity: 0.45; cursor: default; }
 
   /* ── Workspace shell (sidebar + views) ── */
-  .app { display: flex; align-items: flex-start; }
+  .app { display: flex; align-items: flex-start; position: relative; z-index: 1; }
   .sidebar {
     width: 188px; flex-shrink: 0;
     position: sticky; top: 52px;
@@ -336,11 +394,11 @@
     font-family: inherit;
   }
   .nav:hover { background: var(--gray-bg); color: var(--text); }
-  .nav.on { background: var(--accent); color: #fff; }
+  .nav.on { background: var(--accent); color: var(--accent-fg); }
   .main { flex: 1; min-width: 0; }
   .view[hidden] { display: none; }
   .view-head { padding: 20px 24px 0; }
-  .view-head h2 { font-size: 16px; font-weight: 650; letter-spacing: -0.2px; }
+  .view-head h2 { font-size: 23px; font-weight: 400; letter-spacing: -0.011em; }
   .view-head p { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
 
   /* ── New-project form ── */
@@ -364,7 +422,7 @@
   .np-form input:focus, .np-form select:focus { border-color: var(--border-hover); }
   .np-row { display: flex; gap: 12px; align-items: flex-end; }
   .np-submit {
-    border: none; background: var(--accent); color: #fff;
+    border: none; background: var(--accent); color: var(--accent-fg);
     border-radius: 7px; padding: 0 18px; height: 37px;
     font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
   }
@@ -405,7 +463,7 @@
   .chat-empty { color: var(--faint); font-size: 12.5px; margin: auto; text-align: center; max-width: 360px; }
   .chat-msg { font-size: 13.5px; line-height: 1.55; max-width: 80%; }
   .chat-msg.user {
-    align-self: flex-end; background: var(--accent); color: #fff;
+    align-self: flex-end; background: var(--accent); color: var(--accent-fg);
     padding: 9px 13px; border-radius: 12px 12px 3px 12px; white-space: pre-wrap; word-wrap: break-word;
   }
   .chat-msg.bot {
@@ -416,8 +474,8 @@
   .chat-msg.bot .md p { margin: 4px 0; }
   .chat-msg.bot .md ol, .chat-msg.bot .md ul { margin: 4px 0; padding-left: 20px; }
   .chat-msg.err {
-    align-self: stretch; max-width: 100%; background: #fef2f2; color: var(--red);
-    border: 1px solid #fecaca; padding: 9px 13px; border-radius: 8px; font-size: 12.5px;
+    align-self: stretch; max-width: 100%; background: var(--err-bg); color: var(--red);
+    border: 1px solid var(--err-border); padding: 9px 13px; border-radius: 8px; font-size: 12.5px;
   }
   .chat-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
   .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); }
@@ -427,6 +485,29 @@
     background: var(--bg); color: var(--text); outline: none; max-height: 140px; line-height: 1.4;
   }
   .chat-input textarea:focus { border-color: var(--border-hover); }
+  .chat-attach {
+    flex-shrink: 0; align-self: flex-end; width: 38px; height: 38px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+    color: var(--muted); font-size: 16px; cursor: pointer; line-height: 1;
+  }
+  .chat-attach:hover { border-color: var(--border-hover); color: var(--text); }
+  .chat-attachments {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 0;
+    background: var(--surface);
+  }
+  .attach-chip {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 240px;
+    font-size: 11.5px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 99px; padding: 3px 6px 3px 10px;
+  }
+  .attach-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attach-chip button {
+    border: none; background: none; color: var(--faint); cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 0 2px;
+  }
+  .attach-chip button:hover { color: var(--red); }
+  .attach-chip.mini { font-size: 11px; padding: 2px 8px; background: transparent; }
+  .bubble-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 
   /* ── Agents ── */
   .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 12px; }
@@ -453,7 +534,7 @@
   }
   .agent-run input:focus { border-color: var(--border-hover); }
   .agent-run button {
-    border: none; background: var(--accent); color: #fff; border-radius: 6px;
+    border: none; background: var(--accent); color: var(--accent-fg); border-radius: 6px;
     padding: 0 13px; font-size: 12.5px; font-weight: 600; cursor: pointer;
   }
   .activity { margin-top: 6px; }
@@ -463,7 +544,7 @@
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 7px; padding: 8px 11px;
   }
-  .activity-line.err { color: var(--red); border-color: #fecaca; background: #fef2f2; }
+  .activity-line.err { color: var(--red); border-color: var(--err-border); background: var(--err-bg); }
   .activity-line .ts { color: var(--faint); margin-right: 8px; }
   .stub-badge {
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700;
@@ -492,7 +573,7 @@
   }
   .run-state.running { background: var(--purple-bg); color: var(--purple-fg); }
   .run-state.done    { background: var(--green-bg); color: var(--green-fg); }
-  .run-state.error   { background: #fef2f2; color: var(--red); }
+  .run-state.error   { background: var(--err-bg); color: var(--red); }
   .step {
     display: flex; gap: 8px; font-size: 12px; line-height: 1.45;
     padding: 4px 0; border-top: 1px dashed var(--border);
@@ -523,15 +604,221 @@
   }
 
   @media (max-width: 640px) {
-    .stats { grid-template-columns: repeat(2, 1fr); }
-    header, .stats, .filter-bar, .task-list { padding-left: 16px; padding-right: 16px; }
+    header, .filter-bar, .task-list { padding-left: 16px; padding-right: 16px; }
+  }
+
+  /* ── Background beams (ambient) ──
+     Amber light traveling along curves on the obsidian canvas — a vanilla
+     SVG + CSS reimplementation of the Aceternity "Background Beams" effect
+     (the original is Svelte + svelte-motion; this needs no deps). Recolored
+     to the sole amber accent per Assets/DESIGN.md, low-opacity so it reads as
+     ambient texture, not chrome. Honors prefers-reduced-motion. The fixed
+     layer sits at z-index 0; opaque surfaces (header/sidebar/cards) cover it,
+     and it shows through the transparent canvas gaps in the main area. */
+  .beams { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+  .beams svg { width: 100%; height: 100%; display: block; }
+  .beams .beam-base use { fill: none; stroke: rgba(231,197,154,0.05); stroke-width: 1; }
+  .beams .beam-flow {
+    fill: none; stroke: var(--amber); stroke-width: 1.4; stroke-linecap: round;
+    stroke-dasharray: 110 1690; opacity: 0.5;
+    filter: drop-shadow(0 0 3px rgba(231,197,154,0.45)); /* glow, not depth-shadow */
+    animation: beam-travel linear infinite;
+  }
+  @keyframes beam-travel { from { stroke-dashoffset: 1800; } to { stroke-dashoffset: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .beams .beam-flow { animation: none; opacity: 0.14; stroke-dasharray: none; }
+  }
+
+  /* ── Landing (hero + parallax) — sits above the dashboard; scroll down into
+     the overview. The hero is an opaque obsidian layer (z-index 1) so it covers
+     the fixed .beams while in view; once scrolled past, the beams show behind
+     the rest of the page as before. ── */
+  html { scroll-behavior: smooth; }
+  /* ── Landing: pinned scrollytelling. The .scrolly track is tall; the stage
+     pins (position:sticky) and stays in place while scroll progress drives an
+     in-place animation — the title shrinks/fades, the "what to work on" panel +
+     tiles assemble over it, then the stage releases into the dashboard. The JS
+     driver (#scrolly, bottom of file) sets opacity/transform from scroll. ── */
+  .scrolly { position: relative; z-index: 1; height: 280vh; }
+  .scrolly-stage {
+    position: sticky; top: 0; height: 100vh; overflow: hidden;
+    display: grid; place-items: center;
+    background: var(--bg);   /* opaque — keeps the .beams waves off the landing */
+  }
+  /* ASCII background fills the stage. object-fit:FILL (not cover): the script's
+     mouse→grid mapping is linear (clientX-rect.left)/rect.width*renderWidth, so
+     only a stretched-to-fill canvas keeps the hover aligned; cover cropped the
+     content (offsetting the hover) and clipped the WebGL glow on resize. */
+  .scrolly-stage [data-ascii-dither-bg] { inset: 0 !important; height: 100% !important; bottom: 0 !important; }
+  .scrolly-stage [data-ascii-dither-bg] canvas {
+    top: 0 !important; left: 0 !important;
+    width: 100% !important; height: 100% !important;
+    max-width: none !important; max-height: none !important;
+    object-fit: fill !important; transform: none !important;
+  }
+  /* Spotlight (Aceternity port): amber-tinted, heavily blurred ellipse beaming
+     from the top-left, above the ASCII bg (z1) but below the title (z2). Fades +
+     scales in once on load. */
+  .spotlight {
+    position: absolute; top: 0; left: 0; z-index: 1;
+    width: 138%; height: 169%; pointer-events: none;
+    opacity: 0; animation: spotlight 2.2s ease 0.4s forwards;
+  }
+  .spotlight ellipse { fill: var(--amber); fill-opacity: 0.16; }
+  @media (min-width: 1024px) { .spotlight { width: 84%; } }
+  @keyframes spotlight {
+    0%   { opacity: 0; transform: translate(-72%, -62%) scale(0.5); }
+    100% { opacity: 1; transform: translate(-50%, -40%) scale(1); }
+  }
+
+  /* Title + panel share the same centered grid cell, stacked and cross-faded. */
+  .stage-title, .stage-panel { grid-area: 1 / 1; place-self: center; width: 100%; }
+  .stage-title { z-index: 2; text-align: center; padding: 0 24px; pointer-events: none; will-change: transform, opacity; }
+  .stage-title h1 { font-size: clamp(40px, 8vw, 88px); font-weight: 400; letter-spacing: -0.03em; line-height: 0.98; }
+  .stage-title h1 .accent { color: var(--amber); }
+  .stage-panel { z-index: 3; opacity: 0; padding: 0 24px; will-change: transform, opacity; }
+  .scroll-hint {
+    position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 4;
+    background: none; border: none; cursor: pointer;
+    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--faint);
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .scroll-hint .chev { animation: bob 1.8s ease-in-out infinite; }
+  @keyframes bob { 0%,100% { transform: translateY(0); opacity: 0.5; } 50% { transform: translateY(5px); opacity: 1; } }
+  .parallax-head { max-width: 1100px; margin: 0 auto 48px; text-align: center; }
+  .parallax-head h2 { font-size: clamp(26px, 4vw, 40px); font-weight: 400; letter-spacing: -0.02em; }
+  .parallax-head p { color: var(--muted); margin-top: 10px; font-size: 14px; }
+  .parallax-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+    max-width: 1100px; margin: 0 auto; align-items: start;
+  }
+  .pcol { display: flex; flex-direction: column; gap: 20px; will-change: transform; }
+  .pcol[data-col="2"] { margin-top: 56px; }
+  .tile {
+    background: var(--glass); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border); border-radius: 16px;
+    padding: 22px 22px 24px; display: flex; flex-direction: column; gap: 10px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  .tile:hover { border-color: var(--border-hover); transform: translateY(-3px); }
+  .tile-path { font-family: var(--font-mono); font-size: 11px; color: var(--faint); word-break: break-all; margin-top: -2px; }
+  .tile .ic {
+    width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+    font-size: 19px; background: rgba(231,197,154,0.12); border: 1px solid var(--glass-border);
+  }
+  .tile h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+  .tile p { color: var(--muted); font-size: 13px; line-height: 1.55; }
+  .tile.tall { padding-bottom: 56px; }
+  @media (max-width: 860px) {
+    .parallax-grid { grid-template-columns: 1fr 1fr; }
+    .pcol[data-col="3"] { display: none; }
+  }
+  @media (max-width: 560px) {
+    .parallax-grid { grid-template-columns: 1fr; }
+    .pcol { margin-top: 0 !important; }
+    .pcol[data-col="3"] { display: flex; }
+  }
+  /* No-pin fallback: reduced-motion or small screens render the landing as a
+     normal stack (hero title, then the panel) with everything visible — the JS
+     driver bails in these cases, so CSS is authoritative here. */
+  @media (prefers-reduced-motion: reduce), (max-width: 640px) {
+    html { scroll-behavior: auto; }
+    .scrolly { height: auto; }
+    .scrolly-stage { position: static; display: block; height: auto; }
+    .spotlight { display: none; }   /* absolute beam doesn't fit the static stack */
+    .stage-title { position: relative; min-height: 100vh; display: grid; place-items: center; opacity: 1 !important; transform: none !important; }
+    .stage-panel { position: relative; opacity: 1 !important; transform: none !important; padding: 80px 24px 100px; pointer-events: auto; }
+    .stage-panel .tile { opacity: 1 !important; transform: none !important; }
+    .scroll-hint .chev { animation: none; }
   }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>Work Vault</h1>
+<div class="beams" aria-hidden="true">
+  <svg viewBox="0 0 1200 700" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <path id="b1" d="M-50 80  C 300 20,  650 160, 1250 60"/>
+      <path id="b2" d="M-50 150 C 280 100, 680 250, 1250 140"/>
+      <path id="b3" d="M-50 220 C 320 160, 640 330, 1250 210"/>
+      <path id="b4" d="M-50 300 C 300 240, 700 400, 1250 290"/>
+      <path id="b5" d="M-50 370 C 280 320, 660 470, 1250 350"/>
+      <path id="b6" d="M-50 440 C 330 380, 690 540, 1250 430"/>
+      <path id="b7" d="M-50 510 C 300 450, 650 610, 1250 500"/>
+      <path id="b8" d="M-50 580 C 310 520, 680 660, 1250 560"/>
+      <path id="b9" d="M-50 650 C 300 600, 660 720, 1250 640"/>
+    </defs>
+    <g class="beam-base">
+      <use href="#b1"/><use href="#b2"/><use href="#b3"/><use href="#b4"/><use href="#b5"/>
+      <use href="#b6"/><use href="#b7"/><use href="#b8"/><use href="#b9"/>
+    </g>
+    <use class="beam-flow" href="#b1" style="animation-duration:16s;animation-delay:0s"/>
+    <use class="beam-flow" href="#b2" style="animation-duration:12s;animation-delay:-3s"/>
+    <use class="beam-flow" href="#b3" style="animation-duration:19s;animation-delay:-6s"/>
+    <use class="beam-flow" href="#b4" style="animation-duration:14s;animation-delay:-2s"/>
+    <use class="beam-flow" href="#b5" style="animation-duration:21s;animation-delay:-8s"/>
+    <use class="beam-flow" href="#b6" style="animation-duration:13s;animation-delay:-4s"/>
+    <use class="beam-flow" href="#b7" style="animation-duration:17s;animation-delay:-1s"/>
+    <use class="beam-flow" href="#b8" style="animation-duration:11s;animation-delay:-7s"/>
+    <use class="beam-flow" href="#b9" style="animation-duration:18s;animation-delay:-5s"/>
+  </svg>
+</div>
+
+<!-- ── Landing: pinned scrollytelling. The tall .scrolly track lets the inner
+     stage pin (sticky) and stay in place while scroll progress drives the
+     in-place animation; then it releases into the dashboard below. ── -->
+<section class="scrolly" id="scrolly">
+  <div class="scrolly-stage">
+    <div data-ascii-dither-bg aria-hidden="true"
+         style="position:absolute;top:0;left:0;right:0;bottom:auto;height:100vh;z-index:0;pointer-events:none;overflow:hidden"></div>
+
+    <!-- Spotlight (Aceternity port): a big skewed, heavily-blurred ellipse that
+         fades + scales in from the top-left, washing amber light over the title. -->
+    <svg class="spotlight" viewBox="0 0 3787 2842" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <g filter="url(#spotlight-blur)">
+        <ellipse cx="1924.71" cy="273.501" rx="1924.71" ry="273.501"
+                 transform="matrix(-0.822377 -0.568943 -0.568943 0.822377 3631.88 2291.09)"></ellipse>
+      </g>
+      <defs>
+        <filter id="spotlight-blur" x="0.860352" y="0.838989" width="3785.16" height="2840.26"
+                filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+          <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+          <feGaussianBlur stdDeviation="151" result="effect1_foregroundBlur"></feGaussianBlur>
+        </filter>
+      </defs>
+    </svg>
+
+    <div class="stage-title" id="stage-title">
+      <h1>Regalia<span class="accent">.</span></h1>
+    </div>
+
+    <div class="stage-panel" id="stage-panel">
+      <div class="parallax-head">
+        <h2>What should we work on?</h2>
+        <p>Folders you've worked in recently.</p>
+      </div>
+      <div class="parallax-grid" id="parallax-grid">
+        <div class="pcol" data-col="1"></div>
+        <div class="pcol" data-col="2"></div>
+        <div class="pcol" data-col="3"></div>
+      </div>
+    </div>
+
+    <button class="scroll-hint" id="scroll-hint" type="button" aria-label="Skip to dashboard"
+            onclick="document.getElementById('dashboard').scrollIntoView()">
+      <span class="chev">↓</span>
+    </button>
+  </div>
+</section>
+
+<header id="dashboard">
+  <img class="logo" src="/static/logo.png" alt="">
+  <h1>Regalia</h1>
+  <div class="wordmark-sep"></div>
+  <span class="tagline">Knowledge Vault</span>
   <div class="search-wrap">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
     <input id="search" type="text" placeholder="Search…" oninput="render()">
@@ -550,8 +837,9 @@
   <main class="main">
 
     <section class="view" data-view="overview">
-      <div class="stats" id="stats"></div>
+      <div id="stats" class="grid grid-cols-2 sm:grid-cols-4 gap-3 px-4 sm:px-6 pt-5"></div>
       <div class="usage" id="usage"></div>
+      <div class="news" id="news"></div>
       <div class="filter-bar">
         <div class="filter-group" id="fg-status">
           <button class="pill on"  data-k="status" data-v="all"      onclick="setFilter('status','all')">All</button>
@@ -626,9 +914,14 @@
         </div>
         <div class="chat-box">
           <div class="chat-log" id="chat-log">
-            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; Claude reaches for the cloud on your plan.</div>
+            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; Claude reaches for the cloud on your plan. Attach images, PDFs, or text with 📎 (Claude reads any type; Fast handles images on a vision model).</div>
           </div>
+          <div class="chat-attachments" id="chat-attachments" hidden></div>
           <div class="chat-input">
+            <input type="file" id="chat-file" multiple hidden onchange="chatPickFiles(event)"
+                   accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.log,.py">
+            <button class="chat-attach" id="chat-attach" title="Attach files"
+                    onclick="document.getElementById('chat-file').click()">📎</button>
             <textarea id="chat-text" rows="1" placeholder="Message the model…"
                       oninput="chatAutogrow()" onkeydown="chatKey(event)"></textarea>
             <button class="twin-send" id="chat-send" onclick="chatSend()">Send</button>
@@ -916,7 +1209,10 @@
       ['Complete', complete, false],
       ['Total',    all.length, false],
     ].map(([lbl, n, warn]) =>
-      `<div class="stat${warn?' warn':''}"><div class="num">${n}</div><div class="lbl">${lbl}</div></div>`
+      `<div class="glass bg-surface border border-border rounded-badges px-[18px] py-3.5">
+        <div class="text-3xl font-normal tracking-[-0.02em] leading-[1] ${warn ? 'text-overdue' : ''}">${n}</div>
+        <div class="mt-1 text-[11px] uppercase tracking-[0.4px] text-muted">${lbl}</div>
+      </div>`
     ).join('');
 
     const list = document.getElementById('task-list');
@@ -978,6 +1274,37 @@
         modal.style.display = 'flex';
         modal.querySelector('.modal').scrollTop = 0;
       });
+  }
+
+  // Landing "What should we work on?" — recently-worked-in folders, distributed
+  // across the three parallax columns (thirds, like the original component).
+  function renderRecentFolders(items) {
+    const cols = [1, 2, 3].map(n => document.querySelector(`#parallax-grid .pcol[data-col="${n}"]`));
+    cols.forEach(c => { if (c) c.innerHTML = ''; });
+    if (!items || !items.length) {
+      if (cols[0]) cols[0].innerHTML =
+        '<div class="tile"><div class="ic">🗂️</div><h3>Nothing yet</h3>' +
+        '<p>Edit a note and the folders you work in will surface here.</p></div>';
+      if (window.__scrollyUpdate) window.__scrollyUpdate();
+      return;
+    }
+    const third = Math.ceil(items.length / 3);
+    items.forEach((f, i) => {
+      const col = cols[Math.min(2, Math.floor(i / third))];
+      if (!col) return;
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.onclick = () => openFolder(f.path);
+      tile.innerHTML =
+        `<div class="ic">📁</div>
+         <h3>${esc(f.name)}</h3>
+         ${f.parent ? `<div class="tile-path">${esc(f.parent)}/</div>` : ''}
+         <p>${esc(f.ago)} · ${f.notes} note${f.notes === 1 ? '' : 's'}</p>`;
+      col.appendChild(tile);
+    });
+    // Apply the scrollytelling start state to the freshly-loaded tiles so they
+    // begin hidden and assemble on scroll (instead of flashing in fully visible).
+    if (window.__scrollyUpdate) window.__scrollyUpdate();
   }
 
   function closeModal() {
@@ -1102,9 +1429,54 @@
     </div>`;
   }
 
+  function newsCol(title, items, kind) {
+    const rows = items.length ? items.map(it => {
+      const meta = kind === 'jobs'
+        ? `${esc(it.source)}${it.location ? ' &middot; ' + esc(it.location) : ''}`
+        : esc(it.source);
+      const link = it.url
+        ? `<a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a>`
+        : `<span>${esc(it.title)}</span>`;
+      return `<div class="news-item">${link}<div class="meta">${meta}</div></div>`;
+    }).join('') : '<div class="news-item meta">Nothing right now.</div>';
+    return `<div class="news-col"><h3>${title}</h3>${rows}</div>`;
+  }
+
+  function renderNews(d) {
+    const el = document.getElementById('news');
+    if (!d || !d.available) {
+      el.className = 'news empty-state';
+      el.textContent = 'Briefing unavailable.';
+      return;
+    }
+    const when = d.fetched ? d.fetched.slice(11, 16) : '';
+    const errs = (d.errors && d.errors.length) ? ` &middot; ${d.errors.length} source(s) skipped` : '';
+    el.className = 'news';
+    el.innerHTML = `<div class="news-panel">
+      <div class="news-head">
+        <h2>Daily briefing</h2>
+        <span class="sub">updated ${when}${errs}</span>
+        <button class="refresh" onclick="refreshNews(this)">↻ Refresh</button>
+      </div>
+      <div class="news-cols">
+        ${newsCol('Tech news', d.news, 'news')}
+        ${newsCol('Social &amp; blogs', d.social, 'social')}
+        ${newsCol('Opportunities', d.jobs, 'jobs')}
+      </div>
+      <div class="news-foot">Cached ~30 min. Sources configured in news_sources.py.</div>
+    </div>`;
+  }
+
+  function refreshNews(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '↻ …'; }
+    fetch('/api/news?refresh=1').then(r => r.json()).then(renderNews).catch(() => {});
+  }
+
   fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildCoursePills(); render(); });
   fetch('/api/browse').then(r => r.json()).then(d => renderGallery(d.folders));
+  fetch('/api/recent-folders').then(r => r.json()).then(renderRecentFolders).catch(() => {});
   fetch('/api/usage').then(r => r.json()).then(renderUsage).catch(() => {});
+  fetch('/api/news').then(r => r.json()).then(renderNews).catch(() => {});
   const initialFolder = new URLSearchParams(location.search).get('folder');
   if (initialFolder) openFolder(initialFolder);
 </script>
@@ -1127,6 +1499,7 @@
   let chatBusy = false;
   let chatTier = 'fast';
   let chatModel = null;       // local model override (fast tier); null = server default
+  let chatAttachments = [];   // staged uploads for the next message
   let routerStatus = null;
 
   function loadRouterStatus() {
@@ -1181,8 +1554,52 @@
 
   function clearChat() {
     chatMsgs = [];
+    chatAttachments = [];
+    renderChatAttachments();
     document.getElementById('chat-log').innerHTML =
       '<div class="chat-empty">Cleared. Pick a tier and say something.</div>';
+  }
+
+  /* -- Chat attachments -- */
+  function renderChatAttachments() {
+    const wrap = document.getElementById('chat-attachments');
+    if (!chatAttachments.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    wrap.hidden = false;
+    wrap.innerHTML = chatAttachments.map((a, i) =>
+      `<span class="attach-chip"><span>${a.pending ? '⏳' : '📄'}</span>` +
+      `<span class="nm">${esc(a.name)}</span>` +
+      `<button onclick="removeChatAttachment(${i})" title="Remove">×</button></span>`
+    ).join('');
+  }
+
+  function removeChatAttachment(i) { chatAttachments.splice(i, 1); renderChatAttachments(); }
+
+  function chatPickFiles(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';   // let the same file be picked again later
+    files.forEach(file => {
+      const entry = { name: file.name, mime: file.type, pending: true };
+      chatAttachments.push(entry);
+      renderChatAttachments();
+      const fd = new FormData();
+      fd.append('file', file);
+      fetch('/api/chat/upload', { method: 'POST', body: fd })
+        .then(r => r.json().then(d => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => {
+          if (!ok || d.error) {
+            chatAttachments = chatAttachments.filter(a => a !== entry);
+            addChatBubble('err', d.error || `Couldn't upload ${file.name}.`);
+          } else {
+            entry.id = d.id; entry.mime = d.mime; entry.pending = false;
+          }
+          renderChatAttachments();
+        })
+        .catch(() => {
+          chatAttachments = chatAttachments.filter(a => a !== entry);
+          renderChatAttachments();
+          addChatBubble('err', `Couldn't upload ${file.name}.`);
+        });
+    });
   }
 
   function chatAutogrow() {
@@ -1195,7 +1612,7 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
   }
 
-  function addChatBubble(kind, text, who) {
+  function addChatBubble(kind, text, who, attachments) {
     const log = document.getElementById('chat-log');
     const empty = log.querySelector('.chat-empty');
     if (empty) empty.remove();
@@ -1204,7 +1621,14 @@
     if (kind === 'bot') {
       div.innerHTML = (who ? `<div class="who">${esc(who)}</div>` : '') + '<div class="md">' + twinMd(text) + '</div>';
     } else {
-      div.textContent = text;
+      if (text) div.textContent = text;
+      if (attachments && attachments.length) {
+        const row = document.createElement('div');
+        row.className = 'bubble-attachments';
+        row.innerHTML = attachments.map(a =>
+          `<span class="attach-chip mini">📎 <span class="nm">${esc(a.name)}</span></span>`).join('');
+        div.appendChild(row);
+      }
     }
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
@@ -1215,11 +1639,15 @@
     if (chatBusy) return;
     const t = document.getElementById('chat-text');
     const text = t.value.trim();
-    if (!text) return;
+    if (chatAttachments.some(a => a.pending)) return;   // wait for uploads to finish
+    const ready = chatAttachments.filter(a => a.id);
+    if (!text && !ready.length) return;
 
-    addChatBubble('user', text);
-    chatMsgs.push({ role: 'user', content: text });
+    const atts = ready.map(a => ({ id: a.id, name: a.name, mime: a.mime }));
+    addChatBubble('user', text, null, atts);
+    chatMsgs.push({ role: 'user', content: text || '(see attached file(s))' });
     t.value = ''; chatAutogrow();
+    chatAttachments = []; renderChatAttachments();
 
     chatBusy = true;
     document.getElementById('chat-send').disabled = true;
@@ -1232,7 +1660,7 @@
 
     fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatMsgs, tier: chatTier, model: chatTier === 'fast' ? chatModel : null }),
+      body: JSON.stringify({ messages: chatMsgs, tier: chatTier, model: chatTier === 'fast' ? chatModel : null, attachments: atts }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
@@ -1421,6 +1849,84 @@
          <span class="run-state ${esc(run.status)}">${esc(run.status)}</span></div>
        ${steps}${final}`;
   }
+</script>
+
+<!-- ASCII dither hero background (self-contained IIFE; mounts into [data-ascii-dither-bg]) -->
+<script src="/static/ascii-dither-background.js"></script>
+<script>
+  // Pinned scrollytelling — the .scrolly-stage stays put (position:sticky) while
+  // scroll progress through the tall .scrolly track drives an IN-PLACE animation:
+  //   p 0.00–0.40  title "Regalia." shrinks + fades + rises
+  //   p 0.30–0.50  the "what to work on" heading fades/rises in over it
+  //   p 0.40–0.85  the recent-folder tiles assemble, staggered
+  //   p 0.85–1.00  hold, then the stage releases into the dashboard
+  // Driven on a rAF tick; bails (CSS shows the static stack) on reduced-motion
+  // or small screens. Exposed as window.__scrollyUpdate so renderRecentFolders
+  // can re-run it once the tiles load in.
+  (() => {
+    const track = document.getElementById('scrolly');
+    const title = document.getElementById('stage-title');
+    const panel = document.getElementById('stage-panel');
+    const head  = panel && panel.querySelector('.parallax-head');
+    const hint  = document.getElementById('scroll-hint');
+    if (!track || !title || !panel) return;
+
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const lerp  = (a, b, t) => a + (b - a) * t;
+    const disabled = () =>
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches || window.innerWidth <= 640;
+
+    let ticking = false;
+    function update() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        ticking = false;
+        if (disabled()) {  // hand control back to CSS (static stack, all visible)
+          title.style.cssText = '';
+          panel.style.opacity = ''; panel.style.transform = ''; panel.style.pointerEvents = '';
+          if (head) head.style.cssText = '';
+          panel.querySelectorAll('.tile').forEach(t => { t.style.opacity = ''; t.style.transform = ''; });
+          if (hint) hint.style.opacity = '';
+          return;
+        }
+        const vh = window.innerHeight;
+        const rect = track.getBoundingClientRect();
+        const p = clamp(-rect.top / Math.max(1, rect.height - vh), 0, 1);
+
+        // 1) title: big → shrink + fade + rise
+        const tp = clamp(p / 0.40, 0, 1);
+        title.style.opacity = (1 - tp).toFixed(3);
+        title.style.transform = `translateY(${(-tp * 48).toFixed(1)}px) scale(${(1 - tp * 0.45).toFixed(3)})`;
+
+        // 2) panel container always painted; children drive the reveal
+        panel.style.opacity = '1';
+        panel.style.pointerEvents = p > 0.5 ? 'auto' : 'none';  // tiles clickable once assembled
+        if (head) {
+          const hp = clamp((p - 0.30) / 0.20, 0, 1);
+          head.style.opacity = hp.toFixed(3);
+          head.style.transform = `translateY(${((1 - hp) * 28).toFixed(1)}px)`;
+        }
+
+        // 3) tiles: staggered assemble
+        const tiles = panel.querySelectorAll('.tile');
+        const n = Math.max(tiles.length, 1);
+        tiles.forEach((tile, i) => {
+          const start = lerp(0.40, 0.68, i / n);
+          const sp = clamp((p - start) / 0.17, 0, 1);
+          tile.style.opacity = sp.toFixed(3);
+          tile.style.transform = `translateY(${((1 - sp) * 56).toFixed(1)}px) scale(${(0.92 + sp * 0.08).toFixed(3)})`;
+        });
+
+        if (hint) hint.style.opacity = clamp(1 - p / 0.08, 0, 1).toFixed(3);
+      });
+    }
+
+    window.__scrollyUpdate = update;
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update, { passive: true });
+    update();
+  })();
 </script>
 </body>
 </html>

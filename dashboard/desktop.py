@@ -1,4 +1,4 @@
-"""Run the Work Vault dashboard as a native desktop window.
+"""Run the Regalia dashboard as a native desktop window.
 
 This wraps the EXACT Flask app from app.py in an OS webview (EdgeWebView2 /
 Chromium on Windows) instead of a browser tab. Nothing about the web stack
@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - guidance path
 from app import app
 
 HOST = "127.0.0.1"
-WINDOW_TITLE = "Work Vault"
+WINDOW_TITLE = "Regalia"
 
 # Injected after the page loads: route external links to the system browser via
 # the exposed js_api, keeping in-window navigation for localhost. Future
@@ -101,6 +101,7 @@ def main() -> None:
         text_select=True,
         js_api=_Api(),
     )
+    assert window is not None, "Failed to create webview window"
     window.events.loaded += lambda: window.evaluate_js(_INTERCEPT_JS)
     webview.start()
 

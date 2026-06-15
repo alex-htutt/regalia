@@ -51,8 +51,9 @@ Use `[[wikilinks]]`, not file paths. Each folder's context file is `_context_<fo
 - **Chat (Cmd+L)** to understand, **Composer (Cmd+I)** to make multi-file edits — don't mix.
 
 ## Dashboard
-Run `cd dashboard && python app.py` (or double-click `dashboard/start.bat`) → http://localhost:5000.
+Run `cd dashboard && python app.py` (or double-click `dashboard/start.bat`) → http://localhost:5000. The app is now branded **Regalia** (v1.14).
 
+- **Landing page** (v1.13, reworked v1.15): `/` opens on a full-screen ASCII-art hero, spotlit on the **"Regalia."** title. As you scroll, the hero stays put and animates in place — the title gives way to a **"What should we work on?"** panel that suggests the folders you've edited most recently (click one to jump into it) — then releases into the dashboard.
 - **Task list:** all vault notes with frontmatter, filterable by status / area / course, sortable by deadline, with live search. Overdue notes are red; due within 3 days are amber.
 - **Folder gallery:** browse top-level sections; click a card to open its context file in a modal with subfolder drill-down. `?folder=` in the URL preserves the open folder.
 - **Claude usage panel** (v1.3): reads `~/.claude/projects/**/*.jsonl` for token counts and shows today / all-time / cache-read totals, an estimated API cost, a 14-day bar chart, and a per-model breakdown. Message content is never read.

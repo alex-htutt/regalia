@@ -4,9 +4,9 @@ tags: [type/reference]
 status: active
 ---
 
-# Work Vault
+# Regalia
 
-Obsidian knowledge vault + Cursor context system. Single home for all work: the summer internship (active) and side projects, with finished RPI coursework archived for reference.
+Obsidian knowledge vault + Cursor context system. Single home for all work: the summer internship (active) and side projects, with finished RPI coursework archived for reference. (Formerly "Work Vault" — renamed to **Regalia** v1.14; the on-disk folder is still `Work_Vault`.)
 
 ## Layout
 - `Internship-Projects/` — active work. One subfolder per assigned project, each with its own `_context_<project>.md`. Area-level status in `Internship-Projects/_context_internship_projects.md`.
@@ -47,9 +47,11 @@ related: []
 
 **Run:** `cd dashboard && python app.py` → http://localhost:5000, or double-click `dashboard/start.bat`. Native window: `dashboard/desktop.py` / `desktop.bat`.
 
-Features as of v1.6 (2026-06-14):
-- **Overview:** stat cards (Active / Overdue / Complete / Total), filter by status / area / course, live search, deadline highlighting
+Features as of v1.15 (2026-06-14):
+- **Landing page:** `/` opens on an ASCII-dither hero with a spotlight on the **"Regalia."** title; scrolling drives a pinned animation where the title gives way to a **"What should we work on?"** panel of your recently-worked folders, then releases into the dashboard
+- **Overview:** stat cards (Active / Overdue / Complete / Total), filter by status / area / course, live search, deadline highlighting — over a dark "Hyperstudio" theme with ambient amber **beams** behind translucent **liquid-glass** surfaces
 - **Folder gallery:** card grid of top-level sections with context-file excerpts and subfolder drill-down
+- **Daily briefing:** tech-news RSS, founder feeds, and live job openings aggregated on the home page
 - **Claude token-usage panel:** aggregates `~/.claude/projects/**/*.jsonl` for today's tokens, all-time total, cache reads, estimated API cost, a 14-day chart, and a per-model breakdown (token counts + timestamps only — never message content)
 - **Chat & Evil Twin:** chat over the model router (`router.py`) — **Fast** = local Ollama (no API cost), **Claude** = Claude in the cloud billed to your **subscription** (via the Claude Code CLI, not API credits)
 - **Agents:** model-driven agents that run real, vault-confined tools (search/read/list/write notes, scaffold projects) in a tool-use loop (`agent.py`), streaming each step live. Built-ins: Daily Summarizer, Project Scaffolder, Research Agent. Agents can write notes — review their output. (Uses the API `smart` tier for tool use.)

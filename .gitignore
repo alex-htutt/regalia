@@ -28,3 +28,13 @@ Desktop.ini
 
 # --- Logs ---
 *.log
+
+# --- Chat attachments (per-session uploads; never committed) ---
+dashboard/.chat_attachments/
+
+# --- Cloned external repos ---
+codex-plugin-cc/
+
+# --- Tailwind standalone CLI binary (~108MB; re-fetch via dashboard/get-tailwind.bat) ---
+dashboard/tools/tailwindcss*
+dashboard/tools/*.exe

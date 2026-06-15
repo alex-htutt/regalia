@@ -16,7 +16,9 @@ Adding a third backend later means one more branch here and nothing elsewhere.
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -39,7 +41,43 @@ CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
 CLAUDE_CLI_MODEL = os.environ.get("CLAUDE_CLI_MODEL", "")
 CLAUDE_CLI_TIMEOUT = int(os.environ.get("CLAUDE_CLI_TIMEOUT", "180"))
 
+# The CLI confines file access to its working directory tree. Run it from the
+# vault root (parent of this dashboard folder) so Chat/Twin can read the whole
+# vault, not just dashboard/. Override with CLAUDE_CLI_CWD if the vault moves.
+VAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
+
 TIERS = ("fast", "smart", "claude")
+
+
+# ── Attachments ──────────────────────────────────────────────────────────────
+# A chat turn may carry attachments — already-saved files the app hands us as
+# {"path": <abs path>, "name": <display name>, "mime": <type>}. Each tier consumes
+# them differently: the claude CLI is told the paths and reads them with its own
+# tools; Ollama gets vision images inlined as base64; the Anthropic API gets
+# native image/document content blocks.
+
+def _norm_attachments(attachments) -> list:
+    """Normalize/validate an attachments list, filling in any missing mime."""
+    out = []
+    for a in attachments or []:
+        if not isinstance(a, dict):
+            continue
+        path = a.get("path")
+        if not path:
+            continue
+        name = a.get("name") or os.path.basename(path)
+        mime = a.get("mime") or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        out.append({"path": path, "name": name, "mime": mime})
+    return out
+
+
+def _read_b64(path) -> str | None:
+    try:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
+    except OSError:
+        return None
 
 
 class RouterError(Exception):
@@ -51,20 +89,23 @@ class RouterError(Exception):
         self.status = status
 
 
-def chat(messages, tier="fast", system=None, max_tokens=2048, model=None) -> dict:
+def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attachments=None) -> dict:
     """Run a chat completion on the chosen tier.
 
-    messages: [{"role": "user"|"assistant", "content": str}, ...]
-    system:   None, a string, or a list of Anthropic system blocks.
+    messages:    [{"role": "user"|"assistant", "content": str}, ...]
+    system:      None, a string, or a list of Anthropic system blocks.
+    attachments: None or [{"path", "name", "mime"}, ...] for the current turn;
+                 applied to the most recent user message per the active tier.
     """
     tier = (tier or "fast").lower()
     if tier not in TIERS:
         tier = "fast"
+    atts = _norm_attachments(attachments)
     if tier == "smart":
-        return _anthropic_chat(messages, system, max_tokens, model)
+        return _anthropic_chat(messages, system, max_tokens, model, atts)
     if tier == "claude":
-        return _claude_code_chat(messages, system, max_tokens, model)
-    return _ollama_chat(messages, system, max_tokens, model)
+        return _claude_code_chat(messages, system, max_tokens, model, atts)
+    return _ollama_chat(messages, system, max_tokens, model, atts)
 
 
 def chat_tools(messages, tools, tier="smart", system=None, max_tokens=2048, model=None) -> dict:
@@ -133,8 +174,41 @@ def _require_anthropic(model):
     return anthropic, anthropic.Anthropic(), (model or ANTHROPIC_MODEL)
 
 
-def _anthropic_chat(messages, system, max_tokens, model) -> dict:
+def _attach_to_anthropic(messages, atts) -> list:
+    """Prepend native image/document blocks to the latest user message.
+
+    Images and PDFs become base64 content blocks the model reads directly. Other
+    file types are skipped here (the app can inline small text files itself); a
+    string user turn is promoted to a block list so blocks and text coexist.
+    """
+    blocks = []
+    for a in atts:
+        b64 = _read_b64(a["path"])
+        if b64 is None:
+            continue
+        mime = a["mime"]
+        if mime == "application/pdf":
+            blocks.append({"type": "document", "source": {
+                "type": "base64", "media_type": "application/pdf", "data": b64}})
+        elif mime.startswith("image/"):
+            blocks.append({"type": "image", "source": {
+                "type": "base64", "media_type": mime, "data": b64}})
+    if not blocks:
+        return list(messages)
+    msgs = [dict(m) for m in messages]
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            content = msgs[i].get("content")
+            tail = [{"type": "text", "text": content}] if isinstance(content, str) else list(content or [])
+            msgs[i] = {"role": "user", "content": blocks + tail}
+            break
+    return msgs
+
+
+def _anthropic_chat(messages, system, max_tokens, model, attachments=None) -> dict:
     anthropic, client, mdl = _require_anthropic(model)
+    if attachments:
+        messages = _attach_to_anthropic(messages, attachments)
     try:
         kwargs = {"model": mdl, "max_tokens": max_tokens, "messages": messages}
         if system is not None:
@@ -214,11 +288,13 @@ def _flatten_conversation(messages) -> str:
     return "\n\n".join(lines)
 
 
-def _claude_code_chat(messages, system, max_tokens, model) -> dict:
+def _claude_code_chat(messages, system, max_tokens, model, attachments=None) -> dict:
     """Run a chat turn through the Claude Code CLI (subscription-billed).
 
     max_tokens is accepted for signature parity but not forwarded — the CLI
-    manages its own output budget.
+    manages its own output budget. Attachments are passed by path: the CLI reads
+    them with its own Read tool (handles images, PDFs, and text), which we enable
+    non-interactively only when files are attached.
     """
     exe = _claude_cli_path()
     if exe is None:
@@ -229,10 +305,19 @@ def _claude_code_chat(messages, system, max_tokens, model) -> dict:
         )
 
     prompt = _flatten_conversation(messages)
+    if attachments:
+        listing = "\n".join(f"- {a['path']}" for a in attachments)
+        prompt = (
+            (prompt + "\n\n" if prompt.strip() else "")
+            + "The user attached the following file(s). Read them with your tools "
+            "to answer:\n" + listing
+        )
     if not prompt.strip():
         raise RouterError("Nothing to send to Claude.", 400)
 
     cmd = [exe, "-p", "--output-format", "json"]
+    if attachments:
+        cmd += ["--allowedTools", "Read"]
     sys_text = _flatten_system(system)
     if sys_text:
         cmd += ["--system-prompt", sys_text]
@@ -256,6 +341,7 @@ def _claude_code_chat(messages, system, max_tokens, model) -> dict:
             encoding="utf-8",
             timeout=CLAUDE_CLI_TIMEOUT,
             env=env,
+            cwd=CLAUDE_CLI_CWD,
         )
     except FileNotFoundError:
         raise RouterError("The Claude CLI vanished mid-call — is it still installed?", 503)
@@ -317,9 +403,39 @@ def list_ollama_models() -> list:
     return sorted(m.get("name") for m in (data.get("models") or []) if m.get("name"))
 
 
-def _ollama_chat(messages, system, max_tokens, model) -> dict:
+def _attach_to_ollama(messages, atts) -> list:
+    """Inline image attachments as base64 on the latest user message.
+
+    Ollama vision models take an `images` array of base64 strings per message.
+    Non-image files can't be fed to a local model here, so we just name them in
+    the text and point the user at the Claude tier (which can read them).
+    """
+    images, others = [], []
+    for a in atts:
+        if a["mime"].startswith("image/"):
+            b64 = _read_b64(a["path"])
+            (images.append(b64) if b64 else others.append(a["name"]))
+        else:
+            others.append(a["name"])
+    msgs = [dict(m) for m in messages]
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user" and isinstance(msgs[i].get("content"), str):
+            if images:
+                msgs[i]["images"] = images
+            if others:
+                msgs[i]["content"] = (msgs[i]["content"] + (
+                    "\n\n[Attached file(s) a local model can't read here: "
+                    + ", ".join(others) + ". Switch to the Claude tier to have them read.]"
+                ))
+            break
+    return msgs
+
+
+def _ollama_chat(messages, system, max_tokens, model, attachments=None) -> dict:
     mdl = model or OLLAMA_MODEL
     msgs = list(messages)
+    if attachments:
+        msgs = _attach_to_ollama(msgs, attachments)
     if system is not None:
         sys_text = _flatten_system(system)
         if sys_text:

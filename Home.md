@@ -6,7 +6,7 @@ status: active
 
 # 🏠 Home
 
-Map of content for the work vault. Start here.
+Map of content for the **Regalia** vault (formerly "Work Vault"). Start here.
 
 ## Active
 - [[Internship-Projects/_context_internship_projects|Internship — Context]] — live status, active projects.
