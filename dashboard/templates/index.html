@@ -107,7 +107,15 @@
   }
   #search:focus { border-color: var(--border-hover); }
 
-  /* ── Stats ── (converted to Tailwind utilities — see #stats markup + render()) */
+  /* ── Stats ── (markup uses Tailwind utilities for grid/color/border/radius —
+     see #stats markup + render()). Spacing is handled HERE, not by Tailwind:
+     the unlayered `* { margin:0; padding:0 }` reset at the top of this file
+     beats Tailwind's layered padding/margin utilities, so px-/py-/pt-/mt- on
+     #stats and its cards are dead. Restore that spacing (unlayered) to match the
+     .usage / .news section rhythm (20px 24px 0) instead of sitting edge-to-edge. */
+  #stats { padding: 20px 24px 0; }
+  #stats > div { padding: 14px 18px; }          /* the stat cards */
+  #stats > div > div + div { margin-top: 4px; }  /* label gap under the number */
 
   /* Reusable liquid-glass surface. Unlayered, so it overrides Tailwind's
      bg-surface on the stat cards. backdrop-filter samples the fixed .beams

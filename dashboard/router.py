@@ -332,6 +332,10 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None) -> 
         if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
     }
 
+    # On Windows the child console app would flash up its own terminal window;
+    # CREATE_NO_WINDOW suppresses it. The flag only exists on Windows, so guard it.
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
     try:
         proc = subprocess.run(
             cmd,
@@ -342,6 +346,7 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None) -> 
             timeout=CLAUDE_CLI_TIMEOUT,
             env=env,
             cwd=CLAUDE_CLI_CWD,
+            creationflags=creationflags,
         )
     except FileNotFoundError:
         raise RouterError("The Claude CLI vanished mid-call — is it still installed?", 503)

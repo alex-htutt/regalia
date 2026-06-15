@@ -38,3 +38,7 @@ codex-plugin-cc/
 # --- Tailwind standalone CLI binary (~108MB; re-fetch via dashboard/get-tailwind.bat) ---
 dashboard/tools/tailwindcss*
 dashboard/tools/*.exe
+
+# --- Evil Twin persona files (personal; not committed) ---
+My_Evil_Twin/me.md
+My_Evil_Twin/twin.md

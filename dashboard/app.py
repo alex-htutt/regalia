@@ -1022,16 +1022,30 @@ def api_chat():
         return jsonify({"error": "Say something to start the conversation."}), 400
 
     tier = str(data.get("tier") or "fast").strip().lower()
-    system = data.get("system") if isinstance(data.get("system"), str) else None
-    # The weak local model is blind on its own, so ground it with the live vault
-    # structure. The cloud/subscription tiers can read files themselves, so they
-    # keep the caller's system prompt untouched.
-    if tier == "fast":
-        system = _vault_chat_system(system)
+    user_system = data.get("system") if isinstance(data.get("system"), str) else None
     # A model override only applies to the local (fast) tier — guard it so an
     # Ollama model name can never be handed to Anthropic on the smart tier.
     raw_model = data.get("model")
     model = raw_model.strip() if (tier == "fast" and isinstance(raw_model, str) and raw_model.strip()) else None
+
+    # Fast (local) tier: let the model actually read notes via a read-only tool
+    # loop, so it can answer "what does note X say" — not just see the outline.
+    # Needs a tool-capable Ollama model; if the model can't do tool calls (or any
+    # other fast-tier hiccup), fall back to outline-grounded plain chat so the
+    # panel still answers. Attachment turns skip the tool loop (chat_tools has no
+    # attachment path) and use the existing image-inlining chat with the outline.
+    if tier == "fast" and not attachments:
+        try:
+            return jsonify(agent.chat_vault(
+                messages, tier="fast", system=user_system, max_tokens=2048, model=model,
+            ))
+        except router.RouterError:
+            pass  # fall through to plain outline-grounded chat below
+
+    # The weak local model is blind on its own, so ground it with the live vault
+    # structure. The cloud/subscription tiers can read files themselves, so they
+    # keep the caller's system prompt untouched.
+    system = _vault_chat_system(user_system) if tier == "fast" else user_system
     try:
         result = router.chat(
             messages, tier=tier, system=system, max_tokens=2048,

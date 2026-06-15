@@ -336,6 +336,84 @@ def list_agents() -> list:
     ]
 
 
+# ── Vault-reading chat (read-only tool loop) ─────────────────────────────────
+# Used by /api/chat's fast (local) tier so the local model can actually open
+# notes instead of only seeing the folder outline. Only the read-only tools are
+# exposed — a chat turn must never silently write or scaffold.
+
+CHAT_TOOLS = ["search_vault", "read_note", "list_notes", "list_folder"]
+
+CHAT_SYSTEM = (
+    "You are a helpful assistant for Alex's Obsidian knowledge vault, \"Regalia\". "
+    "You have tools to search, list, and read the real notes — use them to ground "
+    "your answers in actual vault content instead of guessing. To answer a question "
+    "about what a note says, find it (search_vault / list_folder / list_notes) and "
+    "then read_note to quote or summarize what it actually contains. Never invent "
+    "file contents or paths; if you can't find something, say so. You don't need a "
+    "tool for small talk or general questions — answer those directly in plain prose. "
+    "The vault's current folder/file structure is below to help you target reads.\n\n"
+    "=== VAULT STRUCTURE ===\n{outline}\n=== END VAULT STRUCTURE ===\n\n" + _VAULT_RULES
+)
+
+
+def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None, max_steps=6) -> dict:
+    """Free-form chat that can read the vault through read-only tools.
+
+    Drop-in for router.chat() on the fast tier — same return shape
+    ({"reply", "model", "tier"}) so /api/chat can use it directly. Drives the
+    model -> tool calls -> results cycle over the full conversation history, then
+    returns the model's final prose answer. Raises router.RouterError on a backend
+    failure (e.g. the local model can't do tool calls), so the caller can fall back
+    to plain outline-grounded chat.
+    """
+    import app
+    tools = [TOOL_SCHEMAS[n] for n in CHAT_TOOLS if n in TOOL_SCHEMAS]
+    sys_text = CHAT_SYSTEM.format(outline=app._vault_outline())
+    if system and str(system).strip():
+        sys_text += "\n\n" + str(system).strip()
+
+    # chat_tools accepts string OR block content; start from the caller's history
+    # and append tool_use / tool_result blocks as the loop runs.
+    convo = [{"role": m["role"], "content": m["content"]} for m in messages]
+    model_used = ""
+
+    for _ in range(max_steps):
+        res = router.chat_tools(convo, tools, tier=tier, system=sys_text,
+                                max_tokens=max_tokens, model=model)
+        model_used = res.get("model", model_used)
+        text, tool_calls = res.get("text", ""), res.get("tool_calls", [])
+
+        if not tool_calls:
+            return {"reply": text or "…(empty response from the local model)",
+                    "model": model_used, "tier": res.get("tier", tier)}
+
+        assistant_content = ([{"type": "text", "text": text}] if text else []) + [
+            {"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]}
+            for tc in tool_calls
+        ]
+        convo.append({"role": "assistant", "content": assistant_content})
+
+        results = []
+        for tc in tool_calls:
+            fn = TOOL_FNS.get(tc["name"])
+            args = tc.get("input") or {}
+            if fn is None:
+                out = f"Error: no such tool '{tc['name']}'."
+            else:
+                try:
+                    out = fn(**args) if isinstance(args, dict) else fn()
+                except AgentError as e:
+                    out = f"Error: {e.message}"
+                except Exception as e:  # noqa: BLE001 — tool errors feed back to the model
+                    out = f"Error running {tc['name']}: {e}"
+            results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": out})
+        convo.append({"role": "user", "content": results})
+
+    return {"reply": "I read through several notes but couldn't settle on an answer — "
+                     "try narrowing the question.",
+            "model": model_used, "tier": tier}
+
+
 # ── The run loop ─────────────────────────────────────────────────────────────
 
 def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8) -> dict:
