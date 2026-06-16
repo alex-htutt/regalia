@@ -1023,24 +1023,35 @@ def api_chat():
 
     tier = str(data.get("tier") or "fast").strip().lower()
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
+    # "Edit mode" — lets chat change vault notes. Each tier honors it differently:
+    # fast/smart unlock the write tools in the tool loop below; the claude CLI tier
+    # gets the file-editing tools via router.chat(allow_write=...). All three can
+    # write when it's on.
+    edit_mode = bool(data.get("edit"))
     # A model override only applies to the local (fast) tier — guard it so an
     # Ollama model name can never be handed to Anthropic on the smart tier.
     raw_model = data.get("model")
     model = raw_model.strip() if (tier == "fast" and isinstance(raw_model, str) and raw_model.strip()) else None
 
-    # Fast (local) tier: let the model actually read notes via a read-only tool
-    # loop, so it can answer "what does note X say" — not just see the outline.
-    # Needs a tool-capable Ollama model; if the model can't do tool calls (or any
-    # other fast-tier hiccup), fall back to outline-grounded plain chat so the
-    # panel still answers. Attachment turns skip the tool loop (chat_tools has no
-    # attachment path) and use the existing image-inlining chat with the outline.
-    if tier == "fast" and not attachments:
+    # Tool-loop tiers run the model over the real vault tools. Fast (local) always
+    # uses the read-only loop so it can answer "what does note X say" — not just
+    # see the outline; smart joins the loop only when Edit mode is on (otherwise it
+    # takes the plain cloud-chat path below). With Edit mode, the loop also gets the
+    # write/scaffold tools. The local model needs tool support; if it can't (or any
+    # other fast-tier hiccup), fall back to outline-grounded plain chat so the panel
+    # still answers. Smart-tier failures surface to the user. Attachment turns skip
+    # the loop (chat_tools has no attachment path) and use the image-inlining chat.
+    use_loop = (tier == "fast" or (tier == "smart" and edit_mode))
+    if use_loop and not attachments:
         try:
             return jsonify(agent.chat_vault(
-                messages, tier="fast", system=user_system, max_tokens=2048, model=model,
+                messages, tier=tier, system=user_system, max_tokens=2048, model=model,
+                allow_write=edit_mode, max_steps=8 if edit_mode else 6,
             ))
-        except router.RouterError:
-            pass  # fall through to plain outline-grounded chat below
+        except router.RouterError as e:
+            if tier != "fast":
+                return jsonify({"error": e.message}), e.status
+            pass  # fast: fall through to plain outline-grounded chat below
 
     # The weak local model is blind on its own, so ground it with the live vault
     # structure. The cloud/subscription tiers can read files themselves, so they
@@ -1049,7 +1060,7 @@ def api_chat():
     try:
         result = router.chat(
             messages, tier=tier, system=system, max_tokens=2048,
-            model=model, attachments=attachments,
+            model=model, attachments=attachments, allow_write=edit_mode,
         )
     except router.RouterError as e:
         return jsonify({"error": e.message}), e.status

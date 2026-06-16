@@ -908,16 +908,18 @@
     <section class="view" data-view="chat" hidden>
       <div class="view-head">
         <h2>Chat</h2>
-        <p>One chat, two backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Claude</b> runs on Claude in the cloud, billed to your subscription.</p>
+        <p>One chat, three backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on the Anthropic API (billed to API credits); <b>Claude</b> runs on Claude in the cloud, billed to your subscription. Edit mode (vault writes) works on all three.</p>
       </div>
       <div class="panel-wrap">
         <div class="tier-bar">
           <div class="filter-group">
             <button class="pill on" id="tier-fast"   onclick="setTier('fast')">⚡ Fast · local</button>
+            <button class="pill"    id="tier-smart"  onclick="setTier('smart')">🧠 Smart · API</button>
             <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
           </div>
           <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
           <span class="tier-status" id="tier-status"></span>
+          <button class="pill" id="chat-edit" onclick="toggleEdit()" title="Edit mode — let chat change vault notes">✏️ Edit: off</button>
           <button class="chat-clear" onclick="clearChat()" title="Clear conversation">Clear</button>
         </div>
         <div class="chat-box">
@@ -1507,6 +1509,7 @@
   let chatBusy = false;
   let chatTier = 'fast';
   let chatModel = null;       // local model override (fast tier); null = server default
+  let chatEdit = false;       // Edit mode — chat may write to the vault (fast/smart only)
   let chatAttachments = [];   // staged uploads for the next message
   let routerStatus = null;
 
@@ -1555,9 +1558,28 @@
   function setTier(tier) {
     chatTier = tier;
     document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
+    document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
     document.getElementById('tier-claude').classList.toggle('on', tier === 'claude');
     document.getElementById('model-select').style.display = tier === 'fast' ? '' : 'none';
     renderTierStatus();
+    renderEditToggle();
+  }
+
+  // Edit mode lets chat change vault notes. All three tiers honor it now: fast/smart
+  // through the write tool loop, claude through the CLI's file-editing tools.
+  function toggleEdit() {
+    chatEdit = !chatEdit;
+    renderEditToggle();
+  }
+
+  function renderEditToggle() {
+    const b = document.getElementById('chat-edit');
+    if (!b) return;
+    b.classList.toggle('on', chatEdit);
+    b.textContent = chatEdit ? '✏️ Edit: on' : '✏️ Edit: off';
+    b.title = chatEdit
+      ? 'Edit mode ON — chat can create and change vault notes'
+      : 'Edit mode OFF — chat is read-only';
   }
 
   function clearChat() {
@@ -1662,13 +1684,16 @@
     const log = document.getElementById('chat-log');
     const typing = document.createElement('div');
     typing.className = 'chat-typing';
-    typing.textContent = (chatTier === 'fast' ? (chatModel || 'local model') : 'Claude') + ' is thinking…';
+    const thinker = chatTier === 'fast' ? (chatModel || 'local model')
+                  : chatTier === 'smart' ? ((routerStatus && routerStatus.smart && routerStatus.smart.model) || 'Smart')
+                  : 'Claude';
+    typing.textContent = thinker + ' is thinking…';
     log.appendChild(typing);
     log.scrollTop = log.scrollHeight;
 
     fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatMsgs, tier: chatTier, model: chatTier === 'fast' ? chatModel : null, attachments: atts }),
+      body: JSON.stringify({ messages: chatMsgs, tier: chatTier, model: chatTier === 'fast' ? chatModel : null, attachments: atts, edit: chatEdit }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {

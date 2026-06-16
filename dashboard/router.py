@@ -89,13 +89,18 @@ class RouterError(Exception):
         self.status = status
 
 
-def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attachments=None) -> dict:
+def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attachments=None,
+         allow_write=False) -> dict:
     """Run a chat completion on the chosen tier.
 
     messages:    [{"role": "user"|"assistant", "content": str}, ...]
     system:      None, a string, or a list of Anthropic system blocks.
     attachments: None or [{"path", "name", "mime"}, ...] for the current turn;
                  applied to the most recent user message per the active tier.
+    allow_write: "Edit mode." Only the claude tier honors it here — it unlocks the
+                 CLI's file-editing tools (confined to the vault working dir) so the
+                 subscription tier can change notes. The fast/smart tiers write via
+                 agent.chat_vault's tool loop, not this path, so they ignore it.
     """
     tier = (tier or "fast").lower()
     if tier not in TIERS:
@@ -104,7 +109,7 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attach
     if tier == "smart":
         return _anthropic_chat(messages, system, max_tokens, model, atts)
     if tier == "claude":
-        return _claude_code_chat(messages, system, max_tokens, model, atts)
+        return _claude_code_chat(messages, system, max_tokens, model, atts, allow_write)
     return _ollama_chat(messages, system, max_tokens, model, atts)
 
 
@@ -288,13 +293,19 @@ def _flatten_conversation(messages) -> str:
     return "\n\n".join(lines)
 
 
-def _claude_code_chat(messages, system, max_tokens, model, attachments=None) -> dict:
+def _claude_code_chat(messages, system, max_tokens, model, attachments=None, allow_write=False) -> dict:
     """Run a chat turn through the Claude Code CLI (subscription-billed).
 
     max_tokens is accepted for signature parity but not forwarded — the CLI
     manages its own output budget. Attachments are passed by path: the CLI reads
     them with its own Read tool (handles images, PDFs, and text), which we enable
     non-interactively only when files are attached.
+
+    allow_write ("Edit mode") additionally grants the file-editing tools (Edit,
+    Write) plus navigation (Glob, Grep) and switches the CLI to acceptEdits so it
+    never blocks on a permission prompt — there's no terminal to answer one. Bash
+    is deliberately never allowed: this tier edits files, it does not run commands.
+    File access stays confined to the vault working dir (cwd=CLAUDE_CLI_CWD).
     """
     exe = _claude_cli_path()
     if exe is None:
@@ -316,7 +327,13 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None) -> 
         raise RouterError("Nothing to send to Claude.", 400)
 
     cmd = [exe, "-p", "--output-format", "json"]
-    if attachments:
+    # Tool permissions, narrowest-first. Edit mode unlocks the file tools and
+    # auto-accepts edits (no terminal to approve them); otherwise Read is granted
+    # only to ingest attachments. Never grant Bash.
+    if allow_write:
+        cmd += ["--allowedTools", "Read,Edit,Write,Glob,Grep",
+                "--permission-mode", "acceptEdits"]
+    elif attachments:
         cmd += ["--allowedTools", "Read"]
     sys_text = _flatten_system(system)
     if sys_text:

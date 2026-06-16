@@ -343,6 +343,11 @@ def list_agents() -> list:
 
 CHAT_TOOLS = ["search_vault", "read_note", "list_notes", "list_folder"]
 
+# Extra tools unlocked only when the caller passes allow_write=True (the chat
+# panel's "Edit mode" toggle). These mutate the vault, so they're never exposed
+# on a normal read-only chat turn.
+CHAT_WRITE_TOOLS = ["write_note", "create_project"]
+
 CHAT_SYSTEM = (
     "You are a helpful assistant for Alex's Obsidian knowledge vault, \"Regalia\". "
     "You have tools to search, list, and read the real notes — use them to ground "
@@ -355,9 +360,25 @@ CHAT_SYSTEM = (
     "=== VAULT STRUCTURE ===\n{outline}\n=== END VAULT STRUCTURE ===\n\n" + _VAULT_RULES
 )
 
+# Appended to CHAT_SYSTEM when Edit mode is on. write_note overwrites whole notes,
+# so the model is told to read first and preserve existing content/frontmatter,
+# and to act only on an explicit request.
+CHAT_WRITE_RULES = (
+    "\n\nEDIT MODE IS ON. You may now change the vault with write_note (create or "
+    "overwrite a .md note — always include the full, valid YAML frontmatter the "
+    "schema requires) and create_project (scaffold a new project folder). Only "
+    "write when the user actually asks you to create or change something — never "
+    "as a side effect of a question. write_note replaces the entire file, so to "
+    "edit an existing note, read_note it first and write back the full updated "
+    "content (keeping the existing frontmatter and the parts you weren't asked to "
+    "change). After writing, tell the user exactly which file you changed and what "
+    "you changed in it."
+)
 
-def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None, max_steps=6) -> dict:
-    """Free-form chat that can read the vault through read-only tools.
+
+def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
+               max_steps=6, allow_write=False) -> dict:
+    """Free-form chat that can read (and, with allow_write, change) the vault.
 
     Drop-in for router.chat() on the fast tier — same return shape
     ({"reply", "model", "tier"}) so /api/chat can use it directly. Drives the
@@ -365,10 +386,16 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None, 
     returns the model's final prose answer. Raises router.RouterError on a backend
     failure (e.g. the local model can't do tool calls), so the caller can fall back
     to plain outline-grounded chat.
+
+    allow_write unlocks the write/scaffold tools (CHAT_WRITE_TOOLS) and the
+    edit-mode guidance — the chat panel passes it only when "Edit mode" is on.
     """
     import app
-    tools = [TOOL_SCHEMAS[n] for n in CHAT_TOOLS if n in TOOL_SCHEMAS]
+    tool_names = CHAT_TOOLS + (CHAT_WRITE_TOOLS if allow_write else [])
+    tools = [TOOL_SCHEMAS[n] for n in tool_names if n in TOOL_SCHEMAS]
     sys_text = CHAT_SYSTEM.format(outline=app._vault_outline())
+    if allow_write:
+        sys_text += CHAT_WRITE_RULES
     if system and str(system).strip():
         sys_text += "\n\n" + str(system).strip()
 
