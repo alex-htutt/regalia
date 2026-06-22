@@ -1,0 +1,13 @@
+{
+  "_comment": "Committed (shared) project settings. Intentionally minimal: only enforceable privacy denies live here. Machine-specific permission allowlists stay in settings.local.json (gitignored).",
+  "permissions": {
+    "deny": [
+      "Read(Internship-Projects/Ambusun/**/data/**)",
+      "Edit(Internship-Projects/Ambusun/**/data/**)",
+      "Write(Internship-Projects/Ambusun/**/data/**)",
+      "Read(Internship-Projects/Essex_Securities/**/data/**)",
+      "Edit(Internship-Projects/Essex_Securities/**/data/**)",
+      "Write(Internship-Projects/Essex_Securities/**/data/**)"
+    ]
+  }
+}

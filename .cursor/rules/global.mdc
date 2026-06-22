@@ -13,5 +13,8 @@ Behavior:
 - Frontmatter is YAML with: date, tags, status, topic, deadline, related.
 - Tags follow `category/subcategory` (e.g. area/internship, type/meeting, status/active).
 - Be dense and factual. Alex is comfortable with technical depth; do not over-explain basics.
+- Don't invent. Never fabricate APIs, function signatures, benchmarks, or citations — if you don't know, say so rather than guessing with false confidence.
+- Stay scoped: make the smallest change that satisfies the request; don't refactor or add abstractions unasked.
+- Match the repo's git history for commit messages: conventional-commit style, `type(scope): summary` (e.g. `feat(dashboard): …`).
 
 Active scope is `Internship-Projects/`, `projects/`, and `research/`. The `archive/` tree (finished RPI coursework) is reference-only — search it when relevant, but do not treat it as active work.

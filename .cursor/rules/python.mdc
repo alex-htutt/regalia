@@ -1,0 +1,13 @@
+---
+description: Python conventions (backend-first)
+globs: **/*.py
+---
+
+Fires whenever a Python file is touched, regardless of folder — centralizes the "backend-first Python" convention that was repeated per-folder.
+
+Conventions:
+- Backend-first. Python is the default for code work here; don't introduce a frontend unless asked.
+- Standard library first. Don't add a third-party dependency without asking — reach for `urllib`/`json`/`xml.etree` etc. before a package. (The `dashboard/` footprint is deliberately minimal; see `dashboard/CLAUDE.md`.)
+- Don't restate formatting/linting an automated tool already enforces — spend rules on what the agent can't infer.
+- Pair changes with a verification command (e.g. the dashboard's `python -m unittest discover -s tests`).
+- Privacy still applies under `Internship-Projects/**`: never log, quote, or reproduce patient/claim data or credentials (see `Internship-Projects/CLAUDE.md`).
