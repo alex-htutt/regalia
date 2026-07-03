@@ -47,9 +47,9 @@ codex-plugin-cc/
 dashboard/tools/tailwindcss*
 dashboard/tools/*.exe
 
-# --- Evil Twin persona files (personal; not committed) ---
-My_Evil_Twin/me.md
-My_Evil_Twin/twin.md
-
-# --- Treasury scraper generated data (backfill / live archives; regenerable) ---
-Internship-Projects/Essex_Securities/treasury_web_scraper/data/
+# --- Private content: only the skeleton (dashboard + vault framework) is pushed ---
+# Classes, internships, personal projects, and persona files stay local only.
+Internship-Projects/
+schoolwork/
+Roblox_Dev/
+My_Evil_Twin/
