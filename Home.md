@@ -11,9 +11,15 @@ Map of content for the **Regalia** vault (formerly "Work Vault"). Start here.
 ## Active
 - [[Internship-Projects/_context_internship_projects|Internship — Context]] — live status, active projects.
 - [[projects/_context_projects|Projects]] — personal / side projects.
+- [[Roblox_Dev/_context_roblox_dev|Roblox Dev]] — Roblox game development (plans + current state).
 - [[research/_context_research|Research]] — self-directed learning (RAG, ML, etc.).
 - [[meetings/_context_meetings|Meetings]] — meeting notes.
 - [[ideas/_context_ideas|Ideas]] — unsorted ideas.
+- [[Internship-Projects/Ambusun/_context_ambusun|Ambusun]] — healthcare-automation internship.
+- [[Internship-Projects/Essex_Securities/_context_essex_securities|Essex Securities]] — securities-firm internship.
+
+## Schoolwork — Foothill College (active)
+- [[schoolwork/math1c/_context_math1c|MATH 1C — Calculus]] — sequences & series, vectors, multivariable differentiation (Foothill, Summer 2026; ends 08/06).
 
 ## Archive — finished RPI courses
 - [[archive/courses/engr2350/_context_engr2350|ENGR-2350 — Embedded Control]]

@@ -47,16 +47,19 @@ related: []
 
 **Run:** `cd dashboard && python app.py` → http://localhost:5000, or double-click `dashboard/start.bat`. Native window: `dashboard/desktop.py` / `desktop.bat`.
 
-Features as of v1.15 (2026-06-14):
+Features as of v1.19 (2026-06-20):
 - **Landing page:** `/` opens on an ASCII-dither hero with a spotlight on the **"Regalia."** title; scrolling drives a pinned animation where the title gives way to a **"What should we work on?"** panel of your recently-worked folders, then releases into the dashboard
 - **Overview:** stat cards (Active / Overdue / Complete / Total), filter by status / area / course, live search, deadline highlighting — over a dark "Hyperstudio" theme with ambient amber **beams** behind translucent **liquid-glass** surfaces
 - **Folder gallery:** card grid of top-level sections with context-file excerpts and subfolder drill-down
 - **Daily briefing:** tech-news RSS, founder feeds, and live job openings aggregated on the home page
 - **Claude token-usage panel:** aggregates `~/.claude/projects/**/*.jsonl` for today's tokens, all-time total, cache reads, estimated API cost, a 14-day chart, and a per-model breakdown (token counts + timestamps only — never message content)
-- **Chat & Evil Twin:** chat over the model router (`router.py`) — **Fast** = local Ollama (no API cost), **Claude** = Claude in the cloud billed to your **subscription** (via the Claude Code CLI, not API credits)
-- **Agents:** model-driven agents that run real, vault-confined tools (search/read/list/write notes, scaffold projects) in a tool-use loop (`agent.py`), streaming each step live. Built-ins: Daily Summarizer, Project Scaffolder, Research Agent. Agents can write notes — review their output. (Uses the API `smart` tier for tool use.)
+- **Chat & Evil Twin:** chat over the model router (`router.py`) — **Fast** = local Ollama (no API cost), **Smart** = Anthropic API, **Claude** = Claude in the cloud billed to your **subscription** (via the Claude Code CLI, not API credits). The local Fast tier reads and quotes real note **contents** via a read-only tool loop (v1.16); an opt-in **Edit mode** lets Chat write to the vault (v1.17)
+- **Inbox (Gmail + Outlook):** connect multiple inboxes, read mail in a list + reading pane, and **save drafts** — drafts are **never sent** (you review and send in your mail client). One-time connect via `python connect_email.py gmail|outlook`; mail I/O is stdlib `urllib`+`json` over the Gmail API / Microsoft Graph, OAuth handled by `google-auth-oauthlib` + `msal` (v1.19)
+- **Agents:** model-driven agents that run real, vault-confined tools (search/read/list/write notes, scaffold projects) in a tool-use loop (`agent.py`), streaming each step live. Built-ins: Daily Summarizer, Project Scaffolder, Research Agent, and **Inbox Triage** (summarizes unread mail and drafts replies). Agents can write notes/drafts — review their output. Runs on the `fast`/`smart`/`claude` tier (picker per agent; v1.18)
 
-Needs the Claude Code CLI signed in to a Claude subscription for the `claude` tier (Chat + Twin); `ANTHROPIC_API_KEY` for the `smart` tier (Agents); Ollama (`ollama pull llama3.2`) for the `fast` tier.
+Needs the Claude Code CLI signed in to a Claude subscription for the `claude` tier (Chat + Twin); `ANTHROPIC_API_KEY` for the `smart` tier (Agents); Ollama (`ollama pull llama3.2`) for the `fast` tier. For the **Inbox**: `pip install -r dashboard/requirements.txt`, register OAuth clients (Google Cloud "Desktop app" → `GMAIL_OAUTH_CLIENT`; Azure public client → `MS_OAUTH_CLIENT_ID`, `MS_OAUTH_TENANT=consumers` for personal Outlook), then run `connect_email.py` once per account.
+
+**Further steps:** Stage 4 automations (an in-process scheduler running agents on a cron — e.g. a morning standup or inbox triage), run-history persistence + a write-confirm gate (the trust floor for unattended runs), then optional send-with-confirm for email. Full roadmap in `dashboard/PRODUCT_VISION.md`.
 
 ## Bases
 `Internship-Projects/internship.base` is a live table view (Obsidian 1.9+) filtering all `area/internship` notes — data lives in note frontmatter, not the `.base` file.

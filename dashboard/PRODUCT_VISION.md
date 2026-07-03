@@ -27,18 +27,27 @@ DB until retrieval actually hurts.
 
 ## Where we are
 
-**v1.6 / Stage 3 shipped** — task list, filters, folder browser, token-usage panel, a three-tier model
-router (local `fast` / subscription `claude` / API `smart`), and a real tool-using agent loop with three
-agents. As of v1.6 Chat + Twin run on the Claude subscription (CLI) rather than API credits. See
-[[dashboard/_context_dashboard.md]] ("Current state") for detail.
+**Through v1.19 (Stage 3 done; trust floor partly in place) —** task list, filters, folder browser,
+token-usage panel, daily briefing, the Regalia landing page, a three-tier model router (local `fast` /
+subscription `claude` / API `smart`), and a real tool-using agent loop with four agents. Chat + Twin run
+on the Claude subscription (CLI); Chat reads note bodies and has an opt-in Edit mode (v1.16–v1.17); the
+Agents view can run on any tier incl. the subscription `claude` tier (v1.18). The **smoke-test harness**
+(Horizon 1) shipped and now stands at 35 tests. **v1.19 added multi-inbox email** (Gmail + Outlook): read
+inboxes + save drafts (drafts-only by construction), via `mailbox.py` / `email_sources.py` /
+`connect_email.py` and an **Inbox Triage** agent — the first capability that reaches *outside* the vault.
+See [[dashboard/_context_dashboard.md]] ("Current state") for detail.
 
 The roadmap below leans on primitives that **already exist** — it mostly schedules, gates, and surfaces
 them rather than building new machinery:
 
 - `run_agent()` + the `AGENTS` registry — `agent.py` (the model→tools→results loop)
-- `chat()` / `chat_tools()` — `router.py` (every model call goes through here)
+- `chat()` / `chat_tools()` / `claude_code_stream()` — `router.py` (every model call goes through here)
 - `create_project_core()` and the in-memory `_RUNS` run store — `app.py`
 - vault-confined, traversal-safe tools incl. `write_note` — `agent.py`
+- `mailbox.py` — provider-agnostic read/draft over Gmail + Graph (drafts-only; no send path)
+
+**Still open from Horizon 1:** the **write-confirm gate** — now spanning `write_note`/`create_project`
+*and* `draft_email` — remains the key prerequisite before any unattended automation.
 
 ## Themes
 
@@ -60,10 +69,12 @@ Three horizons. Each item: *what · why · reuses*. Sizes: **S** (hours) / **M**
 
 Do these first: they unblock *safe* automation and deliver immediate daily-driver value.
 
-- **Write-confirm gate for `write_note`** · Theme ③ · **M.** Today `write_note` / `create_project` have
-  free rein inside the vault. Add a dry-run/preview + approval path so interactive runs can confirm writes
-  and unattended runs follow an explicit policy. *Why:* prerequisite for trusting cron agents. *Reuses:*
-  the `write_note` tool and the per-step `emit` stream in `run_agent()`.
+- **Write-confirm gate for `write_note` (+ `create_project`, `draft_email`)** · Theme ③ · **M.** Today
+  `write_note` / `create_project` have free rein inside the vault and `draft_email` (v1.19) can create
+  drafts unprompted. Add a dry-run/preview + approval path so interactive runs can confirm writes and
+  unattended runs follow an explicit policy. *Why:* prerequisite for trusting cron agents (and for ever
+  letting email move past drafts-only). *Reuses:* the write/draft tools and the per-step `emit` stream in
+  `run_agent()`.
 - **Inline status toggle + create-task form** · Theme ② · **M.** Mark a note complete / create a note with
   correct frontmatter from the UI, without leaving the dashboard. *Reuses:* the `create_project_core()`
   pattern in `app.py`, the `write_note` frontmatter shape, and the Projects-view form as the UI template
@@ -78,20 +89,27 @@ Do these first: they unblock *safe* automation and deliver immediate daily-drive
 - **Run-history persistence** · Theme ①/③ · **M.** Persist `_RUNS` (in-memory, FIFO-capped at 50 in
   `app.py`) to a JSON/SQLite file so scheduled runs survive restarts and leave an audit trail. *Why:*
   unattended output is worthless if it vanishes on restart.
-- **In-process scheduler** · Theme ① · **L.** APScheduler (in-process — *ask before adding the dep* per
-  [[dashboard/CLAUDE.md]]'s no-new-deps rule) registering agent runs on a cron, e.g. "every morning,
+- **In-process scheduler** · Theme ① · **L.** APScheduler (in-process — deps are fair game now, see
+  [[dashboard/CLAUDE.md]]'s dependency policy) registering agent runs on a cron, e.g. "every morning,
   summarize yesterday's daily-logs into a standup note." *Reuses:* `run_agent()` verbatim — the loop
   already exists; this only schedules and feeds it. Adds `/api/schedule` endpoints + a schedules store.
 - **Schedules view** · Theme ①/② · **M.** A new sidebar view to create / list / enable / disable cron
   agent jobs and see last-run status. *Reuses:* the Agents-view streaming/polling UI pattern.
 - **Run feed / output as notes** · Theme ① · **S–M.** Scheduled-run results land as notes (via the gated
   `write_note`) and show in a recent-runs feed. *Reuses:* persisted run history above.
+- **Scheduled Inbox Triage** · Theme ① · **S.** Once the scheduler + write-confirm gate exist, run the
+  v1.19 **Inbox Triage** agent on a cron (e.g. each morning: summarize unread mail, draft replies for
+  review). *Reuses:* `run_agent()` + the email tools in `mailbox.py`/`agent.py`; stays drafts-only.
 
 ### Horizon 3 — Polish & insights (later, opportunistic)
 
 - **Group-by view + tag filters beyond area** · Theme ② · **S each.** JS-only; the backend already filters
   by type/status in `list_notes` (`agent.py`).
 - **Open-note-in-default-editor** · Theme ② · **S.** A desktop-shell hook in `desktop.py`.
+- **Email: send-with-confirm (gated) + more connectors** · Theme ②/③ · **M, gated.** Optionally let email
+  move past drafts-only with an explicit per-send confirmation (needs `Mail.Send` + a Gmail send call +
+  the write-confirm gate first — a deliberate trust-model change). Same `mailbox.py` shape could later host
+  read-only Calendar / Drive connectors. *Reuses:* the v1.19 OAuth + provider abstraction.
 - **Richer insights** · Theme ④ · **M–L.** Vault-health metrics, deadline/calendar view, search across
   note *bodies* (not just title/topic).
 - **Stage 5 — memory/embeddings** · Theme ④ · **L, gated.** Only if Stage 3/4 agents start fumbling
@@ -151,3 +169,5 @@ mobile · cloud hosting. Keeping these out is what makes a solo Flask + vanilla-
   confirm gate exists?
 - Where do scheduled-run outputs and notifications surface — a feed view, a note, a desktop notification,
   or all three?
+- Email: stay **drafts-only** indefinitely, or add gated send once the write-confirm gate exists? And is
+  email worth extending to read-only Calendar / Drive connectors on the same `mailbox.py` shape?

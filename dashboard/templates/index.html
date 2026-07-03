@@ -179,6 +179,9 @@
   .news-item a { font-size: 12.5px; color: var(--text); text-decoration: none; line-height: 1.35; display: block; }
   .news-item a:hover { color: var(--purple-fg); }
   .news-item .meta { font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+  .news-item .fit-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .news-item .fit-tag { font-size: 9.5px; line-height: 1; padding: 3px 6px; border-radius: 99px; background: var(--amber-bg); border: 1px solid rgba(231,197,154,0.28); color: var(--amber-fg); letter-spacing: 0.2px; }
+  .news-item .fit-tag.early { background: var(--amber); border-color: var(--amber); color: var(--accent-fg); font-weight: 600; }
   .news-foot { font-size: 10.5px; color: var(--faint); margin-top: 12px; }
   .news.empty-state { color: var(--faint); font-size: 12.5px; }
 
@@ -533,7 +536,14 @@
   }
   .tier.fast  { background: var(--green-bg); color: var(--green-fg); }
   .tier.smart { background: var(--purple-bg); color: var(--purple-fg); }
+  .tier.claude { background: rgba(231,197,154,0.14); color: var(--accent); }
   .agent-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .agent-tier-select {
+    font-size: 11px; color: var(--muted); background: var(--surface-2, #212121);
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px;
+    cursor: pointer; max-width: 120px;
+  }
+  .agent-tier-select:focus { border-color: var(--border-hover); outline: none; }
   .agent-run { display: flex; gap: 6px; margin-top: 2px; }
   .agent-run input {
     flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
@@ -741,6 +751,62 @@
     .stage-panel .tile { opacity: 1 !important; transform: none !important; }
     .scroll-hint .chev { animation: none; }
   }
+
+  /* ── Inbox view ── */
+  .inbox-wrap { max-width: 1040px; }
+  .inbox-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .inbox-bar select, .inbox-bar input {
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px;
+    font-size: 12.5px; font-family: inherit; background: var(--bg); color: var(--text); outline: none;
+  }
+  .inbox-bar select { cursor: pointer; max-width: 280px; }
+  .inbox-bar input { flex: 1; min-width: 140px; }
+  .inbox-bar select:focus, .inbox-bar input:focus { border-color: var(--border-hover); }
+  .inbox-btn {
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    border-radius: 6px; padding: 6px 12px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .inbox-btn:hover { border-color: var(--border-hover); }
+  .inbox-btn.primary { border: none; background: var(--accent); color: var(--accent-fg); }
+  .inbox-btn.ghost { padding: 6px 10px; color: var(--muted); }
+  .inbox-btn:disabled { opacity: 0.5; cursor: default; }
+  .inbox-split { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 14px; align-items: start; }
+  .inbox-list { display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; }
+  .mail-item {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; cursor: pointer; display: flex; flex-direction: column; gap: 3px;
+  }
+  .mail-item:hover { border-color: var(--border-hover); }
+  .mail-item.on { border-color: var(--accent); }
+  .mail-item.unread .mail-subj { font-weight: 700; }
+  .mail-item .mail-from { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .mail-item .mail-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+  .mail-item .mail-subj { font-size: 13px; line-height: 1.35; }
+  .mail-item .mail-snip { font-size: 11.5px; color: var(--faint); line-height: 1.35;
+    overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .inbox-reader {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
+    padding: 16px 18px; min-height: 200px; max-height: 70vh; overflow-y: auto;
+  }
+  .reader-subj { font-size: 16px; font-weight: 600; margin-bottom: 8px; line-height: 1.35; }
+  .reader-meta { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .reader-body { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word;
+    margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
+  .reader-actions { margin-top: 14px; }
+  /* Compose modal */
+  .modal.compose { max-width: 620px; }
+  .compose-body { display: flex; flex-direction: column; gap: 9px; padding: 4px 2px 2px; }
+  .compose-acct { font-size: 12px; color: var(--muted); }
+  .compose-body input, .compose-body textarea {
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+    font-size: 13px; font-family: inherit; background: var(--bg); color: var(--text); outline: none;
+  }
+  .compose-body textarea { resize: vertical; line-height: 1.5; }
+  .compose-body input:focus, .compose-body textarea:focus { border-color: var(--border-hover); }
+  .compose-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 2px; }
+  .compose-note { font-size: 11.5px; color: var(--faint); }
+  @media (max-width: 760px) { .inbox-split { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -840,6 +906,7 @@
     <button class="nav"    data-view="browse"   onclick="setView('browse')">🗂️ Browse</button>
     <button class="nav"    data-view="chat"     onclick="setView('chat')">💬 Chat</button>
     <button class="nav"    data-view="twin"     onclick="setView('twin')">😈 Twin</button>
+    <button class="nav"    data-view="inbox"    onclick="setView('inbox')">📨 Inbox</button>
     <button class="nav"    data-view="agents"   onclick="setView('agents')">🤖 Agents</button>
   </nav>
   <main class="main">
@@ -966,6 +1033,27 @@
       </div>
     </section>
 
+    <section class="view" data-view="inbox" hidden>
+      <div class="view-head">
+        <h2>Inbox</h2>
+        <p>Read your connected Gmail / Outlook inboxes and save drafts. Drafts are never sent — review and send them from your mail client.</p>
+      </div>
+      <div class="panel-wrap inbox-wrap">
+        <div class="inbox-bar">
+          <select id="inbox-account" onchange="loadMessages()"></select>
+          <input id="inbox-search" type="text" placeholder="Search mail…"
+                 onkeydown="if (event.key === 'Enter') loadMessages()">
+          <button class="inbox-btn" onclick="loadMessages()">Search</button>
+          <button class="inbox-btn primary" onclick="openCompose()">✏️ New draft</button>
+          <button class="inbox-btn ghost" title="Refresh" onclick="loadInboxes(true)">↻</button>
+        </div>
+        <div class="inbox-split">
+          <div class="inbox-list" id="inbox-list"><div class="empty-sm">Loading…</div></div>
+          <div class="inbox-reader" id="inbox-reader"><div class="empty-sm">Select a message to read it.</div></div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" data-view="agents" hidden>
       <div class="view-head">
         <h2>Agents</h2>
@@ -992,6 +1080,25 @@
     <div class="modal-subs" id="modal-subs"></div>
     <div class="context-file" id="context-file"></div>
     <div class="md" id="context-md"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="compose-modal" style="display: none;" onclick="if (event.target === this) closeCompose()">
+  <div class="modal compose">
+    <div class="modal-head">
+      <div class="crumbs" id="compose-title">New draft</div>
+      <button class="modal-close" onclick="closeCompose()" title="Close (Esc)">✕</button>
+    </div>
+    <div class="compose-body">
+      <div class="compose-acct" id="compose-acct"></div>
+      <input id="compose-to" type="text" placeholder="To (comma-separated)">
+      <input id="compose-subject" type="text" placeholder="Subject">
+      <textarea id="compose-text" rows="10" placeholder="Write your message…"></textarea>
+      <div class="compose-foot">
+        <span class="compose-note" id="compose-note">Saved as a draft — never sent automatically.</span>
+        <button class="inbox-btn primary" id="compose-save" onclick="saveDraft()">Save draft</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1322,7 +1429,7 @@
     history.replaceState(null, '', location.pathname);
   }
 
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeCompose(); } });
 
   function renderCrumbs(path) {
     const parts = path ? path.split('/') : [];
@@ -1447,7 +1554,13 @@
       const link = it.url
         ? `<a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a>`
         : `<span>${esc(it.title)}</span>`;
-      return `<div class="news-item">${link}<div class="meta">${meta}</div></div>`;
+      const tags = (kind === 'jobs' && it.tags && it.tags.length)
+        ? `<div class="fit-tags">${it.tags.map(t => {
+            const early = (t === 'Intern' || t === 'Early career');
+            return `<span class="fit-tag${early ? ' early' : ''}">${esc(t)}</span>`;
+          }).join('')}</div>`
+        : '';
+      return `<div class="news-item">${link}<div class="meta">${meta}</div>${tags}</div>`;
     }).join('') : '<div class="news-item meta">Nothing right now.</div>';
     return `<div class="news-col"><h3>${title}</h3>${rows}</div>`;
   }
@@ -1471,7 +1584,7 @@
       <div class="news-cols">
         ${newsCol('Tech news', d.news, 'news')}
         ${newsCol('Social &amp; blogs', d.social, 'social')}
-        ${newsCol('Opportunities', d.jobs, 'jobs')}
+        ${newsCol('Opportunities &middot; for you', d.jobs, 'jobs')}
       </div>
       <div class="news-foot">Cached ~30 min. Sources configured in news_sources.py.</div>
     </div>`;
@@ -1493,15 +1606,146 @@
 
 <script>
   /* ── Workspace shell: view switching + projects + agents ── */
-  const loaded = { projects: false, agents: false, chat: false, twin: false };
+  const loaded = { projects: false, agents: false, chat: false, twin: false, inbox: false };
 
   function setView(v) {
     document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.view === v));
     document.querySelectorAll('.view').forEach(s => { s.hidden = s.dataset.view !== v; });
     if (v === 'projects' && !loaded.projects) { loaded.projects = true; loadProjects(); }
     if (v === 'agents'   && !loaded.agents)   { loaded.agents = true;   loadAgents(); }
+    if (v === 'inbox'    && !loaded.inbox)    { loaded.inbox = true;     loadInboxes(); }
     if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); }
     if (v === 'twin'     && !loaded.twin)     { loaded.twin = true;      initTwin(); }
+  }
+
+  /* ── Inbox (Gmail + Outlook) ── */
+  let inboxAccounts = [];
+  let inboxCurrentMsg = null;   // {account_id, id, subject} of the open message
+  let composeReply = null;      // reply context, or null for a new draft
+
+  function loadInboxes(refresh) {
+    const list = document.getElementById('inbox-list');
+    if (refresh) list.innerHTML = '<div class="empty-sm">Loading…</div>';
+    fetch('/api/inboxes').then(r => r.json()).then(d => {
+      inboxAccounts = d.accounts || [];
+      const sel = document.getElementById('inbox-account');
+      if (!inboxAccounts.length) {
+        sel.innerHTML = '<option>No inboxes connected</option>';
+        sel.disabled = true;
+        list.innerHTML = '<div class="empty-sm">No inboxes connected yet.<br><br>' +
+          'In the <code>dashboard/</code> folder run <code>python connect_email.py gmail</code> ' +
+          '(or <code>outlook</code>), then click ↻ to refresh.</div>';
+        document.getElementById('inbox-reader').innerHTML =
+          '<div class="empty-sm">Connect an inbox to start reading.</div>';
+        return;
+      }
+      sel.disabled = false;
+      sel.innerHTML = inboxAccounts.map(a => {
+        const u = (typeof a.unread === 'number') ? ` · ${a.unread} unread` : '';
+        const warn = a.status === 'error' ? ' ⚠️' : '';
+        return `<option value="${esc(a.id)}">${esc(a.address || a.id)} (${esc(a.provider)})${u}${warn}</option>`;
+      }).join('');
+      loadMessages();
+    }).catch(() => { list.innerHTML = '<div class="empty-sm">Could not load inboxes.</div>'; });
+  }
+
+  function loadMessages() {
+    const sel = document.getElementById('inbox-account');
+    const id = sel.value;
+    if (!id || sel.disabled) return;
+    const q = document.getElementById('inbox-search').value.trim();
+    const list = document.getElementById('inbox-list');
+    list.innerHTML = '<div class="empty-sm">Loading…</div>';
+    const url = `/api/inbox/${encodeURIComponent(id)}` + (q ? `?q=${encodeURIComponent(q)}` : '');
+    fetch(url).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+      if (!ok) { list.innerHTML = `<div class="empty-sm">${esc(d.error || 'Could not load mail.')}</div>`; return; }
+      const msgs = d.messages || [];
+      if (!msgs.length) { list.innerHTML = '<div class="empty-sm">No messages.</div>'; return; }
+      list.innerHTML = msgs.map(m => `
+        <div class="mail-item ${m.unread ? 'unread' : ''}" id="mail-${esc(m.id)}"
+             onclick="openEmail('${esc(id)}', '${esc(m.id)}')">
+          <div class="mail-from">${m.unread ? '<span class="mail-dot"></span>' : ''}${esc(m.from || '(unknown)')}</div>
+          <div class="mail-subj">${esc(m.subject || '(no subject)')}</div>
+          ${m.snippet ? `<div class="mail-snip">${esc(m.snippet)}</div>` : ''}
+        </div>`).join('');
+    }).catch(() => { list.innerHTML = '<div class="empty-sm">Could not load mail.</div>'; });
+  }
+
+  function openEmail(accountId, msgId) {
+    document.querySelectorAll('.mail-item').forEach(el => el.classList.remove('on'));
+    const item = document.getElementById('mail-' + msgId);
+    if (item) item.classList.add('on');
+    const reader = document.getElementById('inbox-reader');
+    reader.innerHTML = '<div class="empty-sm">Loading…</div>';
+    fetch(`/api/email/${encodeURIComponent(accountId)}/${encodeURIComponent(msgId)}`)
+      .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+        if (!ok) { reader.innerHTML = `<div class="empty-sm">${esc(d.error || 'Could not open the message.')}</div>`; return; }
+        inboxCurrentMsg = { account_id: accountId, id: d.id, subject: d.subject || '' };
+        reader.innerHTML = `
+          <div class="reader-subj">${esc(d.subject || '(no subject)')}</div>
+          <div class="reader-meta"><b>From:</b> ${esc(d.from || '')}</div>
+          ${d.to ? `<div class="reader-meta"><b>To:</b> ${esc(d.to)}</div>` : ''}
+          <div class="reader-meta"><b>Date:</b> ${esc(d.date || '')}</div>
+          <div class="reader-actions"><button class="inbox-btn" onclick="openCompose(true)">↩ Draft reply</button></div>
+          <div class="reader-body">${esc(d.body || '(empty body)')}</div>`;
+      }).catch(() => { reader.innerHTML = '<div class="empty-sm">Could not open the message.</div>'; });
+  }
+
+  function openCompose(isReply) {
+    const sel = document.getElementById('inbox-account');
+    const accountId = sel.value;
+    if (!accountId || sel.disabled) { alert('Connect an inbox first.'); return; }
+    const acctLabel = inboxAccounts.find(a => a.id === accountId);
+    document.getElementById('compose-acct').textContent =
+      'From: ' + (acctLabel ? (acctLabel.address || acctLabel.id) : accountId);
+    const toEl = document.getElementById('compose-to');
+    const subjEl = document.getElementById('compose-subject');
+    const bodyEl = document.getElementById('compose-text');
+    if (isReply && inboxCurrentMsg) {
+      composeReply = { account_id: inboxCurrentMsg.account_id, msg_id: inboxCurrentMsg.id };
+      let s = inboxCurrentMsg.subject || '';
+      if (s && !/^re:/i.test(s)) s = 'Re: ' + s;
+      document.getElementById('compose-title').textContent = 'Draft reply';
+      toEl.style.display = 'none'; toEl.value = '';
+      subjEl.value = s;
+    } else {
+      composeReply = null;
+      document.getElementById('compose-title').textContent = 'New draft';
+      toEl.style.display = ''; toEl.value = '';
+      subjEl.value = '';
+    }
+    bodyEl.value = '';
+    document.getElementById('compose-note').textContent = 'Saved as a draft — never sent automatically.';
+    document.getElementById('compose-save').disabled = false;
+    document.getElementById('compose-modal').style.display = 'flex';
+    (isReply ? bodyEl : toEl).focus();
+  }
+
+  function closeCompose() {
+    document.getElementById('compose-modal').style.display = 'none';
+  }
+
+  function saveDraft() {
+    const sel = document.getElementById('inbox-account');
+    const accountId = (composeReply && composeReply.account_id) || sel.value;
+    const payload = {
+      account_id: accountId,
+      to: document.getElementById('compose-to').value.trim(),
+      subject: document.getElementById('compose-subject').value.trim(),
+      body: document.getElementById('compose-text').value,
+    };
+    if (composeReply) payload.reply_to = composeReply.msg_id;
+    const note = document.getElementById('compose-note');
+    const btn = document.getElementById('compose-save');
+    btn.disabled = true; note.textContent = 'Saving…';
+    fetch('/api/email/draft', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+      if (!ok) { note.textContent = d.error || 'Could not save the draft.'; btn.disabled = false; return; }
+      note.textContent = 'Draft saved ✓ — review and send it in your mail client.';
+      setTimeout(closeCompose, 1100);
+    }).catch(() => { note.textContent = 'Could not save the draft.'; btn.disabled = false; });
   }
 
   /* -- Generic chat (model router) -- */
@@ -1776,7 +2020,11 @@
         <div class="agent-top">
           <span class="agent-dot ${esc(a.status)}"></span>
           <span class="agent-name">${esc(a.name)}</span>
-          <span class="tier ${esc(a.tier)}">${esc(a.tier)}</span>
+          <select id="tier-${esc(a.id)}" class="agent-tier-select" title="Which backend runs this agent">
+            <option value="fast"   ${a.tier === 'fast'   ? 'selected' : ''}>⚡ fast · local</option>
+            <option value="smart"  ${a.tier === 'smart'  ? 'selected' : ''}>🧠 smart · API</option>
+            <option value="claude" ${a.tier === 'claude' ? 'selected' : ''}>✨ claude · plan</option>
+          </select>
         </div>
         <div class="agent-desc">${esc(a.desc)}</div>
         <div class="agent-run">
@@ -1802,6 +2050,8 @@
     const input = document.getElementById('task-' + id);
     const task = input ? input.value.trim() : '';
     const a = agentList.find(x => x.id === id) || {};
+    const tierSel = document.getElementById('tier-' + id);
+    const tier = tierSel ? tierSel.value : a.tier;
 
     setAgentBusy(id, true);
     const log = document.getElementById('activity-log');
@@ -1814,7 +2064,7 @@
 
     fetch('/api/agent/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: id, task: task, tier: a.tier }),
+      body: JSON.stringify({ agent: id, task: task, tier: tier }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {

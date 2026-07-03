@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import mailbox
 import router
 
 
@@ -188,6 +189,90 @@ def _tool_create_project(name: str = "", area: str = "projects", topic: str = ""
     )
 
 
+# ── Email tools (Gmail + Outlook, via mailbox.py) ────────────────────────────
+# Read-only tools (list/read/search) plus a single write tool, draft_email, which
+# creates a DRAFT only — there is deliberately no send tool. draft_email is gated
+# like write_note: it's only handed to agents that explicitly list it, never to a
+# read-only chat turn. Each returns a plain string for the model to read.
+
+def _fmt_message_line(m: dict) -> str:
+    flag = "● " if m.get("unread") else "  "
+    return (f"{flag}[{m.get('id','')}] {m.get('from','?')} — "
+            f"{m.get('subject','(no subject)')} · {m.get('date','')}".rstrip())
+
+
+def _tool_list_inboxes(**_) -> str:
+    data = mailbox.accounts_overview()
+    accts = data.get("accounts", [])
+    if not accts:
+        return ("No inboxes connected. Connect one by running "
+                "`python connect_email.py gmail` or `... outlook`.")
+    lines = []
+    for a in accts:
+        unread = a.get("unread")
+        ucount = f"{unread} unread" if isinstance(unread, int) else a.get("status", "")
+        lines.append(f"{a['id']} ({a['provider']}: {a.get('address','')}) — {ucount}")
+    out = f"{len(accts)} inbox(es):\n" + "\n".join(lines)
+    if data.get("errors"):
+        out += "\nNote: " + "; ".join(data["errors"])
+    return out
+
+
+def _tool_read_inbox(account_id: str = "", limit: int = 10, **_) -> str:
+    if not account_id.strip():
+        return "Error: account_id is required (see list_inboxes)."
+    try:
+        data = mailbox.fetch_inbox(account_id, limit=limit or 10)
+    except mailbox.MailboxError as e:
+        return f"Error: {e.message}"
+    msgs = data.get("messages", [])
+    if not msgs:
+        return f"Inbox '{account_id}' has no recent messages."
+    return f"{len(msgs)} recent message(s) in {account_id}:\n" + "\n".join(
+        _fmt_message_line(m) for m in msgs)
+
+
+def _tool_search_email(account_id: str = "", query: str = "", limit: int = 10, **_) -> str:
+    if not account_id.strip():
+        return "Error: account_id is required (see list_inboxes)."
+    if not query.strip():
+        return "Error: search needs a non-empty query."
+    try:
+        data = mailbox.search_messages(account_id, query, limit=limit or 10)
+    except mailbox.MailboxError as e:
+        return f"Error: {e.message}"
+    msgs = data.get("messages", [])
+    if not msgs:
+        return f"No messages in {account_id} match '{query}'."
+    return f"{len(msgs)} match(es) for '{query}' in {account_id}:\n" + "\n".join(
+        _fmt_message_line(m) for m in msgs)
+
+
+def _tool_read_email(account_id: str = "", msg_id: str = "", **_) -> str:
+    if not account_id.strip() or not msg_id.strip():
+        return "Error: account_id and msg_id are required."
+    try:
+        m = mailbox.read_message(account_id, msg_id)
+    except mailbox.MailboxError as e:
+        return f"Error: {e.message}"
+    return (f"From: {m.get('from','')}\nTo: {m.get('to','')}\n"
+            f"Subject: {m.get('subject','')}\nDate: {m.get('date','')}\n\n"
+            f"{m.get('body','') or '(empty body)'}")
+
+
+def _tool_draft_email(account_id: str = "", to: str = "", subject: str = "",
+                      body: str = "", reply_to: str = "", **_) -> str:
+    if not account_id.strip():
+        return "Error: account_id is required (see list_inboxes)."
+    try:
+        result = mailbox.create_draft(account_id, to=to, subject=subject, body=body,
+                                      reply_to_msg_id=reply_to)
+    except mailbox.MailboxError as e:
+        return f"Error: {e.message}"
+    return (f"Draft saved in {account_id} (id {result.get('id','?')}). "
+            "It was NOT sent — review and send it from your mail client.")
+
+
 TOOL_FNS = {
     "search_vault": _tool_search_vault,
     "read_note": _tool_read_note,
@@ -195,6 +280,11 @@ TOOL_FNS = {
     "list_folder": _tool_list_folder,
     "write_note": _tool_write_note,
     "create_project": _tool_create_project,
+    "list_inboxes": _tool_list_inboxes,
+    "read_inbox": _tool_read_inbox,
+    "search_email": _tool_search_email,
+    "read_email": _tool_read_email,
+    "draft_email": _tool_draft_email,
 }
 
 # Anthropic-style tool schemas. router.chat_tools translates these for Ollama.
@@ -267,6 +357,63 @@ TOOL_SCHEMAS = {
             "required": ["name"],
         },
     },
+    "list_inboxes": {
+        "name": "list_inboxes",
+        "description": "List the connected email inboxes (Gmail/Outlook) with their account ids, addresses, and unread counts. Call this first to get the account_id the other email tools need.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    "read_inbox": {
+        "name": "read_inbox",
+        "description": "List recent messages in an inbox (newest first). Returns each message's id, sender, subject, date, and unread flag.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string", "description": "From list_inboxes."},
+                "limit": {"type": "integer", "description": "Max messages (default 10)."},
+            },
+            "required": ["account_id"],
+        },
+    },
+    "search_email": {
+        "name": "search_email",
+        "description": "Search an inbox for messages matching a query (sender, subject, or body). Returns matching message ids + headers.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string", "description": "From list_inboxes."},
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results (default 10)."},
+            },
+            "required": ["account_id", "query"],
+        },
+    },
+    "read_email": {
+        "name": "read_email",
+        "description": "Read one full email (headers + body) by its message id within an account.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string", "description": "From list_inboxes."},
+                "msg_id": {"type": "string", "description": "From read_inbox/search_email."},
+            },
+            "required": ["account_id", "msg_id"],
+        },
+    },
+    "draft_email": {
+        "name": "draft_email",
+        "description": "Save a DRAFT email (it is never sent — the user reviews and sends it). Provide either `to` for a new message, or `reply_to` (a message id) to draft a reply on that thread.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string", "description": "From list_inboxes."},
+                "to": {"type": "string", "description": "Recipient(s), comma-separated. Omit for a reply."},
+                "subject": {"type": "string"},
+                "body": {"type": "string", "description": "Plain-text body."},
+                "reply_to": {"type": "string", "description": "Message id to reply to (optional)."},
+            },
+            "required": ["account_id"],
+        },
+    },
 }
 
 
@@ -313,8 +460,8 @@ AGENTS = {
     "researcher": {
         "id": "researcher",
         "name": "Research Agent",
-        "desc": "Read vault sources and synthesize them into a research note.",
-        "tier": "smart",
+        "desc": "Research a topic and synthesize a structured research note (Hermes web research; vault on other tiers).",
+        "tier": "hermes",
         "tools": ["search_vault", "read_note", "list_notes", "write_note"],
         "default_task": "",
         "system": (
@@ -323,6 +470,30 @@ AGENTS = {
             "key findings with note references via [[wikilinks]], open questions). Save it "
             "with write_note under the relevant project's research/ folder as a "
             "type/research note with proper frontmatter, then summarize what you wrote. " + _VAULT_RULES
+        ),
+    },
+    "inbox_triage": {
+        "id": "inbox_triage",
+        "name": "Inbox Triage",
+        "desc": "Read connected inboxes via Hermes, summarize what needs attention, and propose replies for review.",
+        # Runs on the Hermes runtime: Hermes reads mail with its OWN Gmail/Outlook
+        # email skills (no custom in-process tools, no Google/Azure OAuth app). The
+        # `tools` list below is informational — like the researcher on this tier,
+        # Hermes uses its own skills, not these. Sending stays gated until
+        # send-after-review (M4): the prompt forbids any send/reply skill, so replies
+        # come back only as proposed text for the human to review.
+        "tier": "hermes",
+        "tools": ["list_inboxes", "read_inbox", "search_email", "read_email", "draft_email"],
+        "default_task": "Summarize the unread mail across my connected inboxes and flag anything that needs a reply.",
+        "system": (
+            "You are Inbox Triage, running on the Hermes runtime with its email skills "
+            "(e.g. the Gmail '$GAPI gmail' skill). Read recent and unread mail, open "
+            "anything important, and produce a concise, prioritized summary: who emailed, "
+            "what they want, and what (if anything) needs a reply. When the user asks for "
+            "a reply, write the proposed reply TEXT in your final answer for the human to "
+            "review — do NOT send it and do NOT call any send or reply skill (sending is "
+            "gated behind human review in the dashboard). Be accurate: never invent "
+            "senders or message contents; read the mail before summarizing it."
         ),
     },
 }
@@ -441,6 +612,138 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
             "model": model_used, "tier": tier}
 
 
+# ── Subscription (claude CLI) agent runner — streamed (option 2) ─────────────
+# The `claude` tier doesn't drive our in-process tool loop: the Claude Code CLI
+# runs its OWN model→tools→repeat loop and we stream its events. It bills the
+# signed-in subscription (no API key) and uses the CLI's native file tools rather
+# than our custom vault tools, so the agent prompts get a translation note.
+
+_CLAUDE_AGENT_RULES = (
+    "\n\nRUNTIME NOTE: You are running with your own built-in tools (Read, Grep, "
+    "Glob, and — when this task involves saving work — Write and Edit), with the "
+    "vault root as your current working directory. Any tool names referenced above "
+    "(search_vault, read_note, list_notes, list_folder, write_note, create_project) "
+    "are conceptual — accomplish the equivalent with your own tools: search with "
+    "Grep/Glob, open notes with Read, and save notes by writing .md files (with "
+    "correct YAML frontmatter) via Write/Edit. To scaffold a project, create its "
+    "folder with code/data/notes/research subfolders and a _context_<name>.md, then "
+    "add a [[wikilink]] to it in Home.md. Finish with a short plain-text summary."
+)
+
+
+def _tool_result_text(content) -> str:
+    """Coerce a CLI tool_result's content (str or list of blocks) to a string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict):
+                parts.append(b.get("text") or b.get("content") or "")
+            else:
+                parts.append(str(b))
+        return "\n".join(p for p in parts if p)
+    return str(content) if content is not None else ""
+
+
+def _run_agent_claude(spec, task, emit) -> dict:
+    """Run an agent on the subscription `claude` CLI tier, streaming its steps.
+
+    Consumes router.claude_code_stream and maps the CLI's native events onto the
+    same step vocabulary the in-process loop emits (start / think / tool /
+    tool_result / final), so the Agents view streams live regardless of tier.
+    Returns run_agent's standard result dict. The CLI runs its own loop; the
+    router's wall-clock timeout (CLAUDE_CLI_TIMEOUT) is the bound, not a step cap.
+    """
+    writes = any(t in ("write_note", "create_project") for t in spec["tools"])
+    allowed = ["Read", "Grep", "Glob"] + (["Write", "Edit"] if writes else [])
+    system = spec["system"] + _CLAUDE_AGENT_RULES
+
+    emit({"type": "start", "agent": spec["id"], "tier": "claude", "task": task})
+    steps: list = []
+    names: dict = {}   # tool_use_id -> tool name, to label results
+    reply = ""
+    model = ""
+    try:
+        for ev in router.claude_code_stream(task, system=system, allowed_tools=allowed):
+            etype = ev.get("type")
+            if etype == "system" and ev.get("subtype") == "init":
+                model = ev.get("model") or model
+            elif etype == "assistant":
+                for b in (ev.get("message") or {}).get("content") or []:
+                    bt = b.get("type")
+                    if bt == "text" and (b.get("text") or "").strip():
+                        emit({"type": "think", "text": b["text"]})
+                    elif bt == "tool_use":
+                        names[b.get("id")] = b.get("name")
+                        emit({"type": "tool", "tool": b.get("name"),
+                              "input": b.get("input") or {}})
+            elif etype == "user":
+                for b in (ev.get("message") or {}).get("content") or []:
+                    if b.get("type") == "tool_result":
+                        name = names.get(b.get("tool_use_id"), "tool")
+                        out = _tool_result_text(b.get("content"))
+                        steps.append({"tool": name, "input": {}, "output": out})
+                        emit({"type": "tool_result", "tool": name, "output": out[:600]})
+            elif etype == "result":
+                if ev.get("is_error"):
+                    why = ev.get("result") or ev.get("subtype") or "unknown error"
+                    raise AgentError(f"The Claude CLI returned an error: {why}")
+                reply = (ev.get("result") or "").strip()
+                model = next(iter(ev.get("modelUsage") or {}), None) or model
+    except router.RouterError as e:
+        emit({"type": "error", "text": e.message})
+        raise AgentError(e.message)
+
+    emit({"type": "final", "text": reply})
+    return {"reply": reply or "(the agent finished without a summary)",
+            "steps": steps, "tier": "claude", "model": model or "claude (plan)",
+            "agent": spec["id"]}
+
+
+# ── Subscription (Hermes) agent runner — one-shot ────────────────────────────
+# Like the claude tier, the `hermes` tier doesn't drive our in-process tool loop:
+# the Hermes CLI runs its OWN agent loop with its OWN tools (web research, browser,
+# Gmail/Outlook email skills) and bills the Nous Portal subscription. Hermes's
+# one-shot mode (`hermes -z`) returns only the final reply, so this runner is a
+# single call rather than a streamed step loop — we emit start → final. (A streamed
+# variant can come later if/when we adopt `hermes chat -q`'s tool transcript.)
+
+_HERMES_AGENT_RULES = (
+    "\n\nRUNTIME NOTE: You are running on the Hermes runtime with your OWN tools "
+    "(web search, browser, email skills, etc.), NOT the dashboard's in-process vault "
+    "tools. Any tool names referenced above (search_vault, read_note, list_notes, "
+    "write_note, create_project) are conceptual — accomplish the equivalent with your "
+    "own tools, and instead of saving a file, return the finished result as your final "
+    "reply text (the dashboard surfaces and saves it). Be accurate: never fabricate "
+    "sources or contents."
+)
+
+
+def _run_agent_hermes(spec, task, emit) -> dict:
+    """Run an agent on the subscription `hermes` CLI tier (one-shot).
+
+    Hands the whole task to Hermes via router.chat(tier="hermes"), which shells out
+    to `hermes -z` and returns the final reply. Hermes runs its own tool loop, so we
+    don't see intermediate steps — we emit start then final. Returns run_agent's
+    standard result dict.
+    """
+    system = spec["system"] + _HERMES_AGENT_RULES
+    emit({"type": "start", "agent": spec["id"], "tier": "hermes", "task": task})
+    messages = [{"role": "user", "content": task}]
+    try:
+        res = router.chat(messages, tier="hermes", system=system, max_tokens=3072)
+    except router.RouterError as e:
+        emit({"type": "error", "text": e.message})
+        raise AgentError(e.message)
+
+    reply = (res.get("reply") or "").strip()
+    emit({"type": "final", "text": reply})
+    return {"reply": reply or "(the agent finished without a summary)",
+            "steps": [], "tier": "hermes", "model": res.get("model", "hermes"),
+            "agent": spec["id"]}
+
+
 # ── The run loop ─────────────────────────────────────────────────────────────
 
 def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8) -> dict:
@@ -457,12 +760,8 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
     if not task:
         raise AgentError(f"{spec['name']} needs a task — tell it what to do.")
     tier = (tier or spec["tier"]).lower()
-    if tier not in ("fast", "smart"):
+    if tier not in ("fast", "smart", "claude", "hermes"):
         tier = spec["tier"]
-
-    tools = [TOOL_SCHEMAS[name] for name in spec["tools"] if name in TOOL_SCHEMAS]
-    system = spec["system"]
-    messages = [{"role": "user", "content": [{"type": "text", "text": task}]}]
 
     def _emit(ev):
         if emit:
@@ -470,6 +769,17 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
                 emit(ev)
             except Exception:  # noqa: BLE001 — never let UI plumbing break a run
                 pass
+
+    # The subscription tiers don't drive our in-process tool loop — the external
+    # CLI runs its own. Hand off to the matching runner and return its result.
+    if tier == "claude":
+        return _run_agent_claude(spec, task, _emit)
+    if tier == "hermes":
+        return _run_agent_hermes(spec, task, _emit)
+
+    tools = [TOOL_SCHEMAS[name] for name in spec["tools"] if name in TOOL_SCHEMAS]
+    system = spec["system"]
+    messages = [{"role": "user", "content": [{"type": "text", "text": task}]}]
 
     _emit({"type": "start", "agent": agent_id, "tier": tier, "task": task})
     steps = []

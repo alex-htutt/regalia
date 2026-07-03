@@ -4,6 +4,9 @@
 .env.*
 *.key
 *secret*
+# ...but DO commit the template so others know what to fill in
+!.env.example
+!**/.env.example
 
 # --- Python / dashboard ---
 __pycache__/
@@ -32,6 +35,11 @@ Desktop.ini
 # --- Chat attachments (per-session uploads; never committed) ---
 dashboard/.chat_attachments/
 
+# --- Email OAuth tokens + client secrets (per-account; never committed) ---
+dashboard/.email_tokens/
+dashboard/client_secret*.json
+dashboard/*.oauth.json
+
 # --- Cloned external repos ---
 codex-plugin-cc/
 
@@ -42,3 +50,6 @@ dashboard/tools/*.exe
 # --- Evil Twin persona files (personal; not committed) ---
 My_Evil_Twin/me.md
 My_Evil_Twin/twin.md
+
+# --- Treasury scraper generated data (backfill / live archives; regenerable) ---
+Internship-Projects/Essex_Securities/treasury_web_scraper/data/

@@ -20,6 +20,7 @@ import yaml
 from flask import Flask, jsonify, render_template, request
 
 import agent
+import mailbox
 import news_sources
 import router
 
@@ -480,13 +481,42 @@ def _fetch_bluesky() -> tuple[list[dict], list[str]]:
     return items, errors
 
 
+def _score_job(title: str, location: str) -> tuple[int, list[str]]:
+    """Rank one posting against Alex's profile (news_sources.PROFILE config).
+
+    Returns (score, tags). Interest-bucket hits add points and a tag;
+    internship/new-grad roles get a big boost (he's an undergrad); senior roles
+    are pushed down; a preferred location is a soft bonus. Score <= 0 means
+    "not for you" and the posting is dropped by the caller. Title matching is
+    word-bounded so short tokens (ml, ai) don't fire inside other words.
+    """
+    t = (title or "").lower()
+    loc = (location or "").lower()
+    tags: list[str] = []
+    score = 0
+    for bucket, kws in news_sources.INTEREST_KEYWORDS.items():
+        if any(re.search(rf"\b{re.escape(kw)}\b", t) for kw in kws):
+            tags.append(bucket)
+            score += 3
+    if any(sig in t for sig in news_sources.EARLY_CAREER_SIGNALS):
+        score += 5
+        tags.insert(0, "Intern" if "intern" in t else "Early career")
+    if any(sig in t for sig in news_sources.SENIOR_SIGNALS):
+        score -= 4
+    if any(p in loc for p in news_sources.PREFERRED_LOCATIONS):
+        score += 1
+    return score, tags
+
+
 def _fetch_jobs() -> tuple[list[dict], list[str]]:
-    items, errors = [], []
+    """Pull a wide pool of postings, score each against Alex's profile, drop the
+    irrelevant ones, and return the top matches (best fit first)."""
+    pool, errors = [], []
     for board in news_sources.GREENHOUSE_BOARDS:
         try:
             raw = _http_get(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs")
             for job in json.loads(raw).get("jobs", [])[: news_sources.MAX_PER_BOARD]:
-                items.append({
+                pool.append({
                     "source": board,
                     "title": job.get("title", "").strip(),
                     "url": job.get("absolute_url", ""),
@@ -499,7 +529,7 @@ def _fetch_jobs() -> tuple[list[dict], list[str]]:
             raw = _http_get(f"https://api.lever.co/v0/postings/{board}?mode=json")
             for job in json.loads(raw)[: news_sources.MAX_PER_BOARD]:
                 cats = job.get("categories") or {}
-                items.append({
+                pool.append({
                     "source": board,
                     "title": job.get("text", "").strip(),
                     "url": job.get("hostedUrl", ""),
@@ -507,7 +537,23 @@ def _fetch_jobs() -> tuple[list[dict], list[str]]:
                 })
         except Exception as e:  # noqa: BLE001
             errors.append(f"lever/{board}: {type(e).__name__}")
-    return items, errors
+
+    for job in pool:
+        job["score"], job["tags"] = _score_job(job["title"], job["location"])
+    matches = [j for j in pool if j["score"] > 0]
+    # Number each posting within its own board (0,1,2,…) so we can break score
+    # ties by round-robining across companies — keeps one board (e.g. Anthropic's
+    # dozens of AI roles) from filling every slot while still honoring fit score.
+    seen: dict[str, int] = {}
+    for j in matches:
+        seen[j["source"]] = j["occ"] = seen.get(j["source"], 0)
+        seen[j["source"]] += 1
+    # Best fit first; within a score, interleave boards (lower occ index first).
+    # Fall back to the raw pool only if nothing scored (never empty for no reason).
+    ranked = sorted(matches, key=lambda j: (-j["score"], j["occ"])) or pool
+    for j in ranked:
+        j.pop("occ", None)
+    return ranked[: news_sources.MAX_JOBS_SHOWN], errors
 
 
 def _build_briefing() -> dict:
@@ -726,7 +772,7 @@ def api_agent_run():
     tier = str(data.get("tier") or "").strip().lower()
     if agent_id not in agent.AGENTS:
         return jsonify({"error": f"Unknown agent '{agent_id}'."}), 400
-    if tier and tier not in ("fast", "smart"):
+    if tier and tier not in ("fast", "smart", "claude"):
         tier = ""
 
     run_id = uuid.uuid4().hex[:12]
@@ -763,6 +809,60 @@ def api_agent_run_status(run_id):
     if snapshot is None:
         return jsonify({"error": "No such run."}), 404
     return jsonify(snapshot)
+
+
+# ── Inbox / email (Gmail + Outlook) ──────────────────────────────────────────
+# Read inboxes and create drafts via mailbox.py. Write scope is drafts-only by
+# construction — there is no send route. Per-account failures degrade gracefully
+# (mailbox collects them in `errors`); a MailboxError carries a user-safe message
+# + HTTP status straight to the UI, the same way RouterError does for chat.
+
+@app.route("/api/inboxes")
+def api_inboxes():
+    """Connected accounts + unread counts. Never 500s on one bad account."""
+    try:
+        return jsonify(mailbox.accounts_overview())
+    except mailbox.MailboxError as e:
+        return jsonify({"accounts": [], "errors": [e.message]}), e.status
+
+
+@app.route("/api/inbox/<account_id>")
+def api_inbox(account_id):
+    limit = request.args.get("limit", "")
+    query = request.args.get("q", "")
+    try:
+        return jsonify(mailbox.fetch_inbox(account_id, limit=limit or mailbox.cfg.DEFAULT_INBOX_LIMIT,
+                                           query=query))
+    except mailbox.MailboxError as e:
+        return jsonify({"error": e.message}), e.status
+
+
+@app.route("/api/email/<account_id>/<path:msg_id>")
+def api_email(account_id, msg_id):
+    try:
+        return jsonify(mailbox.read_message(account_id, msg_id))
+    except mailbox.MailboxError as e:
+        return jsonify({"error": e.message}), e.status
+
+
+@app.route("/api/email/draft", methods=["POST"])
+def api_email_draft():
+    """Create a DRAFT (never send). Body: {account_id, to, subject, body, reply_to?}."""
+    data = request.get_json(silent=True) or {}
+    account_id = str(data.get("account_id") or "").strip()
+    if not account_id:
+        return jsonify({"error": "account_id is required."}), 400
+    try:
+        result = mailbox.create_draft(
+            account_id,
+            to=str(data.get("to") or ""),
+            subject=str(data.get("subject") or ""),
+            body=str(data.get("body") or ""),
+            reply_to_msg_id=str(data.get("reply_to") or ""),
+        )
+    except mailbox.MailboxError as e:
+        return jsonify({"error": e.message}), e.status
+    return jsonify(result)
 
 
 # ── Evil twin chat ──────────────────────────────────────────────────────────
