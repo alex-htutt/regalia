@@ -8,9 +8,6 @@ app goes through chat(), which picks a backend by tier.
     tier="claude" -> Claude Code CLI, subprocess   (bills your Claude subscription,
                                                     not API credits; needs `claude`
                                                     installed and signed in)
-    tier="hermes" -> Hermes agent CLI, subprocess  (bills your Nous Portal subscription
-                                                    via OAuth, not API keys; needs
-                                                    `hermes` installed + `hermes setup`)
 
 chat() returns {"reply", "model", "tier"} on success, or raises RouterError with
 a user-facing message + HTTP status the Flask layer can hand straight to the UI.
@@ -51,17 +48,7 @@ CLAUDE_CLI_TIMEOUT = int(os.environ.get("CLAUDE_CLI_TIMEOUT", "180"))
 VAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
 
-# Subscription runtime #2. The `hermes` tier shells out to the Hermes agent CLI
-# (Nous Research), which bills your Nous Portal subscription via OAuth — set up
-# once with `hermes setup --portal`. HERMES_MODEL="" lets the provider pick its
-# default. Runs its own agent loop + tools (incl. Gmail/Outlook email skills), so
-# it's the email-retrieval + research backend, not a plain chat model.
-HERMES_CLI = os.environ.get("HERMES_CLI", "hermes")
-HERMES_PROVIDER = os.environ.get("HERMES_PROVIDER", "nous")
-HERMES_MODEL = os.environ.get("HERMES_MODEL", "")
-HERMES_TIMEOUT = int(os.environ.get("HERMES_TIMEOUT", "180"))
-
-TIERS = ("fast", "smart", "claude", "hermes")
+TIERS = ("fast", "smart", "claude")
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────
@@ -124,8 +111,6 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attach
         return _anthropic_chat(messages, system, max_tokens, model, atts)
     if tier == "claude":
         return _claude_code_chat(messages, system, max_tokens, model, atts, allow_write)
-    if tier == "hermes":
-        return _hermes_chat(messages, system, max_tokens, model)
     return _ollama_chat(messages, system, max_tokens, model, atts)
 
 
@@ -169,11 +154,6 @@ def status() -> dict:
             "backend": "claude-code",
             "model": CLAUDE_CLI_MODEL or "plan default",
             "available": _claude_cli_path() is not None,
-        },
-        "hermes": {
-            "backend": "hermes",
-            "model": HERMES_MODEL or f"{HERMES_PROVIDER} (portal default)",
-            "available": _hermes_cli_path() is not None,
         },
     }
 
@@ -415,80 +395,8 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None, all
     }
 
 
-# ── Subscription #2: Hermes (Nous Portal) ───────────────────────────────────
-# The `hermes` tier shells out to the Hermes agent CLI in its one-shot, quiet
-# mode (`hermes -z`), which prints ONLY the final reply to stdout — clean to
-# capture. It bills the Nous Portal subscription via OAuth (`hermes setup
-# --portal` + `--provider nous`), not API keys. Hermes runs its own agent loop
-# and tools (web research, Gmail/Outlook email skills), so this is the research +
-# email-retrieval backend; the agent runner in agent.py maps its steps for the UI.
-
-def _hermes_cli_path():
-    """Resolve the `hermes` executable on PATH, or None if it isn't installed."""
-    return shutil.which(HERMES_CLI)
-
-
-def _hermes_chat(messages, system, max_tokens, model) -> dict:
-    """Run a one-shot prompt through the Hermes agent CLI (subscription-billed).
-
-    Uses `hermes -z`, whose contract is "single prompt in, final reply text out,
-    nothing else on stdout." max_tokens is accepted for signature parity; the CLI
-    manages its own budget. system (if any) is folded into the prompt since the
-    one-shot mode takes a single positional prompt, not a separate system flag.
-    """
-    exe = _hermes_cli_path()
-    if exe is None:
-        raise RouterError(
-            "The Hermes CLI isn't installed or isn't on PATH. Install Hermes and "
-            "run `hermes setup --portal` to sign in, then restart the dashboard.",
-            503,
-        )
-
-    prompt = _flatten_conversation(messages)
-    sys_text = _flatten_system(system)
-    if sys_text:
-        prompt = f"[Instructions]\n{sys_text}\n\n[Task]\n{prompt}"
-    if not prompt.strip():
-        raise RouterError("Nothing to send to Hermes.", 400)
-
-    cmd = [exe, "-z", prompt, "--provider", HERMES_PROVIDER]
-    mdl = model or HERMES_MODEL
-    if mdl:
-        cmd += ["--model", mdl]
-
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=HERMES_TIMEOUT,
-            cwd=CLAUDE_CLI_CWD,
-            creationflags=creationflags,
-        )
-    except FileNotFoundError:
-        raise RouterError("The Hermes CLI vanished mid-call — is it still installed?", 503)
-    except subprocess.TimeoutExpired:
-        raise RouterError(
-            "The Hermes CLI took too long to answer. Try again, or switch tiers.", 504
-        )
-
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
-        raise RouterError(f"The Hermes CLI failed: {detail or 'unknown error'}", 502)
-
-    reply = (proc.stdout or "").strip()
-    return {
-        "reply": reply or "…(Hermes went quiet — try again)",
-        "model": mdl or f"{HERMES_PROVIDER} (portal)",
-        "tier": "hermes",
-    }
-
-
 def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
-                       cwd=None, timeout=None):
+                       cwd=None, timeout=None, mcp_config=None):
     """Run the Claude Code CLI in streaming mode, yielding parsed JSON events.
 
     This is the agentic, subscription-billed counterpart to chat_tools(): instead
@@ -505,6 +413,12 @@ def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
     Callers here never grant Bash. File access stays confined to cwd. As with the
     plain claude tier, ANTHROPIC_API_KEY/AUTH_TOKEN are stripped from the child env
     so it always bills the signed-in subscription, never API credits.
+
+    mcp_config (optional) is a path to an MCP servers JSON ({"mcpServers": {...}});
+    when given, the CLI loads ONLY those servers (--strict-mcp-config ignores any
+    globally-configured ones), and the matching mcp__<server>__<tool> names must be
+    pre-approved via allowed_tools. The router stays generic — which servers/tools
+    to attach is the caller's business (see agent._run_agent_claude).
 
     Raises RouterError on a startup failure, timeout, or non-zero exit.
     """
@@ -524,6 +438,8 @@ def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
         cmd += ["--allowedTools", ",".join(allowed_tools)]
         if any(t in ("Write", "Edit") for t in allowed_tools):
             cmd += ["--permission-mode", "acceptEdits"]
+    if mcp_config:
+        cmd += ["--mcp-config", mcp_config, "--strict-mcp-config"]
     sys_text = _flatten_system(system)
     if sys_text:
         cmd += ["--append-system-prompt", sys_text]

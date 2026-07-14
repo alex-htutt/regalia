@@ -34,7 +34,7 @@ related: []
 ```
 
 ## Tag taxonomy
-`area/internship`, `area/projects` · `course/{engr2350,ecse2610,focs,phys,writ}` · `type/{lecture,lab,problem-set,exam-prep,meeting,standup,daily-log,project,reference}` · `status/{active,complete,archived}`
+`area/internship`, `area/projects`, `area/schoolwork` · `course/<slug>` (e.g. `course/math1c`; archived: `course/{engr2350,ecse2610,focs,phys,writ}`) · `type/{lecture,lab,problem-set,exam-prep,meeting,standup,daily-log,project,reference}` · `status/{active,complete,archived}`
 
 ## Getting started in Cursor
 1. Open this folder as a Cursor workspace → it indexes all `.md` files.

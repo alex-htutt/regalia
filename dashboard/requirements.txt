@@ -9,3 +9,7 @@ pywebview>=5.0  # desktop app shell (desktop.py); browser mode (app.py) needs on
 # if you connect an inbox; the rest of the app runs without these installed.
 google-auth-oauthlib>=1.2.0  # Gmail OAuth consent + token refresh (pulls google-auth)
 msal>=1.28.0                 # Microsoft (Outlook) OAuth + token cache
+
+# MCP bridge: lets the claude tier (subscription-billed) reach the mailbox. Only
+# imported by mail_mcp.py — a subprocess the Claude CLI spawns — never by the app.
+mcp>=1.0

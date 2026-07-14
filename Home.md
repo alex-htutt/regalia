@@ -19,6 +19,7 @@ Map of content for the **Regalia** vault (formerly "Work Vault"). Start here.
 - [[Internship-Projects/Essex_Securities/_context_essex_securities|Essex Securities]] — securities-firm internship.
 
 ## Schoolwork — Foothill College (active)
+- [[schoolwork/_context_schoolwork|Schoolwork — Context]] — hub: conventions, goals, current courses.
 - [[schoolwork/math1c/_context_math1c|MATH 1C — Calculus]] — sequences & series, vectors, multivariable differentiation (Foothill, Summer 2026; ends 08/06).
 
 ## Archive — finished RPI courses

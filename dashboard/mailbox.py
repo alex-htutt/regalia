@@ -36,11 +36,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import email_sources as cfg
-import router  # Hermes retrieval backend (M3); standalone, no circular import.
 
 # Per-account token store. Gitignored (see .gitignore). Lives under dashboard/,
 # which the vault walk ignores, so tokens never surface as notes.
@@ -114,8 +115,6 @@ def save_account(provider: str, address: str, *, google=None, msal_cache=None) -
 
 def list_accounts() -> list[dict]:
     """Connected accounts (metadata only, no network) — id, provider, address."""
-    if cfg.MAILBOX_BACKEND == "hermes":
-        return [_hermes_account()]
     store = TOKENS_DIR
     if not store.is_dir():
         return []
@@ -400,115 +399,6 @@ def _graph_draft(acct, token, to, subject, body, reply_to_msg_id) -> dict:
             "account_id": acct["id"], "link": created.get("webLink", "")}
 
 
-# ── Hermes email-skill provider (M3) ─────────────────────────────────────────
-# Retrieval via the Hermes CLI's Google Workspace ("$GAPI gmail") skill instead
-# of the Gmail REST API + OAuth tokens. We drive Hermes one-shot (router.chat,
-# tier="hermes") with a strict JSON-only instruction, then map the returned JSON
-# onto the SAME message dicts the Inbox UI already renders — the public functions
-# below and their shapes are frozen (see the module docstring); only the retrieval
-# guts change. The Gmail skill's JSON shape (verified in the M0 spike):
-#   search -> [{id, threadId, from, to, subject, date, snippet, labels}, ...]
-#   get    -> the above + {body}
-# "unread" is derived from the labels list (Gmail's UNREAD system label).
-#
-# Sending is deliberately NOT here — like the API backend, this module can only
-# read. The send-after-review path ($GAPI gmail reply behind a human gate) is M4.
-
-_JSON_ONLY = (
-    "Run EXACTLY this command and reply with ONLY its raw JSON output — no prose, "
-    "no markdown, no code fences, nothing before or after the JSON:\n"
-)
-
-
-def _extract_json(reply: str):
-    """Pull the first JSON value (array or object) out of a Hermes reply.
-
-    Hermes is asked to return only raw JSON, but we tolerate a stray ```json fence
-    or surrounding prose by scanning for the first balanced [...] / {...} and
-    decoding from there. Raises MailboxError when no JSON is present/parseable.
-    """
-    text = (reply or "").strip()
-    if not text:
-        raise MailboxError("Hermes returned an empty email response.")
-    fence = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.S)
-    if fence:
-        text = fence.group(1).strip()
-    start = next((i for i, ch in enumerate(text) if ch in "[{"), -1)
-    if start == -1:
-        raise MailboxError("Hermes returned no JSON in its email response.")
-    try:
-        value, _ = json.JSONDecoder().raw_decode(text, start)
-    except json.JSONDecodeError as e:
-        raise MailboxError(f"Couldn't parse Hermes email JSON: {e}")
-    return value
-
-
-def _hermes_unread(item: dict) -> bool:
-    """Derive the unread flag from a Gmail-skill item's labels list."""
-    return any(str(lbl).upper() == "UNREAD" for lbl in (item.get("labels") or []))
-
-
-def _hermes_msg(item: dict, full: bool = False) -> dict:
-    """Map one Hermes Gmail-skill item onto the frozen message dict.
-
-    Summary shape: {id, thread_id, from, subject, date, snippet, unread}; a full
-    message (`full=True`, from `$GAPI gmail get`) adds {to, body}.
-    """
-    out = {
-        "id": item.get("id", ""),
-        "thread_id": item.get("threadId", "") or item.get("thread_id", ""),
-        "from": item.get("from", ""),
-        "subject": item.get("subject", "") or "(no subject)",
-        "date": item.get("date", ""),
-        "snippet": item.get("snippet", ""),
-        "unread": _hermes_unread(item),
-    }
-    if full:
-        out["to"] = item.get("to", "")
-        out["body"] = (item.get("body", "") or item.get("snippet", ""))[: cfg.BODY_MAX_CHARS]
-    return out
-
-
-def _hermes_skill(command: str):
-    """Run one Hermes email-skill command and return its parsed JSON.
-
-    The Hermes subprocess seam — smoke tests mock `router.chat` (or `_extract_json`)
-    here rather than spawning the CLI. MailboxError preserves the Flask error
-    contract (RouterError's status carries through; 502 by default).
-    """
-    try:
-        res = router.chat([{"role": "user", "content": _JSON_ONLY + command}],
-                          tier="hermes", max_tokens=2048)
-    except router.RouterError as e:
-        raise MailboxError(f"Hermes email retrieval failed: {e.message}",
-                           getattr(e, "status", 502))
-    return _extract_json(res.get("reply", ""))
-
-
-def _hermes_account() -> dict:
-    """The single synthetic account exposed when MAILBOX_BACKEND='hermes'.
-
-    Hermes holds one email connection (from `hermes setup`); there are no per-account
-    token files, so the account list is just that one inbox, labelled by address.
-    """
-    addr = cfg.HERMES_EMAIL_ADDRESS
-    return {"id": make_account_id("gmail", addr) if addr else "gmail",
-            "provider": "gmail", "address": addr}
-
-
-def _hermes_list(query: str, limit: int) -> list[dict]:
-    q = query.strip() or "in:inbox"
-    data = _hermes_skill(f'$GAPI gmail search "{q}" --max {limit}')
-    items = data if isinstance(data, list) else (data.get("messages") or data.get("results") or [])
-    return [_hermes_msg(m) for m in items[:limit]]
-
-
-def _hermes_read(msg_id: str) -> dict:
-    data = _hermes_skill(f"$GAPI gmail get {msg_id}")
-    item = data[0] if isinstance(data, list) and data else data
-    return _hermes_msg(item if isinstance(item, dict) else {}, full=True)
-
-
 # ── Public API (provider-agnostic) ───────────────────────────────────────────
 
 # Per (account_id, query, limit) TTL cache for inbox listings — same shape as the
@@ -536,15 +426,11 @@ def fetch_inbox(account_id: str, limit: int = cfg.DEFAULT_INBOX_LIMIT, query: st
         hit = _CACHE.get(key)
         if hit and (now - hit["ts"]) < cfg.INBOX_CACHE_TTL:
             return hit["data"]
-    if cfg.MAILBOX_BACKEND == "hermes":
-        acct_meta = _hermes_account()
-        messages = _hermes_list(query, limit)
-    else:
-        acct = _load_account(account_id)
-        token = _token(acct)
-        fn = _gmail_list if acct["provider"] == "gmail" else _graph_list
-        messages = fn(acct, token, query, limit)
-        acct_meta = {"id": acct["id"], "provider": acct["provider"], "address": acct["address"]}
+    acct = _load_account(account_id)
+    token = _token(acct)
+    fn = _gmail_list if acct["provider"] == "gmail" else _graph_list
+    messages = fn(acct, token, query, limit)
+    acct_meta = {"id": acct["id"], "provider": acct["provider"], "address": acct["address"]}
     data = {"account": acct_meta, "query": query, "messages": messages}
     with _CACHE_LOCK:
         _CACHE[key] = {"data": data, "ts": now}
@@ -560,8 +446,6 @@ def search_messages(account_id: str, query: str, limit: int = cfg.SEARCH_LIMIT) 
 def read_message(account_id: str, msg_id: str) -> dict:
     if not (msg_id or "").strip():
         raise MailboxError("A message id is required.", 400)
-    if cfg.MAILBOX_BACKEND == "hermes":
-        return _hermes_read(msg_id.strip())
     acct = _load_account(account_id)
     token = _token(acct)
     fn = _gmail_read if acct["provider"] == "gmail" else _graph_read
@@ -590,11 +474,6 @@ def accounts_overview() -> dict:
     Used by GET /api/inboxes. One account failing to refresh never sinks the rest;
     its error is collected and it's marked status='error'.
     """
-    if cfg.MAILBOX_BACKEND == "hermes":
-        # Hermes holds the email connection; no token refresh / unread call yet
-        # (real unread counts via the skill are a follow-up). Surface the one inbox.
-        return {"accounts": [{**_hermes_account(), "unread": None, "status": "ok"}],
-                "errors": []}
     accounts, errors = [], []
     for a in list_accounts():
         entry = {**a, "unread": None, "status": "ok"}
@@ -611,3 +490,121 @@ def accounts_overview() -> dict:
             errors.append(f"{a['id']}: {type(e).__name__}")
         accounts.append(entry)
     return {"accounts": accounts, "errors": errors}
+
+
+# ── Important mail (overview panel) ──────────────────────────────────────────
+# Deterministic work/school triage for the home page: pull the last
+# cfg.IMPORTANT_DAYS of mail from every connected inbox, score each message
+# against the keyword/domain/penalty config in email_sources.py (no model call —
+# this runs on page load), and return the top rows. Reuses fetch_inbox(), so the
+# per-(account, query) TTL cache keeps this cheap between loads.
+
+def _parse_msg_date(raw: str):
+    """Parse a message date — RFC 2822 (Gmail) or ISO 8601 (Graph) — to aware UTC.
+
+    Returns None when unparseable; callers treat that as 'keep the message'
+    (better a stray old mail than a silently dropped important one).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _importance_score(msg: dict) -> tuple[int, list[str]]:
+    """Score one message dict for work/school relevance. Pure — easy to test.
+
+    Returns (score, why): keyword/domain hits add, marketing signals subtract,
+    unread nudges up. `why` lists the top matched signals for the UI tooltip.
+    """
+    text = f"{msg.get('subject', '')} {msg.get('snippet', '')}".lower()
+    sender = (msg.get("from", "") or "").lower()
+    score, why = 0, []
+    for kw, w in cfg.IMPORTANT_KEYWORDS.items():
+        if kw in text:
+            score += w
+            why.append(kw)
+    for dom, w in cfg.IMPORTANT_SENDER_DOMAINS.items():
+        if dom in sender:
+            score += w
+            why.append(dom)
+    for kw, w in cfg.IMPORTANT_PENALTIES.items():
+        if kw in text or kw in sender:
+            score -= w
+    if msg.get("unread"):
+        score += 1
+    return score, why
+
+
+def _fmt_when(dt) -> str:
+    """Compact local-time label for the panel: 'HH:MM' today, else 'Thu 09'."""
+    if dt is None:
+        return ""
+    local = dt.astimezone()
+    now = datetime.now().astimezone()
+    return local.strftime("%H:%M") if local.date() == now.date() else local.strftime("%a %d")
+
+
+def _display_name(sender: str) -> str:
+    """'Jane Doe <jane@x.com>' -> 'Jane Doe'; bare addresses pass through."""
+    name = re.sub(r"<[^>]*>", "", sender or "").strip().strip('"')
+    return name or (sender or "").strip("<> ")
+
+
+def important_messages() -> dict:
+    """Work/school-relevant mail from the last cfg.IMPORTANT_DAYS days, all inboxes.
+
+    Returns {available, messages: [{subject, from, when, account, account_id,
+    unread, score, why}], errors}. available=False means no inbox is connected.
+    Per-account failures degrade gracefully, mirroring accounts_overview().
+    """
+    accounts = list_accounts()
+    if not accounts:
+        return {"available": False, "messages": [], "errors": []}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=cfg.IMPORTANT_DAYS)
+    rows, errors = [], []
+    for a in accounts:
+        try:
+            # Gmail narrows server-side; Graph has no newer_than syntax, so its
+            # recent listing is filtered by the date cutoff below instead.
+            query = (f"in:inbox newer_than:{cfg.IMPORTANT_DAYS}d"
+                     if a["provider"] == "gmail" else "")
+            data = fetch_inbox(a["id"], limit=cfg.IMPORTANT_FETCH_PER_ACCOUNT, query=query)
+        except MailboxError as e:
+            errors.append(f"{a['id']}: {e.message}")
+            continue
+        except Exception as e:  # noqa: BLE001 — one bad inbox never sinks the panel
+            errors.append(f"{a['id']}: {type(e).__name__}")
+            continue
+        for m in data.get("messages", []):
+            dt = _parse_msg_date(m.get("date", ""))
+            if dt is not None and dt < cutoff:
+                continue
+            score, why = _importance_score(m)
+            if score < cfg.IMPORTANT_MIN_SCORE:
+                continue
+            rows.append({
+                "subject": m.get("subject", "(no subject)"),
+                "from": _display_name(m.get("from", "")),
+                "when": _fmt_when(dt),
+                "account": (a.get("address", "") or a["id"]).split("@")[0],
+                "account_id": a["id"],
+                "unread": bool(m.get("unread")),
+                "score": score,
+                "why": why[:3],
+                "_ts": dt.timestamp() if dt else 0.0,
+            })
+    rows.sort(key=lambda r: (-r["score"], -r["_ts"]))
+    for r in rows:
+        r.pop("_ts", None)
+    return {"available": True, "messages": rows[: cfg.IMPORTANT_MAX_SHOWN],
+            "errors": errors}

@@ -51,21 +51,6 @@ MS_CLIENT_ID = os.environ.get("MS_OAUTH_CLIENT_ID", "")
 MS_TENANT = os.environ.get("MS_OAUTH_TENANT", "consumers")
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT}"
 
-# ── Retrieval backend (M3: Hermes) ───────────────────────────────────────────
-# Which engine mailbox.py uses to READ mail (the message shapes the Inbox UI
-# renders are identical either way — only the retrieval guts differ):
-#   "api"    -> direct Gmail REST + Microsoft Graph using the OAuth tokens below
-#               (the original engine; needs the Google "Desktop app" / Azure app).
-#   "hermes" -> the Hermes agent CLI's email skills ($GAPI gmail / Himalaya), so
-#               there is no Google/Azure app and no per-account OAuth token store.
-# Default stays "api" until the Hermes path is complete; flip with MAILBOX_BACKEND=hermes.
-MAILBOX_BACKEND = os.environ.get("MAILBOX_BACKEND", "api").lower().strip()
-
-# Address of the single inbox Hermes is connected to (from `hermes setup`). Used
-# only to label the account in the UI when MAILBOX_BACKEND="hermes"; retrieval
-# itself targets whatever inbox Hermes holds, so this is cosmetic.
-HERMES_EMAIL_ADDRESS = os.environ.get("HERMES_EMAIL_ADDRESS", "")
-
 # ── Fetch limits + cache ─────────────────────────────────────────────────────
 DEFAULT_INBOX_LIMIT = 25     # messages shown in a list view by default
 MAX_INBOX_LIMIT = 100        # hard cap so a tool/route can't ask for the world
@@ -73,3 +58,42 @@ SEARCH_LIMIT = 25            # results for a search query
 BODY_MAX_CHARS = 20000       # truncate huge message bodies for tool/UI consumption
 INBOX_CACHE_TTL = 120        # seconds to cache an inbox listing (per account+query)
 HTTP_TIMEOUT = 20            # seconds for any single Graph/Gmail HTTP call
+
+# ── Important-mail scoring (overview panel) ──────────────────────────────────
+# The "Important mail" column on the overview pulls the last IMPORTANT_DAYS of
+# mail from every connected inbox and keeps only work/school-relevant messages.
+# Scoring is DELIBERATELY deterministic (keywords + sender domains, no model
+# call) — it runs on every page load, so it must be fast, free, and private.
+# Tune the lists below to your life; weights are additive, penalties subtract.
+IMPORTANT_DAYS = 2            # look-back window (days)
+IMPORTANT_FETCH_PER_ACCOUNT = 25   # messages pulled per inbox before scoring
+IMPORTANT_MAX_SHOWN = 8       # rows shown in the panel
+IMPORTANT_MIN_SCORE = 2       # below this a message is dropped as noise
+
+# keyword -> weight, matched (case-insensitive) against subject + snippet.
+IMPORTANT_KEYWORDS = {
+    # school
+    "assignment": 3, "homework": 3, "exam": 3, "quiz": 2, "grade": 2,
+    "professor": 2, "course": 2, "lecture": 2, "syllabus": 3, "registrar": 3,
+    "tuition": 3, "financial aid": 3, "due": 2, "deadline": 3, "submission": 2,
+    "office hours": 2, "advisor": 2, "enrollment": 2, "transcript": 2,
+    # work / internship
+    "interview": 4, "offer": 3, "internship": 3, "recruiter": 3, "onboarding": 3,
+    "meeting": 2, "standup": 2, "invoice": 3, "payroll": 3, "timesheet": 3,
+    "contract": 2, "application": 2, "action required": 3, "urgent": 2,
+    "schedule": 1, "project": 1, "review": 1,
+}
+
+# sender-address substring -> weight (e.g. school/work domains).
+IMPORTANT_SENDER_DOMAINS = {
+    ".edu": 3,          # any university address (rpi.edu, …)
+    "greenhouse.io": 2, # recruiting pipeline mail
+    "lever.co": 2,
+}
+
+# marketing/noise signals: substring (checked in subject+snippet AND sender) -> penalty.
+IMPORTANT_PENALTIES = {
+    "unsubscribe": 2, "newsletter": 2, "% off": 3, "sale": 2, "coupon": 3,
+    "free shipping": 3, "deal of": 3, "webinar": 1, "promotion": 2,
+    "marketing": 2, "digest": 1,
+}

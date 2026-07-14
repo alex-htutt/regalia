@@ -8,6 +8,9 @@
 !.env.example
 !**/.env.example
 
+# --- Claude Code per-machine settings (personal paths + local permissions) ---
+.claude/settings.local.json
+
 # --- Python / dashboard ---
 __pycache__/
 *.py[cod]
@@ -34,6 +37,9 @@ Desktop.ini
 
 # --- Chat attachments (per-session uploads; never committed) ---
 dashboard/.chat_attachments/
+
+# --- Chat transcripts (multi-chat store; personal, never committed) ---
+dashboard/.chats/
 
 # --- Email OAuth tokens + client secrets (per-account; never committed) ---
 dashboard/.email_tokens/

@@ -20,6 +20,9 @@ lazily inside tools to avoid a circular import (app imports agent at top).
 from __future__ import annotations
 
 import json
+import os
+import sys
+import tempfile
 from pathlib import Path
 
 import mailbox
@@ -460,8 +463,8 @@ AGENTS = {
     "researcher": {
         "id": "researcher",
         "name": "Research Agent",
-        "desc": "Research a topic and synthesize a structured research note (Hermes web research; vault on other tiers).",
-        "tier": "hermes",
+        "desc": "Research a topic across the vault and synthesize a structured research note.",
+        "tier": "smart",
         "tools": ["search_vault", "read_note", "list_notes", "write_note"],
         "default_task": "",
         "system": (
@@ -475,25 +478,24 @@ AGENTS = {
     "inbox_triage": {
         "id": "inbox_triage",
         "name": "Inbox Triage",
-        "desc": "Read connected inboxes via Hermes, summarize what needs attention, and propose replies for review.",
-        # Runs on the Hermes runtime: Hermes reads mail with its OWN Gmail/Outlook
-        # email skills (no custom in-process tools, no Google/Azure OAuth app). The
-        # `tools` list below is informational — like the researcher on this tier,
-        # Hermes uses its own skills, not these. Sending stays gated until
-        # send-after-review (M4): the prompt forbids any send/reply skill, so replies
-        # come back only as proposed text for the human to review.
-        "tier": "hermes",
+        "desc": "Read connected inboxes, summarize what needs attention, and draft replies for review.",
+        # Defaults to the claude tier (subscription-billed, no API key): the CLI
+        # reaches mailbox.py through the mail_mcp.py MCP bridge (mcp__mailbox__*
+        # grants only — no filesystem tools). On fast/smart it drives the same
+        # tools in-process. Drafts-only by construction either way: draft_email
+        # creates a DRAFT in the account; nothing in the codebase can send.
+        "tier": "claude",
         "tools": ["list_inboxes", "read_inbox", "search_email", "read_email", "draft_email"],
         "default_task": "Summarize the unread mail across my connected inboxes and flag anything that needs a reply.",
         "system": (
-            "You are Inbox Triage, running on the Hermes runtime with its email skills "
-            "(e.g. the Gmail '$GAPI gmail' skill). Read recent and unread mail, open "
-            "anything important, and produce a concise, prioritized summary: who emailed, "
-            "what they want, and what (if anything) needs a reply. When the user asks for "
-            "a reply, write the proposed reply TEXT in your final answer for the human to "
-            "review — do NOT send it and do NOT call any send or reply skill (sending is "
-            "gated behind human review in the dashboard). Be accurate: never invent "
-            "senders or message contents; read the mail before summarizing it."
+            "You are Inbox Triage. Use list_inboxes to see the connected accounts, then "
+            "read_inbox / search_email / read_email to review recent and unread mail — "
+            "open anything important before judging it. Produce a concise, prioritized "
+            "summary: who emailed, what they want, and what (if anything) needs a reply. "
+            "When a reply is warranted, you may save one with draft_email — it creates a "
+            "DRAFT for the human to review and send; nothing you do sends mail. Be "
+            "accurate: never invent senders or message contents; read the mail before "
+            "summarizing it."
         ),
     },
 }
@@ -630,6 +632,36 @@ _CLAUDE_AGENT_RULES = (
     "add a [[wikilink]] to it in Home.md. Finish with a short plain-text summary."
 )
 
+# The email tools ride to the claude tier over MCP (mail_mcp.py) — the CLI can't
+# call our in-process Python tools, but it can call the same functions through the
+# mailbox MCP server, granted per-tool as mcp__mailbox__<name>.
+EMAIL_TOOL_NAMES = ("list_inboxes", "read_inbox", "search_email",
+                    "read_email", "draft_email")
+
+_CLAUDE_EMAIL_RULES = (
+    "\n\nRUNTIME NOTE: Your email tools are the mcp__mailbox__* MCP tools "
+    "(list_inboxes, read_inbox, search_email, read_email, draft_email) — use those, "
+    "exactly as the instructions above describe. draft_email saves a DRAFT only; "
+    "nothing you can call sends mail. Inboxes can be huge: scope your reads with "
+    "search_email (Gmail syntax, e.g. \"is:unread newer_than:2d\") and limits "
+    "rather than paging through everything. Finish with a short plain-text summary."
+)
+
+
+def _mailbox_mcp_config() -> str:
+    """Write a temp MCP-config JSON pointing the CLI at mail_mcp.py; return its path.
+
+    Built per-run (machine-independent — no hardcoded paths on disk): the server is
+    this folder's mail_mcp.py run by the same Python interpreter as the dashboard.
+    The caller deletes the file when the run finishes.
+    """
+    server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_mcp.py")
+    cfg = {"mcpServers": {"mailbox": {"command": sys.executable, "args": [server]}}}
+    fd, path = tempfile.mkstemp(prefix="mailbox_mcp_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+    return path
+
 
 def _tool_result_text(content) -> str:
     """Coerce a CLI tool_result's content (str or list of blocks) to a string."""
@@ -654,10 +686,25 @@ def _run_agent_claude(spec, task, emit) -> dict:
     tool_result / final), so the Agents view streams live regardless of tier.
     Returns run_agent's standard result dict. The CLI runs its own loop; the
     router's wall-clock timeout (CLAUDE_CLI_TIMEOUT) is the bound, not a step cap.
+
+    Tool grants are category-aware: vault tools map onto the CLI's native file
+    tools (Read/Grep/Glob, +Write/Edit for writers); email tools attach the
+    mailbox MCP server (mail_mcp.py) and grant only mcp__mailbox__<tool> — so an
+    email-only agent like inbox_triage gets NO filesystem tools at all.
     """
-    writes = any(t in ("write_note", "create_project") for t in spec["tools"])
-    allowed = ["Read", "Grep", "Glob"] + (["Write", "Edit"] if writes else [])
-    system = spec["system"] + _CLAUDE_AGENT_RULES
+    vault_tools = [t for t in spec["tools"] if t not in EMAIL_TOOL_NAMES]
+    email_tools = [t for t in spec["tools"] if t in EMAIL_TOOL_NAMES]
+    allowed: list = []
+    system = spec["system"]
+    mcp_config = ""
+    if vault_tools:
+        writes = any(t in ("write_note", "create_project") for t in vault_tools)
+        allowed += ["Read", "Grep", "Glob"] + (["Write", "Edit"] if writes else [])
+        system += _CLAUDE_AGENT_RULES
+    if email_tools:
+        mcp_config = _mailbox_mcp_config()
+        allowed += [f"mcp__mailbox__{t}" for t in email_tools]
+        system += _CLAUDE_EMAIL_RULES
 
     emit({"type": "start", "agent": spec["id"], "tier": "claude", "task": task})
     steps: list = []
@@ -665,7 +712,8 @@ def _run_agent_claude(spec, task, emit) -> dict:
     reply = ""
     model = ""
     try:
-        for ev in router.claude_code_stream(task, system=system, allowed_tools=allowed):
+        for ev in router.claude_code_stream(task, system=system, allowed_tools=allowed,
+                                            mcp_config=mcp_config or None):
             etype = ev.get("type")
             if etype == "system" and ev.get("subtype") == "init":
                 model = ev.get("model") or model
@@ -694,53 +742,16 @@ def _run_agent_claude(spec, task, emit) -> dict:
     except router.RouterError as e:
         emit({"type": "error", "text": e.message})
         raise AgentError(e.message)
+    finally:
+        if mcp_config:
+            try:
+                os.unlink(mcp_config)
+            except OSError:
+                pass  # temp-file cleanup is best-effort
 
     emit({"type": "final", "text": reply})
     return {"reply": reply or "(the agent finished without a summary)",
             "steps": steps, "tier": "claude", "model": model or "claude (plan)",
-            "agent": spec["id"]}
-
-
-# ── Subscription (Hermes) agent runner — one-shot ────────────────────────────
-# Like the claude tier, the `hermes` tier doesn't drive our in-process tool loop:
-# the Hermes CLI runs its OWN agent loop with its OWN tools (web research, browser,
-# Gmail/Outlook email skills) and bills the Nous Portal subscription. Hermes's
-# one-shot mode (`hermes -z`) returns only the final reply, so this runner is a
-# single call rather than a streamed step loop — we emit start → final. (A streamed
-# variant can come later if/when we adopt `hermes chat -q`'s tool transcript.)
-
-_HERMES_AGENT_RULES = (
-    "\n\nRUNTIME NOTE: You are running on the Hermes runtime with your OWN tools "
-    "(web search, browser, email skills, etc.), NOT the dashboard's in-process vault "
-    "tools. Any tool names referenced above (search_vault, read_note, list_notes, "
-    "write_note, create_project) are conceptual — accomplish the equivalent with your "
-    "own tools, and instead of saving a file, return the finished result as your final "
-    "reply text (the dashboard surfaces and saves it). Be accurate: never fabricate "
-    "sources or contents."
-)
-
-
-def _run_agent_hermes(spec, task, emit) -> dict:
-    """Run an agent on the subscription `hermes` CLI tier (one-shot).
-
-    Hands the whole task to Hermes via router.chat(tier="hermes"), which shells out
-    to `hermes -z` and returns the final reply. Hermes runs its own tool loop, so we
-    don't see intermediate steps — we emit start then final. Returns run_agent's
-    standard result dict.
-    """
-    system = spec["system"] + _HERMES_AGENT_RULES
-    emit({"type": "start", "agent": spec["id"], "tier": "hermes", "task": task})
-    messages = [{"role": "user", "content": task}]
-    try:
-        res = router.chat(messages, tier="hermes", system=system, max_tokens=3072)
-    except router.RouterError as e:
-        emit({"type": "error", "text": e.message})
-        raise AgentError(e.message)
-
-    reply = (res.get("reply") or "").strip()
-    emit({"type": "final", "text": reply})
-    return {"reply": reply or "(the agent finished without a summary)",
-            "steps": [], "tier": "hermes", "model": res.get("model", "hermes"),
             "agent": spec["id"]}
 
 
@@ -760,7 +771,7 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
     if not task:
         raise AgentError(f"{spec['name']} needs a task — tell it what to do.")
     tier = (tier or spec["tier"]).lower()
-    if tier not in ("fast", "smart", "claude", "hermes"):
+    if tier not in ("fast", "smart", "claude"):
         tier = spec["tier"]
 
     def _emit(ev):
@@ -770,12 +781,10 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
             except Exception:  # noqa: BLE001 — never let UI plumbing break a run
                 pass
 
-    # The subscription tiers don't drive our in-process tool loop — the external
-    # CLI runs its own. Hand off to the matching runner and return its result.
+    # The subscription tier doesn't drive our in-process tool loop — the external
+    # CLI runs its own. Hand off to its runner and return its result.
     if tier == "claude":
         return _run_agent_claude(spec, task, _emit)
-    if tier == "hermes":
-        return _run_agent_hermes(spec, task, _emit)
 
     tools = [TOOL_SCHEMAS[name] for name in spec["tools"] if name in TOOL_SCHEMAS]
     system = spec["system"]

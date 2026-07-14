@@ -1,0 +1,29 @@
+{
+  "skill_name": "course-setup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Set up my new class ANTH 2A at Foothill — syllabus attached.",
+      "expected_output": "Reads vault CLAUDE.md + template; scaffolds schoolwork/anth2a/ with notes/problem-sets/exams/research + _context_anth2a.md (tag course/anth2a); links it from Home.md; ingests the syllabus into the context file (instructor, grading, calendar, links), marking unknowns _TBD_; offers to add deadlines to the calendar and build study materials.",
+      "files": ["syllabus.pdf"]
+    },
+    {
+      "id": 2,
+      "prompt": "Make a practice quiz for week 1 of Math 1C from the lecture slides.",
+      "expected_output": "Original problems grounded in the uploaded slides, mirroring course scope/difficulty; Obsidian LaTeX ($...$) with balanced delimiters; saved as a note in problem-sets/ or exams/ with frontmatter + a wikilink to _context_math1c.md; solutions at the requested depth; no submittable graded answers.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Put my Math 1C exam dates on my calendar.",
+      "expected_output": "Creates events for firm dates (e.g., the Finale) with an explicit timeZone and a stated PT/ET assumption; creates clearly-labeled placeholders for week-only dates (LC I/LC II) and tells the user to confirm on Canvas; adds reminders + a consistent color; reports what was added and what needs confirming.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Build me a practice exam that mirrors the sample Knowledge Check.",
+      "expected_output": "Uses the uploaded sample exam as a blueprint (section structure, question types, difficulty); original problems; produced as a clean exam with a separate answer key; saved to exams/ and linked from the course context; respects the AI policy (practice only).",
+      "files": ["KCI-Fall 2023 - sample.pdf"]
+    }
+  ]
+}

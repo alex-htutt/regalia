@@ -24,7 +24,7 @@ deadline: YYYY-MM-DD
 related: []
 ```
 
-**Tag taxonomy:** `area/{internship,projects}` · `type/{daily-log,standup,meeting,project,lab,lecture,problem-set,reference}` · `status/{active,complete,archived}` · `course/<slug>` (school-year notes; lowercase slug matching the course folder name, e.g. `course/ecse2610`, `course/focs`). Always `category/subcategory` format.
+**Tag taxonomy:** `area/{internship,projects,schoolwork}` · `type/{daily-log,standup,meeting,project,lab,lecture,problem-set,reference}` · `status/{active,complete,archived}` · `course/<slug>` (schoolwork notes; lowercase slug matching the course folder name, e.g. `course/math1c`, `course/focs`). Always `category/subcategory` format.
 
 ## Planning coding projects (macro + micro)
 
@@ -41,6 +41,7 @@ The micro plan exists so a building agent has a solid, component-level blueprint
 - **Stay scoped.** Make the smallest change that satisfies the request; don't refactor, add abstractions, or build for hypothetical futures unasked. *Why:* unrequested scope creep is the most common way an agent introduces risk and review burden. Pairs with "don't create new files unless asked."
 - **Pair every change with a way to verify it** (a test, a run command, a screenshot, a quoted result). If you can't verify it, say so rather than claiming it works. *Why:* "done" without evidence is just a guess.
 - **Commits follow conventional-commit style** matching this repo's history: `type(scope): summary` (e.g. `feat(dashboard): …`, `fix(dashboard): …`, `docs: …`). Only commit when asked. *Why:* the agent should match the existing log automatically, not invent a new format.
+- **Check for an applicable skill before changing the vault.** Before making any change to this vault, check the skills in `.claude/skills/` (each has a `SKILL.md` describing when it applies) and, if one covers the task, invoke it instead of improvising — even if the task looks simple enough to do by hand (e.g. `course-setup` for anything coursework-setup-shaped). *Why:* skills encode this vault's conventions end-to-end; improvising past one produces structure the skill would have gotten right, and drift between skill-made and hand-made files. Do not read every skill in-depth, and use file names to determine if skill may be used or not. Read each candidate skill for verification.
 - **Rule files: completeness over brevity.** Keep `CLAUDE.md` / `.mdc` files focused, but there is **no hard line-count cutoff** — don't drop, truncate, or water down a genuinely useful rule just to make a file shorter. If a file grows long, prefer moving *reference* material (changelogs, long examples, history) into a linked note and keep the rules themselves intact. *Why:* a missing rule is more expensive than a long file; brevity is a tiebreaker, not a constraint.
 
 ## Cursor rules (auto-loaded by path)
@@ -54,4 +55,4 @@ The micro plan exists so a building agent has a solid, component-level blueprint
 
 ## Dashboard (`dashboard/`)
 
-A local Flask web app that reads vault frontmatter and surfaces all notes as a task list. Architecture, run instructions, and the full v1–v1.18 version history live in `dashboard/CLAUDE.md` (loaded automatically when you work in that folder) — read it before changing dashboard code.
+A local Flask web app that reads vault frontmatter and surfaces all notes as a task list. Architecture and run instructions live in `dashboard/CLAUDE.md` (loaded automatically when you work in that folder) — read it before changing dashboard code; the full v1–v1.23 version history is in `dashboard/VERSION_HISTORY.md`.

@@ -466,6 +466,42 @@
     cursor: pointer; font-weight: 500;
   }
   .chat-clear:hover { border-color: var(--border-hover); color: var(--text); }
+  /* Multi-chat sidebar (v1.20) — conversations persist server-side and run in parallel */
+  .chat-wrap { max-width: 1080px; }
+  .chat-split { display: grid; grid-template-columns: 210px 1fr; gap: 12px; }
+  .chat-side {
+    display: flex; flex-direction: column; gap: 8px;
+    height: calc(100vh - 280px); min-height: 380px;
+  }
+  .chat-new {
+    border: 1px dashed var(--border); background: var(--surface); color: var(--muted);
+    border-radius: 8px; padding: 8px 10px; font-size: 12.5px; cursor: pointer; font-weight: 600;
+  }
+  .chat-new:hover { border-color: var(--border-hover); color: var(--text); }
+  .chat-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+  .chat-item {
+    display: flex; align-items: center; gap: 7px; border: 1px solid transparent;
+    border-radius: 8px; padding: 7px 9px; font-size: 12.5px; color: var(--muted); cursor: pointer;
+  }
+  .chat-item:hover { background: var(--surface); color: var(--text); }
+  .chat-item.on { background: var(--surface); border-color: var(--border); color: var(--text); }
+  .chat-item .ttl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-item .del {
+    border: none; background: none; color: var(--faint); cursor: pointer;
+    font-size: 13px; padding: 0 2px; line-height: 1; visibility: hidden;
+  }
+  .chat-item:hover .del { visibility: visible; }
+  .chat-item .del:hover { color: var(--red); }
+  .chat-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .chat-dot.busy { background: var(--accent); animation: chat-pulse 1.1s ease-in-out infinite; }
+  .chat-dot.done { background: var(--green); }
+  @keyframes chat-pulse { 50% { opacity: 0.25; } }
+  @media (max-width: 720px) {
+    .chat-split { grid-template-columns: 1fr; }
+    .chat-side { height: auto; min-height: 0; }
+    .chat-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+    .chat-item { flex: none; max-width: 180px; }
+  }
   .chat-box {
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     display: flex; flex-direction: column; height: calc(100vh - 280px); min-height: 380px; overflow: hidden;
@@ -975,9 +1011,9 @@
     <section class="view" data-view="chat" hidden>
       <div class="view-head">
         <h2>Chat</h2>
-        <p>One chat, three backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on the Anthropic API (billed to API credits); <b>Claude</b> runs on Claude in the cloud, billed to your subscription. Edit mode (vault writes) works on all three.</p>
+        <p>Many chats, three backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on the Anthropic API (billed to API credits); <b>Claude</b> runs on Claude in the cloud, billed to your subscription. Conversations persist and run in parallel — start another while one is thinking.</p>
       </div>
-      <div class="panel-wrap">
+      <div class="panel-wrap chat-wrap">
         <div class="tier-bar">
           <div class="filter-group">
             <button class="pill on" id="tier-fast"   onclick="setTier('fast')">⚡ Fast · local</button>
@@ -987,8 +1023,13 @@
           <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
           <span class="tier-status" id="tier-status"></span>
           <button class="pill" id="chat-edit" onclick="toggleEdit()" title="Edit mode — let chat change vault notes">✏️ Edit: off</button>
-          <button class="chat-clear" onclick="clearChat()" title="Clear conversation">Clear</button>
+          <button class="chat-clear" onclick="clearChat()" title="Clear this conversation's messages">Clear</button>
         </div>
+        <div class="chat-split">
+        <aside class="chat-side">
+          <button class="chat-new" onclick="newChat()">＋ New chat</button>
+          <div class="chat-list" id="chat-list"></div>
+        </aside>
         <div class="chat-box">
           <div class="chat-log" id="chat-log">
             <div class="chat-empty">Pick a tier and say something. Fast keeps it local; Claude reaches for the cloud on your plan. Attach images, PDFs, or text with 📎 (Claude reads any type; Fast handles images on a vision model).</div>
@@ -1003,6 +1044,7 @@
                       oninput="chatAutogrow()" onkeydown="chatKey(event)"></textarea>
             <button class="twin-send" id="chat-send" onclick="chatSend()">Send</button>
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -1583,11 +1625,43 @@
       </div>
       <div class="news-cols">
         ${newsCol('Tech news', d.news, 'news')}
-        ${newsCol('Social &amp; blogs', d.social, 'social')}
+        <div class="news-col" id="mail-col"><h3>Important mail</h3><div class="news-item meta">Checking inboxes…</div></div>
         ${newsCol('Opportunities &middot; for you', d.jobs, 'jobs')}
       </div>
-      <div class="news-foot">Cached ~30 min. Sources configured in news_sources.py.</div>
+      <div class="news-foot">Cached ~30 min. Sources configured in news_sources.py; mail scoring in email_sources.py.</div>
     </div>`;
+    loadImportantMail();
+  }
+
+  /* Important mail (v1.23): work/school-relevant messages from the last 2 days
+     across all connected inboxes — replaces the old Social & blogs column.
+     Rendered separately from the briefing so a slow/failed mail fetch never
+     blocks news, and vice versa. Clicking a row opens the Inbox view. */
+  function loadImportantMail() {
+    fetch('/api/mail/important').then(r => r.json()).then(renderImportantMail).catch(() => {});
+  }
+
+  function renderImportantMail(d) {
+    const col = document.getElementById('mail-col');
+    if (!col) return;
+    let rows;
+    if (!d || !d.available) {
+      rows = '<div class="news-item meta">No inbox connected — run connect_email.py.</div>';
+    } else if (!d.messages.length) {
+      rows = '<div class="news-item meta">Nothing important in the last 2 days.</div>';
+    } else {
+      rows = d.messages.map(m => {
+        const dot = m.unread ? '<span style="color:var(--accent)">●</span> ' : '';
+        const why = (m.why && m.why.length) ? ` title="matched: ${esc(m.why.join(', '))}"` : '';
+        return `<div class="news-item">
+          <a href="#"${why} onclick="setView('inbox');return false;">${dot}${esc(m.subject)}</a>
+          <div class="meta">${esc(m.from)} &middot; ${esc(m.when)} &middot; ${esc(m.account)}</div>
+        </div>`;
+      }).join('');
+    }
+    const errs = (d && d.errors && d.errors.length)
+      ? `<div class="news-item meta">${esc(d.errors.length + ' inbox(es) skipped')}</div>` : '';
+    col.innerHTML = `<h3>Important mail</h3>${rows}${errs}`;
   }
 
   function refreshNews(btn) {
@@ -1614,7 +1688,7 @@
     if (v === 'projects' && !loaded.projects) { loaded.projects = true; loadProjects(); }
     if (v === 'agents'   && !loaded.agents)   { loaded.agents = true;   loadAgents(); }
     if (v === 'inbox'    && !loaded.inbox)    { loaded.inbox = true;     loadInboxes(); }
-    if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); }
+    if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); initChats(); }
     if (v === 'twin'     && !loaded.twin)     { loaded.twin = true;      initTwin(); }
   }
 
@@ -1748,14 +1822,162 @@
     }).catch(() => { note.textContent = 'Could not save the draft.'; btn.disabled = false; });
   }
 
-  /* -- Generic chat (model router) -- */
-  let chatMsgs = [];
-  let chatBusy = false;
-  let chatTier = 'fast';
-  let chatModel = null;       // local model override (fast tier); null = server default
-  let chatEdit = false;       // Edit mode — chat may write to the vault (fast/smart only)
-  let chatAttachments = [];   // staged uploads for the next message
+  /* -- Generic chat (model router): multi-session (v1.20) --
+     Every conversation is its own state object; /api/chat stays stateless, so N
+     conversations can generate at once — the only shared globals are the router
+     status and the Ollama default model. Transcripts persist via /api/chats. */
+  let chats = {};        // id -> {id,title,created,tier,model,edit,msgs,attachments,busy,done,loaded}
+  let chatOrder = [];    // ids, most recently updated first (sidebar order)
+  let activeChat = null; // id of the conversation shown in the log
   let routerStatus = null;
+  let defaultModel = null;   // Ollama default from /api/ollama/models
+
+  function chatConvo() { return chats[activeChat] || null; }
+
+  function initChats() {
+    fetch('/api/chats').then(r => r.json()).then(d => {
+      (d.chats || []).forEach(m => {
+        if (chats[m.id]) return;
+        chats[m.id] = { id: m.id, title: m.title, created: m.created, tier: m.tier || 'fast',
+                        model: null, edit: false, msgs: [], attachments: [],
+                        busy: false, done: false, loaded: false };
+        chatOrder.push(m.id);
+      });
+      if (chatOrder.length) switchChat(chatOrder[0]); else newChat();
+    }).catch(() => { if (!chatOrder.length) newChat(); });
+  }
+
+  function newChat() {
+    fetch('/api/chats', { method: 'POST' }).then(r => r.json()).then(d => {
+      chats[d.id] = { id: d.id, title: d.title, created: d.created, tier: d.tier || 'fast',
+                      model: d.model || defaultModel, edit: !!d.edit, msgs: [], attachments: [],
+                      busy: false, done: false, loaded: true };
+      chatOrder.unshift(d.id);
+      switchChat(d.id);
+    }).catch(() => addChatBubble('err', "Couldn't create a new chat."));
+  }
+
+  function deleteChat(id) {
+    fetch('/api/chats/' + id, { method: 'DELETE' }).catch(() => {});
+    delete chats[id];
+    chatOrder = chatOrder.filter(x => x !== id);
+    if (activeChat === id) {
+      activeChat = null;
+      if (chatOrder.length) switchChat(chatOrder[0]); else newChat();
+    } else renderChatSidebar();
+  }
+
+  function switchChat(id) {
+    const c = chats[id];
+    if (!c) return;
+    activeChat = id;
+    c.done = false;   // seen — clear the background-completion dot
+    renderChatSidebar();
+    syncChatControls();
+    renderChatAttachments();
+    updateSendDisabled();
+    if (c.loaded) {
+      renderChatLog(id);
+    } else {
+      document.getElementById('chat-log').innerHTML = '<div class="chat-empty">Loading…</div>';
+      fetch('/api/chats/' + id).then(r => r.json()).then(d => {
+        c.loaded = true;
+        c.msgs = Array.isArray(d.messages) ? d.messages : [];
+        c.title = d.title || c.title;
+        c.created = d.created;
+        c.tier = d.tier || c.tier;
+        c.model = d.model || c.model || defaultModel;
+        c.edit = !!d.edit;
+        if (id === activeChat) { renderChatLog(id); syncChatControls(); renderChatSidebar(); }
+      }).catch(() => {
+        if (id === activeChat)
+          document.getElementById('chat-log').innerHTML = '<div class="chat-empty">Couldn\'t load this conversation.</div>';
+      });
+    }
+    const input = document.getElementById('chat-text');
+    if (input) input.focus();
+  }
+
+  // Persist one conversation (fire-and-forget). Errors are transient UI, not
+  // transcript — strip them. The server re-derives the title from the first
+  // user message and stamps `updated`; sync those back into the sidebar.
+  function saveChat(cid) {
+    const c = chats[cid];
+    if (!c) return;
+    chatOrder = [cid, ...chatOrder.filter(x => x !== cid)];
+    fetch('/api/chats/' + cid, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: cid, title: c.title, created: c.created, tier: c.tier,
+                             model: c.model, edit: c.edit,
+                             messages: c.msgs.filter(m => m.role !== 'err') }),
+    }).then(r => r.json()).then(d => {
+      if (d && d.title) { c.title = d.title; c.updated = d.updated; renderChatSidebar(); }
+    }).catch(() => {});
+  }
+
+  function renderChatSidebar() {
+    const list = document.getElementById('chat-list');
+    if (!list) return;
+    list.innerHTML = chatOrder.map(id => {
+      const c = chats[id];
+      const dot = c.busy ? '<span class="chat-dot busy" title="Generating…"></span>'
+                : c.done ? '<span class="chat-dot done" title="New reply"></span>' : '';
+      return `<div class="chat-item ${id === activeChat ? 'on' : ''}" onclick="switchChat('${id}')">${dot}` +
+        `<span class="ttl">${esc(c.title || 'New chat')}</span>` +
+        `<button class="del" onclick="event.stopPropagation(); deleteChat('${id}')" title="Delete chat">×</button></div>`;
+    }).join('');
+  }
+
+  // Rebuild #chat-log from the conversation's message array (the repaint path
+  // that makes switching possible — bubbles used to be append-only).
+  function renderChatLog(id) {
+    if (id !== activeChat) return;
+    const c = chats[id];
+    const log = document.getElementById('chat-log');
+    log.innerHTML = '';
+    if (!c || !c.msgs.length) {
+      log.innerHTML = '<div class="chat-empty">Pick a tier and say something. Fast keeps it local; Claude reaches for the cloud on your plan. Attach images, PDFs, or text with 📎.</div>';
+    } else {
+      c.msgs.forEach(m => {
+        if (m.role === 'user') addChatBubble('user', m.content, null, m.attachments);
+        else if (m.role === 'assistant') addChatBubble('bot', m.content, m.model);
+        else addChatBubble('err', m.content);
+      });
+    }
+    if (c && c.busy) {
+      const typing = document.createElement('div');
+      typing.className = 'chat-typing';
+      typing.textContent = chatThinker(c) + ' is thinking…';
+      log.appendChild(typing);
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function chatThinker(c) {
+    return c.tier === 'fast' ? (c.model || 'local model')
+         : c.tier === 'smart' ? ((routerStatus && routerStatus.smart && routerStatus.smart.model) || 'Smart')
+         : 'Claude';
+  }
+
+  function updateSendDisabled() {
+    const c = chatConvo();
+    document.getElementById('chat-send').disabled = !c || !!c.busy;
+  }
+
+  // Reflect the active conversation's tier/model/edit into the shared controls.
+  function syncChatControls() {
+    const c = chatConvo();
+    const tier = c ? c.tier : 'fast';
+    document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
+    document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
+    document.getElementById('tier-claude').classList.toggle('on', tier === 'claude');
+    const sel = document.getElementById('model-select');
+    sel.style.display = tier === 'fast' ? '' : 'none';
+    if (c && !c.model && defaultModel) c.model = defaultModel;
+    if (c && c.model && !sel.disabled) sel.value = c.model;
+    renderTierStatus();
+    renderEditToggle();
+  }
 
   function loadRouterStatus() {
     fetch('/api/router/status').then(r => r.json()).then(s => { routerStatus = s; renderTierStatus(); renderTwinTierStatus(); })
@@ -1770,90 +1992,107 @@
       if (!models.length) {
         sel.innerHTML = '<option>no local models</option>';
         sel.disabled = true;
-        chatModel = null;
+        defaultModel = null;
       } else {
         sel.disabled = false;
         sel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
         // Default to the server's configured model (exact, else tag-prefix match).
-        const def = models.includes(d.default) ? d.default
-                  : (models.find(m => m.startsWith(d.default + ':')) || models[0]);
-        sel.value = def;
-        chatModel = def;
+        defaultModel = models.includes(d.default) ? d.default
+                     : (models.find(m => m.startsWith(d.default + ':')) || models[0]);
       }
-      sel.style.display = chatTier === 'fast' ? '' : 'none';
-      renderTierStatus();
+      syncChatControls();
     }).catch(() => {});
   }
 
-  function setModel(m) { chatModel = m; renderTierStatus(); }
+  function setModel(m) {
+    const c = chatConvo();
+    if (c) { c.model = m; saveChat(activeChat); }
+    renderTierStatus();
+  }
 
   function renderTierStatus() {
     if (!routerStatus) return;
-    const t = routerStatus[chatTier];
+    const c = chatConvo();
+    const tier = c ? c.tier : 'fast';
+    const t = routerStatus[tier];
     if (!t) { document.getElementById('tier-status').textContent = ''; return; }
     const cls = t.available ? 'up' : 'down';
     const state = t.available ? 'ready'
-      : (chatTier === 'fast' ? 'Ollama offline' : chatTier === 'claude' ? 'Claude CLI not found' : 'no API key');
-    const model = (chatTier === 'fast' && chatModel) ? chatModel : t.model;
+      : (tier === 'fast' ? 'Ollama offline' : tier === 'claude' ? 'Claude CLI not found' : 'no API key');
+    const model = (tier === 'fast' && c && c.model) ? c.model : t.model;
     document.getElementById('tier-status').innerHTML =
       `<span class="dot-sm ${cls}"></span>${esc(model)} · ${state}`;
   }
 
   function setTier(tier) {
-    chatTier = tier;
-    document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
-    document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
-    document.getElementById('tier-claude').classList.toggle('on', tier === 'claude');
-    document.getElementById('model-select').style.display = tier === 'fast' ? '' : 'none';
-    renderTierStatus();
-    renderEditToggle();
+    const c = chatConvo();
+    if (!c) return;
+    c.tier = tier;
+    syncChatControls();
+    saveChat(activeChat);
   }
 
   // Edit mode lets chat change vault notes. All three tiers honor it now: fast/smart
   // through the write tool loop, claude through the CLI's file-editing tools.
   function toggleEdit() {
-    chatEdit = !chatEdit;
+    const c = chatConvo();
+    if (!c) return;
+    c.edit = !c.edit;
     renderEditToggle();
+    saveChat(activeChat);
   }
 
   function renderEditToggle() {
     const b = document.getElementById('chat-edit');
     if (!b) return;
-    b.classList.toggle('on', chatEdit);
-    b.textContent = chatEdit ? '✏️ Edit: on' : '✏️ Edit: off';
-    b.title = chatEdit
+    const on = !!(chatConvo() && chatConvo().edit);
+    b.classList.toggle('on', on);
+    b.textContent = on ? '✏️ Edit: on' : '✏️ Edit: off';
+    b.title = on
       ? 'Edit mode ON — chat can create and change vault notes'
       : 'Edit mode OFF — chat is read-only';
   }
 
+  // Clear the active conversation's messages (the sidebar × deletes a chat).
   function clearChat() {
-    chatMsgs = [];
-    chatAttachments = [];
+    const c = chatConvo();
+    if (!c) return;
+    c.msgs = [];
+    c.attachments = [];
+    c.title = 'New chat';
     renderChatAttachments();
-    document.getElementById('chat-log').innerHTML =
-      '<div class="chat-empty">Cleared. Pick a tier and say something.</div>';
+    renderChatLog(activeChat);
+    saveChat(activeChat);
   }
 
-  /* -- Chat attachments -- */
+  /* -- Chat attachments (staged per conversation) -- */
   function renderChatAttachments() {
     const wrap = document.getElementById('chat-attachments');
-    if (!chatAttachments.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    const c = chatConvo();
+    const list = c ? c.attachments : [];
+    if (!list.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
     wrap.hidden = false;
-    wrap.innerHTML = chatAttachments.map((a, i) =>
+    wrap.innerHTML = list.map((a, i) =>
       `<span class="attach-chip"><span>${a.pending ? '⏳' : '📄'}</span>` +
       `<span class="nm">${esc(a.name)}</span>` +
       `<button onclick="removeChatAttachment(${i})" title="Remove">×</button></span>`
     ).join('');
   }
 
-  function removeChatAttachment(i) { chatAttachments.splice(i, 1); renderChatAttachments(); }
+  function removeChatAttachment(i) {
+    const c = chatConvo();
+    if (c) c.attachments.splice(i, 1);
+    renderChatAttachments();
+  }
 
   function chatPickFiles(e) {
+    const c = chatConvo();   // uploads belong to the conversation active at pick time
+    if (!c) return;
     const files = Array.from(e.target.files || []);
     e.target.value = '';   // let the same file be picked again later
     files.forEach(file => {
       const entry = { name: file.name, mime: file.type, pending: true };
-      chatAttachments.push(entry);
+      c.attachments.push(entry);
       renderChatAttachments();
       const fd = new FormData();
       fd.append('file', file);
@@ -1861,7 +2100,7 @@
         .then(r => r.json().then(d => ({ ok: r.ok, d })))
         .then(({ ok, d }) => {
           if (!ok || d.error) {
-            chatAttachments = chatAttachments.filter(a => a !== entry);
+            c.attachments = c.attachments.filter(a => a !== entry);
             addChatBubble('err', d.error || `Couldn't upload ${file.name}.`);
           } else {
             entry.id = d.id; entry.mime = d.mime; entry.pending = false;
@@ -1869,7 +2108,7 @@
           renderChatAttachments();
         })
         .catch(() => {
-          chatAttachments = chatAttachments.filter(a => a !== entry);
+          c.attachments = c.attachments.filter(a => a !== entry);
           renderChatAttachments();
           addChatBubble('err', `Couldn't upload ${file.name}.`);
         });
@@ -1909,48 +2148,61 @@
     return div;
   }
 
+  // Send in the ACTIVE conversation — but let it finish in the background.
+  // `cid` is captured in the closure: if the user switches away mid-generation,
+  // the reply still lands in the right conversation's state; the DOM is only
+  // touched when that conversation is the visible one. Each /api/chat call is
+  // independent, so any number of conversations can generate simultaneously.
   function chatSend() {
-    if (chatBusy) return;
+    const cid = activeChat;
+    const c = chats[cid];
+    if (!c || c.busy) return;
     const t = document.getElementById('chat-text');
     const text = t.value.trim();
-    if (chatAttachments.some(a => a.pending)) return;   // wait for uploads to finish
-    const ready = chatAttachments.filter(a => a.id);
+    if (c.attachments.some(a => a.pending)) return;   // wait for uploads to finish
+    const ready = c.attachments.filter(a => a.id);
     if (!text && !ready.length) return;
 
     const atts = ready.map(a => ({ id: a.id, name: a.name, mime: a.mime }));
-    addChatBubble('user', text, null, atts);
-    chatMsgs.push({ role: 'user', content: text || '(see attached file(s))' });
+    c.msgs.push({ role: 'user', content: text || '(see attached file(s))',
+                  attachments: atts.map(a => ({ name: a.name, mime: a.mime })) });
     t.value = ''; chatAutogrow();
-    chatAttachments = []; renderChatAttachments();
-
-    chatBusy = true;
-    document.getElementById('chat-send').disabled = true;
-    const log = document.getElementById('chat-log');
-    const typing = document.createElement('div');
-    typing.className = 'chat-typing';
-    const thinker = chatTier === 'fast' ? (chatModel || 'local model')
-                  : chatTier === 'smart' ? ((routerStatus && routerStatus.smart && routerStatus.smart.model) || 'Smart')
-                  : 'Claude';
-    typing.textContent = thinker + ' is thinking…';
-    log.appendChild(typing);
-    log.scrollTop = log.scrollHeight;
+    c.attachments = []; renderChatAttachments();
+    c.busy = true; c.done = false;
+    saveChat(cid);          // persist the user turn before the model answers
+    renderChatLog(cid);     // paints the user bubble + typing indicator
+    renderChatSidebar();
+    updateSendDisabled();
 
     fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatMsgs, tier: chatTier, model: chatTier === 'fast' ? chatModel : null, attachments: atts, edit: chatEdit }),
+      body: JSON.stringify({
+        messages: c.msgs.filter(m => m.role === 'user' || m.role === 'assistant')
+                        .map(m => ({ role: m.role, content: m.content })),
+        tier: c.tier, model: c.tier === 'fast' ? c.model : null,
+        attachments: atts, edit: c.edit,
+      }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
-        typing.remove();
-        if (!ok || d.error) { addChatBubble('err', d.error || 'Something went wrong.'); return; }
-        addChatBubble('bot', d.reply, d.model);
-        chatMsgs.push({ role: 'assistant', content: d.reply });
+        if (!ok || d.error) {
+          c.msgs.push({ role: 'err', content: d.error || 'Something went wrong.' });
+        } else {
+          c.msgs.push({ role: 'assistant', content: d.reply, model: d.model });
+          saveChat(cid);
+        }
       })
-      .catch(() => { typing.remove(); addChatBubble('err', "Couldn't reach the server."); })
+      .catch(() => { c.msgs.push({ role: 'err', content: "Couldn't reach the server." }); })
       .finally(() => {
-        chatBusy = false;
-        document.getElementById('chat-send').disabled = false;
-        document.getElementById('chat-text').focus();
+        c.busy = false;
+        if (cid === activeChat) {
+          renderChatLog(cid);
+          updateSendDisabled();
+          document.getElementById('chat-text').focus();
+        } else {
+          c.done = true;   // background reply — flag it on the sidebar
+        }
+        renderChatSidebar();
       });
   }
 

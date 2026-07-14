@@ -20,6 +20,7 @@ import yaml
 from flask import Flask, jsonify, render_template, request
 
 import agent
+import chats
 import mailbox
 import news_sources
 import router
@@ -393,7 +394,7 @@ def api_usage():
     return jsonify(load_usage())
 
 
-# ── Home-page briefing: tech news + Bluesky/blogs + job openings ─────────────
+# ── Home-page briefing: tech news + job openings ────────────────────────────
 #
 # All fetched with stdlib only (urllib + xml.etree + json); no API keys. These
 # are slow, rate-limited network calls, so the result is cached in-process with
@@ -453,31 +454,6 @@ def _fetch_rss_group(feeds, limit) -> tuple[list[dict], list[str]]:
                 items.append(it)
         except Exception as e:  # noqa: BLE001 — one bad feed shouldn't sink the panel
             errors.append(f"{source}: {type(e).__name__}")
-    return items, errors
-
-
-def _fetch_bluesky() -> tuple[list[dict], list[str]]:
-    items, errors = [], []
-    base = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
-    for handle in news_sources.BLUESKY_HANDLES:
-        try:
-            raw = _http_get(f"{base}?actor={handle}&limit={news_sources.MAX_PER_BLUESKY}&filter=posts_no_replies")
-            feed = json.loads(raw).get("feed", [])
-            for entry in feed[: news_sources.MAX_PER_BLUESKY]:
-                post = entry.get("post", {})
-                rec = post.get("record", {})
-                text = (rec.get("text") or "").strip()
-                if not text:
-                    continue
-                rkey = (post.get("uri") or "").rsplit("/", 1)[-1]
-                items.append({
-                    "source": "🦋 " + (post.get("author", {}).get("handle") or handle),
-                    "title": text if len(text) <= 180 else text[:177] + "…",
-                    "url": f"https://bsky.app/profile/{handle}/post/{rkey}" if rkey else "",
-                    "time": rec.get("createdAt", ""),
-                })
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"bsky/{handle}: {type(e).__name__}")
     return items, errors
 
 
@@ -557,17 +533,16 @@ def _fetch_jobs() -> tuple[list[dict], list[str]]:
 
 
 def _build_briefing() -> dict:
+    # (v1.23) The old "social" section (Bluesky + blog feeds) was replaced by the
+    # Important-mail panel, which has its own endpoint: GET /api/mail/important.
     news, e1 = _fetch_rss_group(news_sources.NEWS_FEEDS, news_sources.MAX_PER_NEWS_FEED)
-    blogs, e2 = _fetch_rss_group(news_sources.BLOG_FEEDS, news_sources.MAX_PER_BLOG)
-    posts, e3 = _fetch_bluesky()
-    jobs, e4 = _fetch_jobs()
+    jobs, e2 = _fetch_jobs()
     return {
         "available": True,
         "fetched": datetime.now().astimezone().isoformat(timespec="seconds"),
         "news": news,
-        "social": posts + blogs,
         "jobs": jobs,
-        "errors": e1 + e2 + e3 + e4,
+        "errors": e1 + e2,
     }
 
 
@@ -824,6 +799,20 @@ def api_inboxes():
         return jsonify(mailbox.accounts_overview())
     except mailbox.MailboxError as e:
         return jsonify({"accounts": [], "errors": [e.message]}), e.status
+
+
+@app.route("/api/mail/important")
+def api_mail_important():
+    """Work/school-relevant mail (last N days) for the overview panel.
+
+    Deliberately NOT under /api/inbox/… — that segment is a dynamic
+    <account_id> route. Degrades to available:false with no inbox connected;
+    per-account failures come back in `errors`, never a 500.
+    """
+    try:
+        return jsonify(mailbox.important_messages())
+    except mailbox.MailboxError as e:
+        return jsonify({"available": False, "messages": [], "errors": [e.message]})
 
 
 @app.route("/api/inbox/<account_id>")
@@ -1165,6 +1154,43 @@ def api_chat():
     except router.RouterError as e:
         return jsonify({"error": e.message}), e.status
     return jsonify(result)
+
+
+# ── Chat conversation store (multi-chat, v1.20) ──────────────────────────────
+# Thin CRUD wrappers over chats.py. Generation stays on the stateless /api/chat
+# above — these routes only persist/list transcripts so conversations survive
+# reloads and restarts. Ids are traversal-guarded in chats._chat_path.
+
+@app.errorhandler(chats.ChatStoreError)
+def _chat_store_error(e: chats.ChatStoreError):
+    return jsonify({"error": e.message}), e.status
+
+
+@app.route("/api/chats", methods=["GET", "POST"])
+def api_chats():
+    """List conversation metadata (GET) or mint a new conversation (POST)."""
+    if request.method == "POST":
+        return jsonify(chats.create_chat())
+    return jsonify({"chats": chats.list_chats()})
+
+
+@app.route("/api/chats/<cid>", methods=["GET", "PUT", "DELETE"])
+def api_chat_one(cid: str):
+    """Fetch, replace, or delete one stored conversation."""
+    if request.method == "GET":
+        obj = chats.load_chat(cid)
+        if obj is None:
+            return jsonify({"error": "No such chat."}), 404
+        return jsonify(obj)
+    if request.method == "DELETE":
+        return jsonify({"deleted": chats.delete_chat(cid)})
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Chat must be an object."}), 400
+    data["id"] = cid  # the URL is authoritative — a body id can't redirect the write
+    existing = chats.load_chat(cid) or {}
+    data.setdefault("created", existing.get("created"))
+    return jsonify(chats.save_chat(data))
 
 
 if __name__ == "__main__":

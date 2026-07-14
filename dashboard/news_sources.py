@@ -13,17 +13,8 @@ NEWS_FEEDS = [
     ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
 ]
 
-# Bluesky founder/builder handles. The public AppView serves author feeds with
-# no auth: app.bsky.feed.getAuthorFeed. Use the full handle (no leading @).
-BLUESKY_HANDLES = [
-    "pmarca.bsky.social",
-    "paulg.bsky.social",
-]
-
-# Founder/company blogs that publish RSS (a calmer signal than social).
-BLOG_FEEDS = [
-    ("Stratechery (free)", "https://stratechery.com/feed/"),
-]
+# (v1.23) The Bluesky/blog "social" section was retired — its overview column is
+# now the Important-mail panel (config in email_sources.py, /api/mail/important).
 
 # Company job boards. Greenhouse and Lever both serve free public JSON per
 # company; the value is the board "token" (the slug in the careers URL).
@@ -90,7 +81,5 @@ PREFERRED_LOCATIONS = [
 
 # Limits — keep the panel tight and the fetch cheap.
 MAX_PER_NEWS_FEED = 6
-MAX_PER_BLUESKY = 4
-MAX_PER_BLOG = 3
 MAX_PER_BOARD = 40   # parse cap per board *before* scoring (was the display cap)
 MAX_JOBS_SHOWN = 9   # tailored postings shown after ranking

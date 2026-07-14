@@ -15,6 +15,8 @@ Run from the dashboard/ folder:
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -26,6 +28,7 @@ if str(DASHBOARD_DIR) not in sys.path:
 
 import agent  # noqa: E402
 import app as dashboard_app  # noqa: E402
+import chats  # noqa: E402
 import email_sources  # noqa: E402
 import mailbox  # noqa: E402
 import router  # noqa: E402
@@ -192,6 +195,77 @@ class ClaudeAgentTierTests(unittest.TestCase):
         )
 
 
+class MailboxMcpBridgeTests(unittest.TestCase):
+    """v1.22: the claude tier reaches the mailbox over MCP (mail_mcp.py).
+
+    Offline: router.claude_code_stream is stubbed to capture what the runner
+    passes it — nothing spawns the CLI or the MCP server. Proves the wiring:
+    email agents get an mcp_config + only mcp__mailbox__* grants; vault agents
+    are unchanged; the temp config is cleaned up after the run.
+    """
+
+    DONE = [{"type": "result", "subtype": "success", "is_error": False, "result": "ok"}]
+
+    def _run_capturing(self, agent_id):
+        seen = {}
+        original = router.claude_code_stream
+
+        def fake(prompt, **kw):
+            seen.update(kw)
+            # The temp config must exist while the CLI would be running.
+            cfg = kw.get("mcp_config")
+            seen["config_existed_during_run"] = bool(cfg) and Path(cfg).is_file()
+            if cfg:
+                seen["config_json"] = json.loads(Path(cfg).read_text(encoding="utf-8"))
+            return iter(self.DONE)
+
+        router.claude_code_stream = fake
+        try:
+            agent.run_agent(agent_id, "triage", tier="claude", emit=None)
+        finally:
+            router.claude_code_stream = original
+        return seen
+
+    def test_mailbox_mcp_config_shape(self):
+        path = agent._mailbox_mcp_config()
+        try:
+            cfg = json.loads(Path(path).read_text(encoding="utf-8"))
+            server = cfg["mcpServers"]["mailbox"]
+            self.assertEqual(server["command"], sys.executable)
+            self.assertTrue(server["args"][0].endswith("mail_mcp.py"))
+            self.assertTrue(Path(server["args"][0]).is_file())
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_email_agent_gets_mcp_and_only_mailbox_tools(self):
+        seen = self._run_capturing("inbox_triage")
+        self.assertTrue(seen["config_existed_during_run"])
+        self.assertIn("mailbox", seen["config_json"]["mcpServers"])
+        allowed = seen["allowed_tools"]
+        for t in agent.EMAIL_TOOL_NAMES:
+            self.assertIn(f"mcp__mailbox__{t}", allowed)
+        # Email-only agent: no filesystem tools at all.
+        for t in ("Read", "Grep", "Glob", "Write", "Edit", "Bash"):
+            self.assertNotIn(t, allowed)
+        # Temp config is deleted once the run finishes.
+        self.assertFalse(Path(seen["mcp_config"]).exists())
+
+    def test_vault_agent_unchanged_no_mcp(self):
+        seen = self._run_capturing("summarizer")
+        self.assertIsNone(seen.get("mcp_config"))
+        self.assertIn("Read", seen["allowed_tools"])
+        self.assertFalse(any(t.startswith("mcp__") for t in seen["allowed_tools"]))
+
+    def test_inbox_triage_defaults_to_claude(self):
+        self.assertEqual(agent.AGENTS["inbox_triage"]["tier"], "claude")
+
+    @unittest.skipUnless(importlib.util.find_spec("mcp"), "mcp SDK not installed")
+    def test_mail_mcp_imports_and_registers_no_send(self):
+        import mail_mcp
+        self.assertFalse(hasattr(mail_mcp, "send_email"))
+        self.assertFalse(hasattr(mail_mcp, "send"))
+
+
 class EmailDraftsOnlyTests(unittest.TestCase):
     """Write scope is drafts-only by construction — there is no send path anywhere.
 
@@ -324,81 +398,147 @@ class EmailRouteTests(unittest.TestCase):
         self.assertEqual(seen["account_id"], "gmail-x")
 
 
-class HermesRetrievalTests(unittest.TestCase):
-    """M3: the Hermes email-skill retrieval path maps JSON onto the frozen shapes.
+class ImportantMailTests(unittest.TestCase):
+    """v1.23: the overview's Important-mail panel — deterministic scoring + route.
 
-    The Hermes subprocess is never spawned — we exercise the pure mappers and
-    `_extract_json` directly, and mock the `_hermes_skill` seam to prove fetch/read
-    route through Hermes (and keep the same message dicts) when the backend flips.
+    Offline: list_accounts/fetch_inbox are mocked; the scorer and date parser are
+    pure. Proves work/school mail scores in, marketing scores out, the date
+    cutoff drops stale mail, and the route degrades with no inbox connected.
     """
 
-    SEARCH_ITEM = {
-        "id": "m1", "threadId": "t1", "from": "a@b.com", "to": "me@x.com",
-        "subject": "Hi", "date": "Mon, 30 Jun 2026", "snippet": "hello there",
-        "labels": ["INBOX", "UNREAD"],
-    }
+    def test_scorer_boosts_school_and_work(self):
+        score, why = mailbox._importance_score({
+            "subject": "Assignment 3 due Friday", "snippet": "submission deadline",
+            "from": "prof@rpi.edu", "unread": True})
+        self.assertGreaterEqual(score, email_sources.IMPORTANT_MIN_SCORE)
+        self.assertIn("assignment", why)
+        self.assertIn(".edu", why)
 
-    def test_extract_json_raw_array(self):
-        self.assertEqual(mailbox._extract_json('[{"id": "m1"}]'), [{"id": "m1"}])
+    def test_scorer_penalizes_marketing(self):
+        score, _ = mailbox._importance_score({
+            "subject": "50% off sale — free shipping!", "snippet": "unsubscribe here",
+            "from": "deals@shop.com", "unread": True})
+        self.assertLess(score, email_sources.IMPORTANT_MIN_SCORE)
 
-    def test_extract_json_tolerates_fence_and_prose(self):
-        reply = 'Sure, here it is:\n```json\n[{"id": "m1"}]\n```\nDone.'
-        self.assertEqual(mailbox._extract_json(reply), [{"id": "m1"}])
+    def test_parse_msg_date_both_formats(self):
+        rfc = mailbox._parse_msg_date("Fri, 10 Jul 2026 09:30:00 -0400")
+        iso = mailbox._parse_msg_date("2026-07-10T13:30:00Z")
+        self.assertEqual(rfc, iso)
+        self.assertIsNone(mailbox._parse_msg_date("not a date"))
 
-    def test_extract_json_empty_raises(self):
-        with self.assertRaises(mailbox.MailboxError):
-            mailbox._extract_json("   ")
-
-    def test_extract_json_no_json_raises(self):
-        with self.assertRaises(mailbox.MailboxError):
-            mailbox._extract_json("no json here at all")
-
-    def test_summary_mapping_shape_and_unread(self):
-        msg = mailbox._hermes_msg(self.SEARCH_ITEM)
-        self.assertEqual(set(msg),
-                         {"id", "thread_id", "from", "subject", "date", "snippet", "unread"})
-        self.assertEqual(msg["thread_id"], "t1")
-        self.assertTrue(msg["unread"])  # derived from the UNREAD label
-
-    def test_summary_mapping_read_when_no_unread_label(self):
-        item = {**self.SEARCH_ITEM, "labels": ["INBOX"]}
-        self.assertFalse(mailbox._hermes_msg(item)["unread"])
-
-    def test_full_mapping_adds_to_and_body(self):
-        item = {**self.SEARCH_ITEM, "body": "full body text"}
-        msg = mailbox._hermes_msg(item, full=True)
-        self.assertEqual(msg["to"], "me@x.com")
-        self.assertEqual(msg["body"], "full body text")
-
-    def test_missing_subject_defaults(self):
-        self.assertEqual(mailbox._hermes_msg({"id": "m1"})["subject"], "(no subject)")
-
-    def test_fetch_inbox_routes_to_hermes(self):
-        orig_backend, orig_skill = email_sources.MAILBOX_BACKEND, mailbox._hermes_skill
-        email_sources.MAILBOX_BACKEND = "hermes"
-        mailbox._hermes_skill = lambda cmd: [self.SEARCH_ITEM]
-        mailbox._CACHE.clear()
+    def test_important_messages_filters_and_sorts(self):
+        orig_accounts, orig_fetch = mailbox.list_accounts, mailbox.fetch_inbox
+        from datetime import datetime, timedelta, timezone
+        fresh = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+            "%a, %d %b %Y %H:%M:%S +0000")
+        stale = (datetime.now(timezone.utc) - timedelta(days=10)).strftime(
+            "%a, %d %b %Y %H:%M:%S +0000")
+        mailbox.list_accounts = lambda: [
+            {"id": "gmail-x", "provider": "gmail", "address": "x@gmail.com"}]
+        mailbox.fetch_inbox = lambda aid, limit=25, query="": {"messages": [
+            {"id": "m1", "subject": "Interview schedule", "snippet": "onboarding",
+             "from": "HR <hr@corp.com>", "date": fresh, "unread": True},
+            {"id": "m2", "subject": "Exam deadline", "snippet": "",
+             "from": "prof@rpi.edu", "date": stale, "unread": True},   # too old
+            {"id": "m3", "subject": "Weekend sale", "snippet": "unsubscribe",
+             "from": "promo@shop.com", "date": fresh, "unread": False},  # junk
+        ]}
         try:
-            out = mailbox.fetch_inbox("gmail", limit=5)
+            out = mailbox.important_messages()
         finally:
-            email_sources.MAILBOX_BACKEND = orig_backend
-            mailbox._hermes_skill = orig_skill
-            mailbox._CACHE.clear()
-        self.assertEqual(len(out["messages"]), 1)
-        self.assertEqual(out["messages"][0]["id"], "m1")
-        self.assertTrue(out["messages"][0]["unread"])
+            mailbox.list_accounts, mailbox.fetch_inbox = orig_accounts, orig_fetch
+        self.assertTrue(out["available"])
+        self.assertEqual([m["subject"] for m in out["messages"]], ["Interview schedule"])
+        self.assertEqual(out["messages"][0]["from"], "HR")
+        self.assertEqual(out["messages"][0]["account"], "x")
 
-    def test_read_message_routes_to_hermes(self):
-        orig_backend, orig_skill = email_sources.MAILBOX_BACKEND, mailbox._hermes_skill
-        email_sources.MAILBOX_BACKEND = "hermes"
-        mailbox._hermes_skill = lambda cmd: {**self.SEARCH_ITEM, "body": "B"}
+    def test_route_degrades_with_no_accounts(self):
+        dashboard_app.app.config["TESTING"] = True
+        client = dashboard_app.app.test_client()
+        orig = mailbox.list_accounts
+        mailbox.list_accounts = lambda: []
         try:
-            msg = mailbox.read_message("gmail", "m1")
+            r = client.get("/api/mail/important")
         finally:
-            email_sources.MAILBOX_BACKEND = orig_backend
-            mailbox._hermes_skill = orig_skill
-        self.assertEqual(msg["body"], "B")
-        self.assertEqual(msg["to"], "me@x.com")
+            mailbox.list_accounts = orig
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertFalse(body["available"])
+        self.assertEqual(body["messages"], [])
+
+
+class ChatStoreTests(unittest.TestCase):
+    """Multi-chat store (v1.20): CRUD round-trip + traversal-guarded ids.
+
+    The store is pointed at a temp dir so tests never touch real transcripts.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        self._orig_dir = chats.CHATS_DIR
+        self._tmp = tempfile.TemporaryDirectory()
+        chats.CHATS_DIR = Path(self._tmp.name)
+
+    def tearDown(self):
+        chats.CHATS_DIR = self._orig_dir
+        self._tmp.cleanup()
+
+    def test_list_chats_shape(self):
+        r = self.client.get("/api/chats")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsInstance(r.get_json().get("chats"), list)
+
+    def test_crud_round_trip(self):
+        # create
+        r = self.client.post("/api/chats")
+        self.assertEqual(r.status_code, 200)
+        obj = r.get_json()
+        cid = obj["id"]
+        self.assertRegex(cid, r"^c_[0-9a-f]{32}$")
+        # save with messages → title derived from the first user turn
+        obj["messages"] = [{"role": "user", "content": "hello store"},
+                           {"role": "assistant", "content": "hi", "model": "m"}]
+        r = self.client.put(f"/api/chats/{cid}", json=obj)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["title"], "hello store")
+        # load
+        r = self.client.get(f"/api/chats/{cid}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.get_json()["messages"]), 2)
+        # listed, most recent first, metadata only
+        listed = self.client.get("/api/chats").get_json()["chats"]
+        self.assertEqual(listed[0]["id"], cid)
+        self.assertEqual(listed[0]["messages"], 2)   # count, not bodies
+        # delete
+        r = self.client.delete(f"/api/chats/{cid}")
+        self.assertTrue(r.get_json()["deleted"])
+        self.assertEqual(self.client.get(f"/api/chats/{cid}").status_code, 404)
+
+    def test_missing_chat_404(self):
+        self.assertEqual(self.client.get("/api/chats/c_" + "0" * 32).status_code, 404)
+
+    def test_bad_id_rejected(self):
+        # anything that isn't a minted c_<hex32> id is refused before touching disk
+        for bad in ("..", "../../etc", "c_short", "C_" + "A" * 32, "c_" + "g" * 32):
+            with self.assertRaises(chats.ChatStoreError) as ctx:
+                chats._chat_path(bad)
+            self.assertEqual(ctx.exception.status, 400)
+        # and through the route: a bad id on PUT is a 400, never a write
+        r = self.client.put("/api/chats/c_evil", json={"messages": []})
+        self.assertEqual(r.status_code, 400)
+
+    def test_put_body_id_cannot_redirect_write(self):
+        cid = self.client.post("/api/chats").get_json()["id"]
+        other = "c_" + "f" * 32
+        self.client.put(f"/api/chats/{cid}",
+                        json={"id": other, "messages": [{"role": "user", "content": "x"}]})
+        self.assertEqual(self.client.get(f"/api/chats/{other}").status_code, 404)
+        self.assertEqual(len(self.client.get(f"/api/chats/{cid}").get_json()["messages"]), 1)
 
 
 if __name__ == "__main__":

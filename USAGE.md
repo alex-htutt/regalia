@@ -39,7 +39,7 @@ related: []
 Keep `status` and `deadline` current — that's what the Bases view filters on.
 
 ## Tags
-`area/internship`, `area/projects` · `type/{daily-log,standup,meeting,project,lab,lecture,problem-set,reference}` · `status/{active,complete,archived}`. Always `category/subcategory` format.
+`area/internship`, `area/projects`, `area/schoolwork` · `type/{daily-log,standup,meeting,project,lab,lecture,problem-set,reference}` · `status/{active,complete,archived}`. Always `category/subcategory` format.
 
 ## Linking
 Use `[[wikilinks]]`, not file paths. Each folder's context file is `_context_<folder>.md` (unique names, so links are unambiguous). Link a note to its `[[_context_<folder>]]` and to related notes as you write. The right-pane **backlinks** show everything pointing at the current note. Graph view (`Cmd/Ctrl+G`) shows clusters — filter out `path:templates/` to keep it clean.
