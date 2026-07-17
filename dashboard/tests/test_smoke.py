@@ -540,6 +540,31 @@ class ChatStoreTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/chats/{other}").status_code, 404)
         self.assertEqual(len(self.client.get(f"/api/chats/{cid}").get_json()["messages"]), 1)
 
+    def test_concurrent_saves_never_leave_partial_json(self):
+        import threading
+
+        obj = chats.create_chat()
+        errors = []
+
+        def write(index):
+            try:
+                chats.save_chat({**obj, "messages": [
+                    {"role": "user", "content": f"message {index}"}
+                ]})
+            except Exception as exc:  # noqa: BLE001 — collected for the assertion
+                errors.append(exc)
+
+        workers = [threading.Thread(target=write, args=(i,)) for i in range(12)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+        self.assertEqual(errors, [])
+        loaded = chats.load_chat(obj["id"])
+        self.assertRegex(loaded["messages"][0]["content"], r"^message \d+$")
+        self.assertEqual(list(chats.CHATS_DIR.glob("*.tmp")), [])
+
 
 class SettingsTests(unittest.TestCase):
     """The settings store round-trips, rejects junk, and never leaks secrets."""
@@ -688,6 +713,10 @@ class UiConfigTests(unittest.TestCase):
         self.assertEqual(
             self.client.post("/api/settings", json={"news_ttl": "-5"}).status_code, 400)
         self.assertEqual(
+            self.client.post("/api/settings", json={"codex_cli_timeout": "0"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings", json={"news_ttl": "86401"}).status_code, 400)
+        self.assertEqual(
             self.client.post("/api/settings", json={"ollama_host": "localhost:11434"}).status_code, 400)
         self.assertEqual(
             self.client.post("/api/settings", json={"openai_base": "ftp://x"}).status_code, 400)
@@ -770,9 +799,19 @@ class ChatGptAccountTierTests(unittest.TestCase):
     """ChatGPT account tier is backed by Codex CLI, not the OpenAI API key path."""
 
     def test_chatgpt_chat_uses_codex_exec_and_account_env(self):
+        import os
+        import tempfile
+
         seen = {}
         original_path = router._codex_cli_path
         original_run = router.subprocess.run
+        original_cwd = router.CODEX_CLI_CWD
+        original_health = dict(router._CODEX_HEALTH)
+        secret_names = (
+            "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
+            "AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD",
+        )
+        original_secrets = {name: os.environ.get(name) for name in secret_names}
 
         class FakeProc:
             returncode = 0
@@ -784,31 +823,186 @@ class ChatGptAccountTierTests(unittest.TestCase):
             seen["input"] = kwargs.get("input")
             seen["env"] = kwargs.get("env") or {}
             seen["cwd"] = kwargs.get("cwd")
+            seen["add_dir"] = Path(cmd[cmd.index("--add-dir") + 1])
+            seen["staged"] = Path(next(
+                line[2:] for line in seen["input"].splitlines()
+                if line.startswith("- ")
+            ))
+            self.assertTrue(seen["staged"].is_file())
+            self.assertEqual(seen["staged"].read_text(encoding="utf-8"), "attachment")
             return FakeProc()
 
-        router._codex_cli_path = lambda: "codex"
-        router.subprocess.run = fake_run
-        try:
-            res = router.chat([{"role": "user", "content": "hi"}],
-                              tier="chatgpt", system="be terse")
-        finally:
-            router._codex_cli_path = original_path
-            router.subprocess.run = original_run
+        with tempfile.TemporaryDirectory() as cwd, tempfile.TemporaryDirectory() as uploads:
+            source = Path(uploads) / "outside vault.txt"
+            source.write_text("attachment", encoding="utf-8")
+            router._codex_cli_path = lambda: "codex"
+            router.subprocess.run = fake_run
+            router.CODEX_CLI_CWD = cwd  # intentionally not a Git repository
+            for name in secret_names:
+                os.environ[name] = f"sentinel-{name.lower()}"
+            try:
+                res = router.chat(
+                    [{"role": "user", "content": "hi"}], tier="chatgpt",
+                    system="be terse",
+                    attachments=[{"path": str(source), "name": source.name,
+                                  "mime": "text/plain"}],
+                )
+            finally:
+                router._codex_cli_path = original_path
+                router.subprocess.run = original_run
+                router.CODEX_CLI_CWD = original_cwd
+                router._CODEX_HEALTH.clear()
+                router._CODEX_HEALTH.update(original_health)
+                for name, value in original_secrets.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
 
         self.assertEqual(res["tier"], "chatgpt")
         self.assertEqual(res["reply"], "hello from chatgpt")
         self.assertEqual(seen["cmd"][:2], ["codex", "exec"])
         self.assertIn("read-only", seen["cmd"])
+        self.assertIn("--skip-git-repo-check", seen["cmd"])
+        self.assertIn("--ignore-user-config", seen["cmd"])
+        self.assertIn("--ignore-rules", seen["cmd"])
+        self.assertIn('forced_login_method="chatgpt"', seen["cmd"])
+        self.assertNotIn("--ask-for-approval", seen["cmd"])
         self.assertTrue(seen["input"].startswith("System instructions:"))
-        self.assertNotIn("CODEX_API_KEY", seen["env"])
-        self.assertNotIn("OPENAI_API_KEY", seen["env"])
+        for name in secret_names:
+            self.assertNotIn(name, seen["env"])
         self.assertTrue(seen["cwd"])
+        self.assertEqual(seen["staged"].parent, seen["add_dir"])
+        self.assertFalse(seen["add_dir"].exists())
+
+    def test_health_rejects_api_key_login_and_marks_tier_unavailable(self):
+        import tempfile
+
+        original_path = router._codex_cli_path
+        original_run = router.subprocess.run
+        original_cwd = router.CODEX_CLI_CWD
+        original_health = dict(router._CODEX_HEALTH)
+
+        class FakeProc:
+            returncode = 0
+            stdout = "Logged in using an API key"
+            stderr = ""
+
+        with tempfile.TemporaryDirectory() as cwd:
+            router._codex_cli_path = lambda: "codex"
+            router.subprocess.run = lambda *args, **kwargs: FakeProc()
+            router.CODEX_CLI_CWD = cwd
+            try:
+                ok, reason = router.codex_cli_health()
+                status = router.status_for("chatgpt")
+            finally:
+                router._codex_cli_path = original_path
+                router.subprocess.run = original_run
+                router.CODEX_CLI_CWD = original_cwd
+                router._CODEX_HEALTH.clear()
+                router._CODEX_HEALTH.update(original_health)
+
+        self.assertFalse(ok)
+        self.assertIn("API key", reason)
+        self.assertFalse(status["authenticated"])
+        self.assertFalse(status["available"])
 
     def test_chatgpt_tool_loop_rejected(self):
         with self.assertRaises(router.RouterError) as ctx:
             router.chat_tools([{"role": "user", "content": "hi"}], [],
                               tier="chatgpt")
         self.assertEqual(ctx.exception.status, 400)
+
+
+class BackendRegressionTests(unittest.TestCase):
+    """Cross-feature regressions around targeted checks and agent tier routing."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def test_router_check_rejects_non_object_without_probing(self):
+        original_ollama = router._ollama_up
+        router._ollama_up = lambda: self.fail("unrelated Ollama probe ran")
+        try:
+            response = self.client.post("/api/router/check", json=["chatgpt"])
+        finally:
+            router._ollama_up = original_ollama
+        self.assertEqual(response.status_code, 400)
+
+    def test_chatgpt_check_does_not_probe_other_backends(self):
+        original_health = router.codex_cli_health
+        original_path = router._codex_cli_path
+        original_ollama = router._ollama_up
+        original_cache = dict(router._CODEX_HEALTH)
+
+        def healthy():
+            router._CODEX_HEALTH.update(exe="codex", ok=True, reason="ready")
+            return True, "ready"
+
+        router.codex_cli_health = healthy
+        router._codex_cli_path = lambda: "codex"
+        router._ollama_up = lambda: self.fail("unrelated Ollama probe ran")
+        try:
+            response = self.client.post("/api/router/check", json={"tier": "chatgpt"})
+        finally:
+            router.codex_cli_health = original_health
+            router._codex_cli_path = original_path
+            router._ollama_up = original_ollama
+            router._CODEX_HEALTH.clear()
+            router._CODEX_HEALTH.update(original_cache)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["status"]["available"])
+
+    def test_openai_agent_tier_is_preserved(self):
+        original_thread = dashboard_app.threading.Thread
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def start(self):
+                pass
+
+        dashboard_app.threading.Thread = FakeThread
+        run_id = None
+        try:
+            response = self.client.post(
+                "/api/agent/run",
+                json={"agent": "summarizer", "task": "Summarize today", "tier": "openai"},
+            )
+            body = response.get_json()
+            run_id = body.get("run_id")
+        finally:
+            dashboard_app.threading.Thread = original_thread
+            if run_id:
+                with dashboard_app._RUNS_LOCK:
+                    dashboard_app._RUNS.pop(run_id, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["tier"], "openai")
+
+    def test_unsupported_agent_tier_is_explicit_error(self):
+        response = self.client.post(
+            "/api/agent/run",
+            json={"agent": "summarizer", "task": "Summarize", "tier": "chatgpt"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot run agents", response.get_json()["error"])
+
+    def test_chat_and_agent_routes_reject_non_object_json(self):
+        self.assertEqual(self.client.post("/api/chat", json=[]).status_code, 400)
+        self.assertEqual(self.client.post("/api/agent/run", json=[]).status_code, 400)
+
+    def test_chat_route_rejects_unknown_tier_instead_of_falling_back(self):
+        response = self.client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}], "tier": "mystery"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unknown tier", response.get_json()["error"])
 
 
 class ProjectScaffoldTests(unittest.TestCase):

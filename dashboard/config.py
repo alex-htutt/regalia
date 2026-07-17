@@ -123,8 +123,11 @@ def update(changes: dict) -> dict:
     if changes.get("accent") and not _looks_like_hex(changes["accent"]):
         raise ValueError("accent must be a hex color like #e7c59a (or empty)")
     for k in _INT_KEYS:
-        if changes.get(k) and not changes[k].isdigit():
-            raise ValueError(f"{k} must be a whole number of seconds (or empty)")
+        if changes.get(k):
+            if not changes[k].isdigit() or not 1 <= int(changes[k]) <= 86400:
+                raise ValueError(
+                    f"{k} must be 1 to 86400 whole seconds (or empty)"
+                )
     for k in ("ollama_host", "openai_base"):
         if changes.get(k) and not changes[k].lower().startswith(("http://", "https://")):
             raise ValueError(f"{k} must be an http(s):// URL (or empty)")
