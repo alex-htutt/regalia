@@ -44,7 +44,7 @@ From source, the dashboard indexes the vault it lives inside (the repo root) unl
 
 | Tier | Backend | Needs | Billing |
 |---|---|---|---|
-| `fast` | Ollama (local) | `ollama pull llama3.2` | Free / private |
+| `fast` | Ollama (local) | [Ollama](https://ollama.com) installed — pull models from Settings | Free / private |
 | `smart` | Anthropic API | API key (env or Settings) | API credits |
 | `openai` | OpenAI API | API key (env or Settings) | API credits |
 | `claude` | Claude Code CLI | `claude` CLI signed in to a Claude subscription | Your subscription |
@@ -53,7 +53,9 @@ Every model call goes through `dashboard/router.py`; adding a backend is one mor
 
 ## Configuration
 
-Copy `.env.example` and set what you use — every knob is documented there. Nothing is required for the core dashboard; tiers and the inbox light up as you configure them. Email OAuth tokens, chat transcripts, and attachments live in gitignored per-machine stores.
+Open **Settings** in the app — everything is configurable from there: theme and accent, model backends (Ollama host + one-click model pull, Anthropic/OpenAI keys and models, Claude CLI path + a connection test), email OAuth clients (paste your Google `client_secret.json` straight into the UI), and inbox connections. Nothing is required for the core dashboard; tiers and the inbox light up as you configure them.
+
+Prefer managing your own environment? Every knob also has an env var — see `.env.example` — and env vars win over Settings. Email OAuth tokens, chat transcripts, and attachments live in gitignored per-machine stores.
 
 ## Privacy stance
 

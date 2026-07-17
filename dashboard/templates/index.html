@@ -484,13 +484,14 @@
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
     color: var(--muted); font-weight: 600;
   }
-  .np-form input, .np-form select {
+  .np-form input, .np-form select, .np-form textarea {
     border: 1px solid var(--border); border-radius: 7px;
     padding: 8px 10px; font-size: 13px; font-family: inherit;
     background: var(--bg); color: var(--text); outline: none;
     text-transform: none; letter-spacing: 0; font-weight: 400;
   }
-  .np-form input:focus, .np-form select:focus { border-color: var(--border-hover); }
+  .np-form textarea { resize: vertical; flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; }
+  .np-form input:focus, .np-form select:focus, .np-form textarea:focus { border-color: var(--border-hover); }
   .np-row { display: flex; gap: 12px; align-items: flex-end; }
   .np-submit {
     border: none; background: var(--accent); color: var(--accent-fg);
@@ -1175,7 +1176,7 @@
     <section class="view" data-view="settings" hidden>
       <div class="view-head">
         <h2>Settings</h2>
-        <p>Appearance and defaults. Changes save to a local, gitignored store and apply immediately (vault path needs a restart).</p>
+        <p>Everything configurable lives here — appearance, model backends, and connections. Changes save to a local, gitignored store and apply immediately (vault path needs a restart). Environment variables, if set, win over values saved here.</p>
       </div>
       <div class="panel-wrap">
         <form class="np-form" onsubmit="stgSave(event)">
@@ -1201,7 +1202,11 @@
               <option value="openai">🤖 GPT · OpenAI API</option>
               <option value="claude">✨ Claude · subscription</option>
             </select></label>
+          </div>
+          <div class="proj-list-head">Advanced</div>
+          <div class="np-row">
             <label>Vault folder<input id="stg-vault" type="text" placeholder="(this repo)" autocomplete="off"></label>
+            <label>Briefing cache (seconds)<input id="stg-news-ttl" type="text" inputmode="numeric" placeholder="1800" autocomplete="off"></label>
           </div>
           <div class="np-msg" id="stg-vault-now"></div>
           <div class="np-row">
@@ -1749,7 +1754,7 @@
     if (!col) return;
     let rows;
     if (!d || !d.available) {
-      rows = '<div class="news-item meta">No inbox connected — run connect_email.py.</div>';
+      rows = '<div class="news-item meta">No inbox connected — <a href="#" onclick="setView(\'settings\'); return false">connect one in Settings</a>.</div>';
     } else if (!d.messages.length) {
       rows = '<div class="news-item meta">Nothing important in the last 2 days.</div>';
     } else {
@@ -1811,6 +1816,7 @@
     document.getElementById('stg-landing').checked = s.landing_enabled !== false;
     document.getElementById('stg-tier').value = s.default_tier || 'fast';
     document.getElementById('stg-vault').value = s.vault_path || '';
+    document.getElementById('stg-news-ttl').value = s.news_ttl || '';
     document.getElementById('stg-vault-now').textContent =
       vaultRoot ? `Currently serving: ${vaultRoot} — changing the folder takes effect after a restart.` : '';
   }
@@ -1852,6 +1858,7 @@
       landing_enabled: document.getElementById('stg-landing').checked,
       default_tier: document.getElementById('stg-tier').value,
       vault_path: document.getElementById('stg-vault').value.trim(),
+      news_ttl: document.getElementById('stg-news-ttl').value.trim(),
     };
     msg.textContent = 'Saving…';
     fetch('/api/settings', {
@@ -1868,46 +1875,213 @@
     }).catch(() => { msg.textContent = 'Could not save.'; });
   }
 
-  /* ── Connections (Settings) — API keys, model backends, inboxes ── */
+  /* ── Connections (Settings) — model backends, API keys, email OAuth, inboxes ──
+     Every field here maps to a store key (env var of the same upper-cased name
+     wins). Plain fields save via stgSaveFields; secrets via stgSaveKey/ClearKey. */
   function stgConnections() {
     const s = window.__settings || {};
+    const v = k => esc(s[k] || '');
+    const keyPh = k => (s[k] && s[k].set ? 'saved ✓ — enter to replace' : '');
     const host = document.getElementById('stg-connections');
     host.innerHTML = `
-      <div class="proj-list-head">Connections</div>
+      <div class="proj-list-head">Models &amp; backends</div>
       <form class="np-form" onsubmit="return false">
+        <div class="np-msg" id="con-backends">Checking backends…</div>
+
+        <div class="np-msg"><b id="con-dot-fast"></b>Ollama — local, free, private. <a href="https://ollama.com" target="_blank" rel="noopener">Install it</a> if the dot is red, then pull a model below.</div>
         <div class="np-row">
-          <label>Anthropic API key (smart tier)<span class="np-row" style="gap:8px">
-            <input id="con-anthropic" type="password" autocomplete="off"
-                   placeholder="${s.anthropic_api_key && s.anthropic_api_key.set ? 'saved ✓ — enter to replace' : 'sk-ant-…'}">
+          <label>Ollama URL<input id="con-ollama-host" type="text" value="${v('ollama_host')}" placeholder="http://localhost:11434" autocomplete="off"></label>
+          <label>Model<span class="np-row" style="gap:8px">
+            <input id="con-ollama-model" type="text" list="con-ollama-list" value="${v('ollama_model')}" placeholder="llama3.2" autocomplete="off">
+            <datalist id="con-ollama-list"></datalist>
+            <button type="button" class="pill" onclick="stgOllamaPull()" title="Download this model into Ollama">⬇ Pull model</button>
+          </span></label>
+        </div>
+        <div class="np-msg" id="con-pull-msg"></div>
+
+        <div class="np-msg"><b id="con-dot-smart"></b>Anthropic API (smart tier) — powers agent tool loops; billed by API credits.</div>
+        <div class="np-row">
+          <label>API key<span class="np-row" style="gap:8px">
+            <input id="con-anthropic" type="password" autocomplete="off" placeholder="${keyPh('anthropic_api_key') || 'sk-ant-…'}">
             <button type="button" class="pill" onclick="stgSaveKey('anthropic_api_key','con-anthropic')">Save</button>
             <button type="button" class="pill" onclick="stgClearKey('anthropic_api_key')">Clear</button>
           </span></label>
-          <label>OpenAI API key (GPT tier)<span class="np-row" style="gap:8px">
-            <input id="con-openai" type="password" autocomplete="off"
-                   placeholder="${s.openai_api_key && s.openai_api_key.set ? 'saved ✓ — enter to replace' : 'sk-…'}">
+          <label>Model<input id="con-anthropic-model" type="text" value="${v('anthropic_model')}" placeholder="(app default)" autocomplete="off"></label>
+        </div>
+
+        <div class="np-msg"><b id="con-dot-openai"></b>OpenAI API (GPT tier) — ChatGPT models.</div>
+        <div class="np-row">
+          <label>API key<span class="np-row" style="gap:8px">
+            <input id="con-openai" type="password" autocomplete="off" placeholder="${keyPh('openai_api_key') || 'sk-…'}">
             <button type="button" class="pill" onclick="stgSaveKey('openai_api_key','con-openai')">Save</button>
             <button type="button" class="pill" onclick="stgClearKey('openai_api_key')">Clear</button>
           </span></label>
+          <label>Model<input id="con-openai-model" type="text" value="${v('openai_model')}" placeholder="(app default)" autocomplete="off"></label>
+          <label>API base URL<input id="con-openai-base" type="text" value="${v('openai_base')}" placeholder="https://api.openai.com/v1" autocomplete="off"></label>
         </div>
-        <div class="np-msg">Keys are stored in a local, gitignored file on this machine and never returned by the API. Environment variables win if both are set.</div>
+
+        <div class="np-msg"><b id="con-dot-claude"></b>Claude CLI (subscription tier) — bills your Claude plan, not API credits. <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Install Claude Code</a>, sign in once in a terminal, then test here.</div>
+        <div class="np-row">
+          <label>CLI command/path<input id="con-claude-cli" type="text" value="${v('claude_cli')}" placeholder="claude" autocomplete="off"></label>
+          <label>Model<input id="con-claude-model" type="text" value="${v('claude_cli_model')}" placeholder="(plan default)" autocomplete="off"></label>
+          <label>Timeout (s)<span class="np-row" style="gap:8px">
+            <input id="con-claude-timeout" type="text" inputmode="numeric" value="${v('claude_cli_timeout')}" placeholder="180" autocomplete="off">
+            <button type="button" class="pill" onclick="stgClaudeTest()" title="Runs a tiny prompt through the CLI to prove it's signed in">✓ Test connection</button>
+          </span></label>
+        </div>
+        <div class="np-msg" id="con-claude-msg"></div>
+
+        <div class="np-row">
+          <button type="button" class="np-submit" onclick="stgSaveBackends()">Save backend settings</button>
+        </div>
         <div class="np-msg" id="con-msg"></div>
-        <div class="np-msg" id="con-backends">Checking backends…</div>
-        <div class="proj-list-head">Inboxes (read + drafts only — nothing can send)</div>
+        <div class="np-msg">Keys are stored in a local, gitignored file on this machine and never returned by the API. Leave a field empty to use the environment variable / built-in default. Changes apply to the next request — no restart.</div>
+      </form>
+
+      <div class="proj-list-head">Email (read + drafts only — nothing can send)</div>
+      <form class="np-form" onsubmit="return false">
         <div class="np-msg" id="con-inboxes">Loading…</div>
         <div class="np-row">
           <button type="button" class="pill" onclick="stgConnectEmail('gmail')">Connect Gmail</button>
           <button type="button" class="pill" onclick="stgConnectEmail('outlook')">Connect Outlook</button>
           <span class="np-msg" id="con-email-msg"></span>
         </div>
-        <div class="np-msg">One-time setup: Gmail needs <code>GMAIL_OAUTH_CLIENT</code> pointing at a Google “Desktop app” client secret; Outlook needs <code>MS_OAUTH_CLIENT_ID</code>. See .env.example.</div>
+        <details ${s.gmail_oauth_client_json && s.gmail_oauth_client_json.set ? '' : 'open'}>
+          <summary class="np-msg" style="cursor:pointer">One-time OAuth app setup ${s.gmail_oauth_client_json && s.gmail_oauth_client_json.set ? '(Gmail client saved ✓)' : ''}</summary>
+          <div class="np-msg" style="margin-top:8px">
+            <b>Gmail:</b> in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud → Credentials</a>,
+            create an OAuth client of type <i>Desktop app</i> (enable the Gmail API), download its JSON, and paste the whole file below.
+          </div>
+          <label>Google client_secret.json<span class="np-row" style="gap:8px; align-items:flex-start">
+            <textarea id="con-gmail-json" rows="3" autocomplete="off" spellcheck="false"
+                      placeholder='${keyPh('gmail_oauth_client_json') || '{"installed":{"client_id":"…"}}  — paste the downloaded file'}'></textarea>
+            <span class="np-row" style="flex-direction:column; gap:8px">
+              <button type="button" class="pill" onclick="stgSaveKey('gmail_oauth_client_json','con-gmail-json')">Save</button>
+              <button type="button" class="pill" onclick="stgClearKey('gmail_oauth_client_json')">Clear</button>
+            </span>
+          </span></label>
+          <div class="np-msg" style="margin-top:8px">
+            <b>Outlook:</b> in <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Azure → App registrations</a>,
+            register a public client (<i>Mobile &amp; desktop</i>, redirect <code>http://localhost</code>) and paste its Application ID.
+          </div>
+          <div class="np-row">
+            <label>Azure application ID<input id="con-ms-id" type="text" value="${v('ms_oauth_client_id')}" placeholder="00000000-0000-…" autocomplete="off"></label>
+            <label>Tenant<span class="np-row" style="gap:8px">
+              <input id="con-ms-tenant" type="text" list="con-ms-tenants" value="${v('ms_oauth_tenant')}" placeholder="consumers" autocomplete="off">
+              <datalist id="con-ms-tenants">
+                <option value="consumers">personal Outlook.com</option>
+                <option value="organizations">work/school</option>
+                <option value="common">both</option>
+              </datalist>
+              <button type="button" class="pill" onclick="stgSaveFields({ms_oauth_client_id:'con-ms-id', ms_oauth_tenant:'con-ms-tenant'}, 'con-email-msg')">Save</button>
+            </span></label>
+          </div>
+        </details>
       </form>`;
+    stgBackendDots();
+    stgOllamaModels();
+    stgListInboxes();
+  }
+
+  function stgBackendDots() {
     fetch('/api/router/status').then(r => r.json()).then(st => {
       const dot = t => `<span class="dot-sm ${st[t] && st[t].available ? 'up' : 'down'}"></span>`;
-      document.getElementById('con-backends').innerHTML =
+      const bk = document.getElementById('con-backends');
+      if (bk) bk.innerHTML =
         `${dot('fast')} Ollama (local) &nbsp; ${dot('smart')} Anthropic API &nbsp; ` +
         `${dot('openai')} OpenAI API &nbsp; ${dot('claude')} Claude CLI (subscription)`;
+      for (const t of ['fast', 'smart', 'openai', 'claude']) {
+        const el = document.getElementById('con-dot-' + t);
+        if (el) el.innerHTML = dot(t) + ' ';
+      }
+      // Show the effective model as each field's placeholder, so an empty box
+      // still tells you what will actually run.
+      const ph = (id, t) => {
+        const el = document.getElementById(id);
+        if (el && st[t] && st[t].model) el.placeholder = st[t].model;
+      };
+      ph('con-ollama-model', 'fast'); ph('con-anthropic-model', 'smart');
+      ph('con-openai-model', 'openai'); ph('con-claude-model', 'claude');
     }).catch(() => {});
-    stgListInboxes();
+  }
+
+  function stgOllamaModels() {
+    fetch('/api/ollama/models').then(r => r.json()).then(d => {
+      const list = document.getElementById('con-ollama-list');
+      if (list) list.innerHTML = (d.models || []).map(m => `<option value="${esc(m)}">`).join('');
+    }).catch(() => {});
+  }
+
+  function stgSaveFields(map, msgId) {
+    const payload = {};
+    for (const [key, id] of Object.entries(map)) {
+      const el = document.getElementById(id);
+      if (el) payload[key] = el.value.trim();
+    }
+    const msg = document.getElementById(msgId);
+    if (msg) msg.textContent = 'Saving…';
+    fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                             body: JSON.stringify(payload) })
+      .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+        if (!msg) return;
+        if (!ok) { msg.textContent = d.error || 'Could not save.'; return; }
+        window.__settings = d.settings;
+        msg.textContent = 'Saved ✓ — applies to the next request.';
+        setTimeout(() => { if (msg.textContent.startsWith('Saved')) msg.textContent = ''; }, 2500);
+        stgBackendDots(); loadRouterStatus();
+      }).catch(() => { if (msg) msg.textContent = 'Could not save.'; });
+  }
+
+  function stgSaveBackends() {
+    stgSaveFields({
+      ollama_host: 'con-ollama-host', ollama_model: 'con-ollama-model',
+      anthropic_model: 'con-anthropic-model',
+      openai_model: 'con-openai-model', openai_base: 'con-openai-base',
+      claude_cli: 'con-claude-cli', claude_cli_model: 'con-claude-model',
+      claude_cli_timeout: 'con-claude-timeout',
+    }, 'con-msg');
+  }
+
+  let pullPoll = null;
+  function stgOllamaPull() {
+    const model = (document.getElementById('con-ollama-model').value
+                   || document.getElementById('con-ollama-model').placeholder || '').trim();
+    const msg = document.getElementById('con-pull-msg');
+    if (!model) { msg.textContent = 'Enter a model name to pull (e.g. llama3.2).'; return; }
+    msg.textContent = `Starting pull of ${model}…`;
+    fetch('/api/ollama/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ model }) })
+      .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+        if (!ok) { msg.textContent = d.error || 'Could not start the pull.'; return; }
+        clearInterval(pullPoll);
+        pullPoll = setInterval(() => {
+          fetch('/api/ollama/pull/status').then(r => r.json()).then(st => {
+            msg.textContent = st.detail || '';
+            if (st.state === 'running') return;
+            clearInterval(pullPoll);
+            if (st.state === 'done') { stgOllamaModels(); stgBackendDots(); loadRouterStatus(); }
+          }).catch(() => clearInterval(pullPoll));
+        }, 1500);
+      }).catch(() => { msg.textContent = 'Could not start the pull.'; });
+  }
+
+  let claudePoll = null;
+  function stgClaudeTest() {
+    const msg = document.getElementById('con-claude-msg');
+    msg.textContent = 'Testing — running a tiny prompt through the CLI…';
+    fetch('/api/claude/test', { method: 'POST' })
+      .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+        if (!ok) { msg.textContent = d.error || 'Could not start the test.'; return; }
+        clearInterval(claudePoll);
+        claudePoll = setInterval(() => {
+          fetch('/api/claude/test/status').then(r => r.json()).then(st => {
+            if (st.state === 'running') return;
+            clearInterval(claudePoll);
+            msg.textContent = st.detail || '';
+            stgBackendDots();
+          }).catch(() => clearInterval(claudePoll));
+        }, 1500);
+      }).catch(() => { msg.textContent = 'Could not start the test.'; });
   }
 
   function stgListInboxes() {
@@ -1977,8 +2151,8 @@
         sel.innerHTML = '<option>No inboxes connected</option>';
         sel.disabled = true;
         list.innerHTML = '<div class="empty-sm">No inboxes connected yet.<br><br>' +
-          'In the <code>dashboard/</code> folder run <code>python connect_email.py gmail</code> ' +
-          '(or <code>outlook</code>), then click ↻ to refresh.</div>';
+          '<button type="button" class="pill" onclick="setView(\'settings\')">Connect an inbox in Settings</button>' +
+          '<br><br>…then click ↻ to refresh.</div>';
         document.getElementById('inbox-reader').innerHTML =
           '<div class="empty-sm">Connect an inbox to start reading.</div>';
         return;

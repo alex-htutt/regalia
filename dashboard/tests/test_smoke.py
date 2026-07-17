@@ -646,5 +646,111 @@ class SettingsTests(unittest.TestCase):
                 self.client.delete(f"/api/chats/{cid}")
 
 
+class UiConfigTests(unittest.TestCase):
+    """v1.25 — every backend knob is settable from the UI; env still wins."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        import config
+        self._config = config
+        self._orig_path = config.CONFIG_PATH
+        self._tmp = tempfile.TemporaryDirectory()
+        config.CONFIG_PATH = Path(self._tmp.name) / ".config.json"
+
+    def tearDown(self):
+        self._config.CONFIG_PATH = self._orig_path
+        self._tmp.cleanup()
+
+    def test_backend_knobs_round_trip(self):
+        r = self.client.post("/api/settings", json={
+            "ollama_model": "qwen3:8b", "claude_cli_timeout": "90",
+            "ms_oauth_client_id": "0000-1111", "ms_oauth_tenant": "common",
+        })
+        self.assertEqual(r.status_code, 200)
+        d = self.client.get("/api/settings").get_json()["settings"]
+        self.assertEqual(d["ollama_model"], "qwen3:8b")
+        self.assertEqual(d["claude_cli_timeout"], "90")
+        self.assertEqual(d["ms_oauth_client_id"], "0000-1111")
+        self.assertEqual(d["ms_oauth_tenant"], "common")
+
+    def test_int_and_url_knobs_validated(self):
+        self.assertEqual(
+            self.client.post("/api/settings", json={"claude_cli_timeout": "soon"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings", json={"news_ttl": "-5"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings", json={"ollama_host": "localhost:11434"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings", json={"openai_base": "ftp://x"}).status_code, 400)
+
+    def test_gmail_client_json_validated_and_masked(self):
+        self.assertEqual(
+            self.client.post("/api/settings",
+                             json={"gmail_oauth_client_json": "not json"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings",
+                             json={"gmail_oauth_client_json": '{"web_wrong": {}}'}).status_code, 400)
+        good = '{"installed": {"client_id": "abc.apps.googleusercontent.com", "client_secret": "shh42"}}'
+        r = self.client.post("/api/settings", json={"gmail_oauth_client_json": good})
+        self.assertEqual(r.status_code, 200)
+        raw = self.client.get("/api/settings").get_data(as_text=True)
+        self.assertNotIn("shh42", raw)
+        self.assertEqual(json.loads(raw)["settings"]["gmail_oauth_client_json"], {"set": True})
+
+    def test_env_wins_over_store(self):
+        import os
+        self._config.update({"ollama_model": "from-store"})
+        self.assertEqual(router._ollama_model(), "from-store")
+        os.environ["OLLAMA_MODEL"] = "from-env"
+        try:
+            self.assertEqual(router._ollama_model(), "from-env")
+        finally:
+            del os.environ["OLLAMA_MODEL"]
+        # unset everywhere -> built-in default
+        self._config.update({"ollama_model": ""})
+        self.assertEqual(router._ollama_model(), "llama3.2")
+
+    def test_pasted_gmail_client_materializes_to_file(self):
+        import os
+        if os.environ.get("GMAIL_OAUTH_CLIENT"):
+            self.skipTest("environment already carries a Gmail client path")
+        import email_sources
+        import paths
+        good = '{"installed": {"client_id": "abc"}}'
+        self._config.update({"gmail_oauth_client_json": good})
+        orig = paths.data_dir
+        paths.data_dir = lambda: Path(self._tmp.name)
+        try:
+            p = email_sources.gmail_client_secret_file()
+            self.assertTrue(p and Path(p).exists())
+            self.assertEqual(Path(p).read_text(encoding="utf-8"), good)
+        finally:
+            paths.data_dir = orig
+
+    def test_ollama_pull_validates_model(self):
+        self.assertEqual(self.client.post("/api/ollama/pull", json={}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/ollama/pull", json={"model": "bad name!"}).status_code, 400)
+        r = self.client.get("/api/ollama/pull/status")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(r.get_json()["state"], ("idle", "running", "done", "error"))
+
+    def test_claude_test_status_route(self):
+        r = self.client.get("/api/claude/test/status")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(r.get_json()["state"], ("idle", "running", "done", "error"))
+
+    def test_no_ui_string_points_at_cli_setup(self):
+        # The UI must never tell the user to edit .env or run connect_email.py.
+        html = (Path(dashboard_app.__file__).parent / "templates" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertNotIn("connect_email.py", html)
+        self.assertNotIn("GMAIL_OAUTH_CLIENT", html)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
