@@ -51,9 +51,10 @@ IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 # Chat attachments land here (gitignored). From source it lives under dashboard/,
-# which is in IGNORE_DIRS so the vault walk never surfaces uploads as notes.
-# Packaged builds move it to the per-user data dir. API tiers inline supported
-# data; CLI tiers receive a per-turn staged copy when needed.
+# which is in IGNORE_DIRS so the vault walk never surfaces uploads as notes — but
+# it's still inside the vault tree, so the claude CLI (cwd = vault root) can read
+# the files. Packaged builds move it to the per-user data dir; there the claude
+# tier can't reach attachments by path (fast/smart/openai inline them instead).
 ATTACH_DIR = paths.data_dir() / ".chat_attachments"
 MAX_ATTACH_BYTES = 25 * 1024 * 1024  # 25 MB per file
 ATTACH_MAX_AGE = 24 * 3600           # prune uploads older than a day
@@ -780,9 +781,9 @@ def _emit_to(run_id: str):
     return emit
 
 
-def _run_worker(run_id: str, agent_id: str, task: str, tier: str, folder: str = ""):
+def _run_worker(run_id: str, agent_id: str, task: str, tier: str):
     try:
-        result = agent.run_agent(agent_id, task, tier, emit=_emit_to(run_id), folder=folder)
+        result = agent.run_agent(agent_id, task, tier, emit=_emit_to(run_id))
         with _RUNS_LOCK:
             run = _RUNS.get(run_id)
             if run is not None:
@@ -809,25 +810,14 @@ def api_agents():
 
 @app.route("/api/agent/run", methods=["POST"])
 def api_agent_run():
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"error": "Agent payload must be an object."}), 400
+    data = request.get_json(silent=True) or {}
     agent_id = str(data.get("agent") or "").strip()
     task = str(data.get("task") or "").strip()
     tier = str(data.get("tier") or "").strip().lower()
-    folder = str(data.get("folder") or "").replace("\\", "/").strip().strip("/")
     if agent_id not in agent.AGENTS:
         return jsonify({"error": f"Unknown agent '{agent_id}'."}), 400
-    if folder:
-        root = VAULT_ROOT.resolve()
-        target = (root / folder).resolve()
-        if (target != root and root not in target.parents) or not target.is_dir():
-            return jsonify({"error": f"'{folder}' is not a folder in the vault."}), 400
-    if tier and tier not in agent.AGENT_TIERS:
-        return jsonify({
-            "error": f"Tier '{tier}' cannot run agents. Use one of: "
-                     f"{', '.join(agent.AGENT_TIERS)}."
-        }), 400
+    if tier and tier not in ("fast", "smart", "claude"):
+        tier = ""
 
     run_id = uuid.uuid4().hex[:12]
     run = {
@@ -836,7 +826,6 @@ def api_agent_run():
         "name": agent.AGENTS[agent_id]["name"],
         "task": task,
         "tier": tier or agent.AGENTS[agent_id]["tier"],
-        "folder": folder,
         "status": "running",
         "steps": [],
         "result": None,
@@ -851,22 +840,9 @@ def api_agent_run():
                 _RUNS.pop(old, None)
 
     threading.Thread(
-        target=_run_worker, args=(run_id, agent_id, task, tier, folder), daemon=True
+        target=_run_worker, args=(run_id, agent_id, task, tier), daemon=True
     ).start()
     return jsonify({"ok": True, "run_id": run_id, "agent": agent_id, "tier": run["tier"]})
-
-
-@app.route("/api/agent/runs")
-def api_agent_runs():
-    """Light metadata for every stored run (no steps) — powers the running-agents
-    sidebar and lets a reloaded page rediscover in-flight runs."""
-    with _RUNS_LOCK:
-        runs = [
-            {k: r[k] for k in ("id", "agent", "name", "task", "tier", "folder", "status", "started")}
-            for r in _RUNS.values()
-        ]
-    runs.sort(key=lambda r: r["started"], reverse=True)
-    return jsonify({"runs": runs})
 
 
 @app.route("/api/agent/run/<run_id>")
@@ -1166,17 +1142,15 @@ def api_router_check():
     This verifies local reachability/configuration only (Ollama HTTP, API key
     presence, CLI on PATH). It deliberately avoids sending a model prompt.
     """
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"error": "Settings payload must be an object."}), 400
+    data = request.get_json(silent=True) or {}
     tier = str(data.get("tier") or "").strip().lower()
-    if tier not in router.TIERS:
+    st = router.status()
+    if tier not in st:
         return jsonify({"error": f"Unknown tier '{tier}'."}), 400
+    info = st[tier]
     if tier == "chatgpt":
         ok, reason = router.codex_cli_health()
-        info = router.status_for(tier)  # health just populated auth-aware status
         return jsonify({"ok": ok, "tier": tier, "reason": reason, "status": info})
-    info = router.status_for(tier)
     ok = bool(info.get("available"))
     reason = "ready" if ok else {
         "fast": "Ollama is not reachable.",
@@ -1274,9 +1248,7 @@ def _resolve_attachments(raw) -> list:
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """Tier-routed chat for the generic cockpit chat panel."""
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"error": "Chat payload must be an object."}), 400
+    data = request.get_json(silent=True) or {}
     if not isinstance(data.get("messages"), list):
         return jsonify({"error": "No messages provided."}), 400
 
@@ -1290,12 +1262,11 @@ def api_chat():
         return jsonify({"error": "Say something to start the conversation."}), 400
 
     tier = str(data.get("tier") or "fast").strip().lower()
-    if tier not in router.TIERS:
-        return jsonify({"error": f"Unknown tier '{tier}'."}), 400
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     # "Edit mode" — lets chat change vault notes. Each tier honors it differently:
-    # fast/smart/openai unlock the write tools in the loop below; the ChatGPT and
-    # Claude CLI tiers switch their sandbox/tool policy in router.chat().
+    # fast/smart/openai unlock the write tools in the tool loop below; the claude
+    # CLI tier gets the file-editing tools via router.chat(allow_write=...). Every
+    # tier can write when it's on.
     edit_mode = bool(data.get("edit"))
     # A model override only applies to the local (fast) tier — guard it so an
     # Ollama model name can never be handed to Anthropic on the smart tier.

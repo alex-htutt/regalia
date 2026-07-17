@@ -438,11 +438,6 @@ AGENTS = {
         "tier": "fast",
         "tools": ["list_notes", "read_note", "write_note"],
         "default_task": "Summarize my most recent daily-log notes into a concise standup.",
-        "presets": [
-            "Summarize my most recent daily-log notes into a concise standup.",
-            "Write a short weekly review: what happened across my active notes, what's next, and any looming deadlines.",
-            "Find notes whose deadline is within the next 7 days and list them by urgency.",
-        ],
         "system": (
             "You are the Daily Summarizer. Use list_notes (type 'daily-log') to find "
             "recent logs, read the latest few with read_note, then synthesize a tight "
@@ -458,10 +453,6 @@ AGENTS = {
         "tier": "fast",
         "tools": ["list_folder", "create_project"],
         "default_task": "",
-        "presets": [
-            "List the vault's top-level folders and tell me where a new project would fit best.",
-            "Create a project called Scratchpad for quick experiments, under the area that fits best.",
-        ],
         "system": (
             "You are the Project Scaffolder. Turn the user's one-line brief into exactly "
             "one project: infer a clear name, pick the area (check the vault's top-level "
@@ -478,10 +469,6 @@ AGENTS = {
         "tier": "smart",
         "tools": ["search_vault", "read_note", "list_notes", "write_note"],
         "default_task": "",
-        "presets": [
-            "Survey my research notes and write an overview of the main themes and open questions.",
-            "Pick my most active project and synthesize a research note on its current state from the vault.",
-        ],
         "system": (
             "You are the Research Agent. Given a topic, search_vault and read the most "
             "relevant notes, then synthesize a well-structured research note (overview, "
@@ -502,11 +489,6 @@ AGENTS = {
         "tier": "claude",
         "tools": ["list_inboxes", "read_inbox", "search_email", "read_email", "draft_email"],
         "default_task": "Summarize the unread mail across my connected inboxes and flag anything that needs a reply.",
-        "presets": [
-            "Summarize the unread mail across my connected inboxes and flag anything that needs a reply.",
-            "Review the last 2 days of mail and draft replies for anything urgent — drafts only, I'll review them.",
-            "List everything work- or school-related that arrived today, most important first.",
-        ],
         "system": (
             "You are Inbox Triage. Use list_inboxes to see the connected accounts, then "
             "read_inbox / search_email / read_email to review recent and unread mail — "
@@ -520,17 +502,11 @@ AGENTS = {
     },
 }
 
-# Agent runs require tool-calling support. The ChatGPT-account backend is a
-# plain chat backend, so keep the agent-capable tiers explicit here rather than
-# inheriting every value accepted by router.chat().
-AGENT_TIERS = ("fast", "smart", "openai", "claude")
-
 
 def list_agents() -> list:
     """Public, UI-facing view of the registry (no prompts/tools internals)."""
     return [
-        {"id": a["id"], "name": a["name"], "desc": a["desc"], "tier": a["tier"],
-         "status": "idle", "presets": list(a.get("presets", []))}
+        {"id": a["id"], "name": a["name"], "desc": a["desc"], "tier": a["tier"], "status": "idle"}
         for a in AGENTS.values()
     ]
 
@@ -679,17 +655,12 @@ _CLAUDE_EMAIL_RULES = (
 def _mailbox_mcp_config() -> str:
     """Write a temp MCP-config JSON pointing the CLI at mail_mcp.py; return its path.
 
-    Built per-run (machine-independent — no hardcoded paths on disk). Source runs
-    launch this folder's mail_mcp.py with Python; frozen desktop builds relaunch
-    the packaged executable through its --mail-mcp entrypoint. The caller deletes
-    the file when the run finishes.
+    Built per-run (machine-independent — no hardcoded paths on disk): the server is
+    this folder's mail_mcp.py run by the same Python interpreter as the dashboard.
+    The caller deletes the file when the run finishes.
     """
-    if getattr(sys, "frozen", False):
-        args = ["--mail-mcp"]
-    else:
-        server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_mcp.py")
-        args = [server]
-    cfg = {"mcpServers": {"mailbox": {"command": sys.executable, "args": args}}}
+    server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_mcp.py")
+    cfg = {"mcpServers": {"mailbox": {"command": sys.executable, "args": [server]}}}
     fd, path = tempfile.mkstemp(prefix="mailbox_mcp_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
@@ -790,8 +761,7 @@ def _run_agent_claude(spec, task, emit) -> dict:
 
 # ── The run loop ─────────────────────────────────────────────────────────────
 
-def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8,
-              folder: str = "") -> dict:
+def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8) -> dict:
     """Drive one agent to completion. Returns {reply, steps, tier, model, agent}.
 
     `emit(event)` (optional) is called as each step happens, for live streaming.
@@ -804,18 +774,8 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
     task = (task or "").strip() or spec.get("default_task", "")
     if not task:
         raise AgentError(f"{spec['name']} needs a task — tell it what to do.")
-    folder = (folder or "").strip().strip("/")
-    if folder:
-        target = _safe_path(folder, must_exist=True)
-        if not target.is_dir():
-            raise AgentError(f"'{folder}' is not a vault folder.")
-        rel = target.relative_to(_vault_root()).as_posix()
-        task = (
-            f"[Scope: this run is assigned to the vault folder '{rel}'. Read from and "
-            f"write to that folder unless the task explicitly says otherwise.]\n{task}"
-        )
     tier = (tier or spec["tier"]).lower()
-    if tier not in AGENT_TIERS:
+    if tier not in router.TIERS:
         tier = spec["tier"]
 
     def _emit(ev):
