@@ -22,6 +22,7 @@ from flask import Flask, jsonify, render_template, request
 import agent
 import chats
 import config
+import externals
 import mailbox
 import news_sources
 import paths
@@ -51,10 +52,9 @@ IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 # Chat attachments land here (gitignored). From source it lives under dashboard/,
-# which is in IGNORE_DIRS so the vault walk never surfaces uploads as notes — but
-# it's still inside the vault tree, so the claude CLI (cwd = vault root) can read
-# the files. Packaged builds move it to the per-user data dir; there the claude
-# tier can't reach attachments by path (fast/smart/openai inline them instead).
+# which is in IGNORE_DIRS so the vault walk never surfaces uploads as notes.
+# Packaged builds move it to the per-user data dir. API tiers inline supported
+# data; CLI tiers receive a per-turn staged copy when needed.
 ATTACH_DIR = paths.data_dir() / ".chat_attachments"
 MAX_ATTACH_BYTES = 25 * 1024 * 1024  # 25 MB per file
 ATTACH_MAX_AGE = 24 * 3600           # prune uploads older than a day
@@ -635,7 +635,8 @@ def _safe_area(area: str) -> str:
         raise ValueError(
             "Area must be a plain folder name (letters, numbers, spaces, - or _)."
         )
-    if area.lower() in {d.lower() for d in IGNORE_DIRS}:
+    reserved = {d.lower() for d in IGNORE_DIRS} | {"external"}
+    if area.lower() in reserved:
         raise ValueError(f"'{area}' is reserved and can't hold projects.")
     root = VAULT_ROOT.resolve()
     for existing in _subdirs(root):
@@ -658,7 +659,7 @@ def _context_md(name: str, area: str, topic: str, deadline: str) -> str:
         f"date: {date.today().isoformat()}\n"
         f"tags: [area/{area}, type/reference]\n"
         "status: active\n"
-        f'topic: "{topic}"\n'
+        f"topic: {json.dumps(str(topic or ''), ensure_ascii=False)}\n"
         f"deadline: {deadline}\n"
         "related: []\n"
         "---\n\n"
@@ -746,9 +747,81 @@ def create_project_core(name: str, area: str, topic: str = "", deadline: str = "
     }
 
 
+# ── External folders ─────────────────────────────────────────────────────────
+# Folders that live outside the vault but that Regalia can work on. All context
+# lives in the vault under external/<name>/ — the external folder itself is
+# never scaffolded or restructured (that's the contract; see externals.py).
+
+EXTERNAL_DIR_NAME = "external"
+
+
+def _external_context_rel(name: str) -> str:
+    return f"{EXTERNAL_DIR_NAME}/{name}/_context_{_slugify(name)}.md"
+
+
+def _scaffold_external_context(name: str) -> tuple[str, bool]:
+    """Create external/<name>/ + context note in the VAULT (never the external
+    folder). Returns (rel_context_path, created). Best-effort by design."""
+    root = VAULT_ROOT.resolve()
+    rel = _external_context_rel(name)
+    target = root / EXTERNAL_DIR_NAME / name
+    context = root / rel
+    # A pre-existing symlink/junction under external/ must not redirect this
+    # vault-side write. Resolve both the directory and note before touching them.
+    resolved_target = target.resolve()
+    resolved_context = context.resolve()
+    if (root not in resolved_target.parents
+            or root not in resolved_context.parents
+            or resolved_context.parent != resolved_target):
+        raise OSError("The external context path resolves outside the vault.")
+    if context.is_file():
+        return rel, False
+    target.mkdir(parents=True, exist_ok=True)
+    context.write_text(
+        _context_md(name, "external", "Connected external workspace", ""),
+        encoding="utf-8",
+    )
+    return rel, True
+
+
+@app.route("/api/external", methods=["GET", "POST"])
+def api_external():
+    if request.method == "GET":
+        folders = externals.list_folders()
+        for f in folders:
+            rel = _external_context_rel(f["name"])
+            f["context"] = rel if (VAULT_ROOT / rel).is_file() else ""
+        return jsonify({"folders": folders})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object."}), 400
+    try:
+        entry = externals.add(data.get("name", ""), data.get("path", ""), VAULT_ROOT)
+    except ValueError as e:
+        status = 409 if "already connected" in str(e) else 400
+        return jsonify({"error": str(e)}), status
+    try:
+        entry["context"], entry["context_created"] = _scaffold_external_context(
+            entry["name"])
+    except OSError as e:
+        entry["context"], entry["context_created"] = "", False
+        entry["warning"] = f"Connected, but couldn't write the context note: {e}"
+    return jsonify(entry)
+
+
+@app.route("/api/external/<name>", methods=["DELETE"])
+def api_external_delete(name):
+    if not externals.remove(name):
+        return jsonify({"error": f"No external folder named '{name}'."}), 404
+    # The vault-side context folder is the user's notes — deliberately kept.
+    return jsonify({"ok": True, "kept_context": True})
+
+
 @app.route("/api/project", methods=["POST"])
 def api_create_project():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Project payload must be an object."}), 400
     try:
         result = create_project_core(
             data.get("name", ""),
@@ -771,6 +844,16 @@ _RUNS_LOCK = threading.Lock()
 _RUNS_MAX = 50
 
 
+def _trim_runs_locked() -> None:
+    """Keep all active runs plus the newest `_RUNS_MAX` terminal results."""
+    finished = sorted(
+        (value for value in _RUNS.values() if value["status"] != "running"),
+        key=lambda value: value["started"],
+    )
+    for old in finished[:-_RUNS_MAX]:
+        _RUNS.pop(old["id"], None)
+
+
 def _emit_to(run_id: str):
     def emit(event):
         event = {**event, "ts": datetime.now().astimezone().isoformat(timespec="seconds")}
@@ -781,26 +864,29 @@ def _emit_to(run_id: str):
     return emit
 
 
-def _run_worker(run_id: str, agent_id: str, task: str, tier: str):
+def _run_worker(run_id: str, agent_id: str, task: str, tier: str, folder: str = ""):
     try:
-        result = agent.run_agent(agent_id, task, tier, emit=_emit_to(run_id))
+        result = agent.run_agent(agent_id, task, tier, emit=_emit_to(run_id), folder=folder)
         with _RUNS_LOCK:
             run = _RUNS.get(run_id)
             if run is not None:
                 run["status"] = "done"
                 run["result"] = result
+                _trim_runs_locked()
     except agent.AgentError as e:
         with _RUNS_LOCK:
             run = _RUNS.get(run_id)
             if run is not None:
                 run["status"] = "error"
                 run["error"] = e.message
+                _trim_runs_locked()
     except Exception as e:  # noqa: BLE001 — never let a crash leave a run "running"
         with _RUNS_LOCK:
             run = _RUNS.get(run_id)
             if run is not None:
                 run["status"] = "error"
                 run["error"] = f"Unexpected error: {e}"
+                _trim_runs_locked()
 
 
 @app.route("/api/agents")
@@ -810,14 +896,27 @@ def api_agents():
 
 @app.route("/api/agent/run", methods=["POST"])
 def api_agent_run():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Agent payload must be an object."}), 400
     agent_id = str(data.get("agent") or "").strip()
     task = str(data.get("task") or "").strip()
     tier = str(data.get("tier") or "").strip().lower()
+    folder = str(data.get("folder") or "").replace("\\", "/").strip().strip("/")
     if agent_id not in agent.AGENTS:
         return jsonify({"error": f"Unknown agent '{agent_id}'."}), 400
-    if tier and tier not in ("fast", "smart", "claude"):
-        tier = ""
+    if folder:
+        if not agent.supports_folder(agent_id):
+            return jsonify({"error": f"{agent.AGENTS[agent_id]['name']} has no filesystem tools."}), 400
+        try:
+            agent.resolve_scope(folder)
+        except agent.AgentError as e:
+            return jsonify({"error": e.message}), 400
+    if tier and tier not in agent.AGENT_TIERS:
+        return jsonify({
+            "error": f"Tier '{tier}' cannot run agents. Use one of: "
+                     f"{', '.join(agent.AGENT_TIERS)}."
+        }), 400
 
     run_id = uuid.uuid4().hex[:12]
     run = {
@@ -826,6 +925,7 @@ def api_agent_run():
         "name": agent.AGENTS[agent_id]["name"],
         "task": task,
         "tier": tier or agent.AGENTS[agent_id]["tier"],
+        "folder": folder,
         "status": "running",
         "steps": [],
         "result": None,
@@ -833,23 +933,47 @@ def api_agent_run():
         "started": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     with _RUNS_LOCK:
+        if any(value["status"] == "running" and value["agent"] == agent_id
+               for value in _RUNS.values()):
+            return jsonify({"error": f"{run['name']} is already running."}), 409
         _RUNS[run_id] = run
-        # Trim oldest finished runs if the store grows past the cap.
-        if len(_RUNS) > _RUNS_MAX:
-            for old in sorted(_RUNS, key=lambda k: _RUNS[k]["started"])[: len(_RUNS) - _RUNS_MAX]:
-                _RUNS.pop(old, None)
+        _trim_runs_locked()
 
     threading.Thread(
-        target=_run_worker, args=(run_id, agent_id, task, tier), daemon=True
+        target=_run_worker, args=(run_id, agent_id, task, tier, folder), daemon=True
     ).start()
     return jsonify({"ok": True, "run_id": run_id, "agent": agent_id, "tier": run["tier"]})
 
 
+@app.route("/api/agent/runs")
+def api_agent_runs():
+    """Light metadata for every stored run (no steps) — powers the running-agents
+    sidebar and lets a reloaded page rediscover in-flight runs."""
+    with _RUNS_LOCK:
+        runs = [
+            {k: r[k] for k in ("id", "agent", "name", "task", "tier", "folder", "status", "started")}
+            for r in _RUNS.values()
+        ]
+    runs.sort(key=lambda r: r["started"], reverse=True)
+    return jsonify({"runs": runs})
+
+
 @app.route("/api/agent/run/<run_id>")
 def api_agent_run_status(run_id):
+    raw_after = request.args.get("after", "0")
+    try:
+        after = int(raw_after)
+    except (TypeError, ValueError):
+        return jsonify({"error": "after must be a non-negative integer."}), 400
+    if after < 0:
+        return jsonify({"error": "after must be a non-negative integer."}), 400
     with _RUNS_LOCK:
         run = _RUNS.get(run_id)
         snapshot = dict(run) if run else None
+        if snapshot is not None:
+            total = len(run.get("steps") or [])
+            snapshot["steps"] = list((run.get("steps") or [])[min(after, total):])
+            snapshot["cursor"] = total
     if snapshot is None:
         return jsonify({"error": "No such run."}), 404
     return jsonify(snapshot)
@@ -894,7 +1018,9 @@ def _run_connect(provider: str) -> None:
 @app.route("/api/connect/email", methods=["POST"])
 def api_connect_email():
     """Kick off the OAuth consent flow for gmail|outlook in the background."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Connection payload must be an object."}), 400
     provider = str(data.get("provider") or "").strip().lower()
     if provider not in ("gmail", "outlook"):
         return jsonify({"error": "provider must be 'gmail' or 'outlook'"}), 400
@@ -954,7 +1080,9 @@ def _run_ollama_pull(model: str) -> None:
 @app.route("/api/ollama/pull", methods=["POST"])
 def api_ollama_pull():
     """Download a model into the local Ollama in the background."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Model payload must be an object."}), 400
     model = str(data.get("model") or "").strip()
     if not _MODEL_NAME_RE.match(model):
         return jsonify({"error": "model must be a name like 'llama3.2' or 'qwen3:8b'"}), 400
@@ -1043,7 +1171,9 @@ def api_email(account_id, msg_id):
 @app.route("/api/email/draft", methods=["POST"])
 def api_email_draft():
     """Create a DRAFT (never send). Body: {account_id, to, subject, body, reply_to?}."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Draft payload must be an object."}), 400
     account_id = str(data.get("account_id") or "").strip()
     if not account_id:
         return jsonify({"error": "account_id is required."}), 400
@@ -1142,15 +1272,17 @@ def api_router_check():
     This verifies local reachability/configuration only (Ollama HTTP, API key
     presence, CLI on PATH). It deliberately avoids sending a model prompt.
     """
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Settings payload must be an object."}), 400
     tier = str(data.get("tier") or "").strip().lower()
-    st = router.status()
-    if tier not in st:
+    if tier not in router.TIERS:
         return jsonify({"error": f"Unknown tier '{tier}'."}), 400
-    info = st[tier]
     if tier == "chatgpt":
         ok, reason = router.codex_cli_health()
+        info = router.status_for(tier)  # health just populated auth-aware status
         return jsonify({"ok": ok, "tier": tier, "reason": reason, "status": info})
+    info = router.status_for(tier)
     ok = bool(info.get("available"))
     reason = "ready" if ok else {
         "fast": "Ollama is not reachable.",
@@ -1248,7 +1380,9 @@ def _resolve_attachments(raw) -> list:
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """Tier-routed chat for the generic cockpit chat panel."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Chat payload must be an object."}), 400
     if not isinstance(data.get("messages"), list):
         return jsonify({"error": "No messages provided."}), 400
 
@@ -1262,11 +1396,12 @@ def api_chat():
         return jsonify({"error": "Say something to start the conversation."}), 400
 
     tier = str(data.get("tier") or "fast").strip().lower()
+    if tier not in router.TIERS:
+        return jsonify({"error": f"Unknown tier '{tier}'."}), 400
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     # "Edit mode" — lets chat change vault notes. Each tier honors it differently:
-    # fast/smart/openai unlock the write tools in the tool loop below; the claude
-    # CLI tier gets the file-editing tools via router.chat(allow_write=...). Every
-    # tier can write when it's on.
+    # fast/smart/openai unlock the write tools in the loop below; the ChatGPT and
+    # Claude CLI tiers switch their sandbox/tool policy in router.chat().
     edit_mode = bool(data.get("edit"))
     # A model override only applies to the local (fast) tier — guard it so an
     # Ollama model name can never be handed to Anthropic on the smart tier.
@@ -1335,7 +1470,7 @@ def api_chat_one(cid: str):
         return jsonify(obj)
     if request.method == "DELETE":
         return jsonify({"deleted": chats.delete_chat(cid)})
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Chat must be an object."}), 400
     data["id"] = cid  # the URL is authoritative — a body id can't redirect the write

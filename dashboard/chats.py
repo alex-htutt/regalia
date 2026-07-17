@@ -18,7 +18,10 @@ after 24h, so a persisted transcript never depends on them.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +35,7 @@ TITLE_MAX_CHARS = 40
 # Conversation ids are minted by create_chat() and must match exactly — the
 # regex is the traversal guard (no dots, slashes, or anything path-like).
 _ID_RE = re.compile(r"^c_[0-9a-f]{32}$")
+_lock = threading.Lock()
 
 
 class ChatStoreError(Exception):
@@ -48,7 +52,10 @@ def _chat_path(cid: str) -> Path:
     if not isinstance(cid, str) or not _ID_RE.match(cid):
         raise ChatStoreError(f"Invalid chat id '{cid}'.", 400)
     store = CHATS_DIR.resolve()
-    path = (store / f"{cid}.json").resolve()
+    # The strict id regex makes the child path unambiguous. Avoid resolving the
+    # target file itself: on Windows that can briefly fail while another thread
+    # atomically replaces the same transcript.
+    path = store / f"{cid}.json"
     if path.parent != store:  # belt-and-braces; the regex already forbids this
         raise ChatStoreError("Chat path escapes the store.", 400)
     return path
@@ -101,6 +108,25 @@ def load_chat(cid: str):
         raise ChatStoreError(f"Couldn't read chat '{cid}': {e}")
 
 
+def _write_chat(path: Path, obj: dict) -> None:
+    """Atomically replace one transcript so readers never observe partial JSON."""
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        fd, tmp = tempfile.mkstemp(
+            dir=str(CHATS_DIR), prefix=f".{path.stem}-", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(obj, stream, indent=2, ensure_ascii=False)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
 def save_chat(obj: dict) -> dict:
     """Validate, stamp `updated`, auto-title if still default, persist. Returns obj."""
     if not isinstance(obj, dict):
@@ -111,8 +137,7 @@ def save_chat(obj: dict) -> dict:
     obj["updated"] = time.time()
     if not obj.get("title") or obj["title"] == DEFAULT_TITLE:
         obj["title"] = _derive_title(obj)
-    CHATS_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_chat(path, obj)
     return obj
 
 
@@ -130,16 +155,15 @@ def create_chat(tier: str = "fast") -> dict:
         "edit": False,
         "messages": [],
     }
-    CHATS_DIR.mkdir(parents=True, exist_ok=True)
-    _chat_path(obj["id"]).write_text(
-        json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_chat(_chat_path(obj["id"]), obj)
     return obj
 
 
 def delete_chat(cid: str) -> bool:
     """Remove a conversation; True if it existed."""
     path = _chat_path(cid)
-    if path.is_file():
-        path.unlink()
-        return True
+    with _lock:
+        if path.is_file():
+            path.unlink()
+            return True
     return False

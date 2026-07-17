@@ -130,13 +130,335 @@ class AgentRegistryTests(unittest.TestCase):
         agents = agent.list_agents()
         self.assertGreaterEqual(len(agents), 1)
         for a in agents:
-            self.assertEqual({"id", "name", "desc", "tier", "status"}, set(a))
+            self.assertEqual(
+                {"id", "name", "desc", "tier", "status", "presets", "folder_capable"},
+                set(a),
+            )
+            self.assertIsInstance(a["presets"], list)
+            self.assertIsInstance(a["folder_capable"], bool)
 
     def test_every_agent_tool_is_registered(self):
         for spec in agent.AGENTS.values():
             for tool in spec["tools"]:
                 self.assertIn(tool, agent.TOOL_SCHEMAS, f"{spec['id']}: no schema for {tool}")
                 self.assertIn(tool, agent.TOOL_FNS, f"{spec['id']}: no impl for {tool}")
+
+
+class AgentRunUxTests(unittest.TestCase):
+    """v1.28 Agents-tab UX backend: run listing, folder assignment, presets."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def test_agent_runs_listing_shape(self):
+        r = self.client.get("/api/agent/runs")
+        self.assertEqual(r.status_code, 200)
+        runs = r.get_json()["runs"]
+        self.assertIsInstance(runs, list)
+        for run in runs:
+            self.assertEqual(
+                {"id", "agent", "name", "task", "tier", "folder", "status", "started"},
+                set(run))
+            self.assertNotIn("steps", run)
+
+    def test_run_rejects_bad_folder(self):
+        for bad in ("../..", "..\\..", "no_such_folder_xyz", "dashboard/app.py"):
+            r = self.client.post("/api/agent/run",
+                                 json={"agent": "summarizer", "task": "x", "folder": bad})
+            self.assertEqual(r.status_code, 400, f"folder {bad!r} should be rejected")
+
+    def test_folder_scope_reaches_the_model(self):
+        # Stub the CLI stream and capture the prompt run_agent builds — the
+        # assigned folder must be injected as a scope line ahead of the task.
+        # Runs against a temp vault so the assertion is filesystem-independent.
+        import tempfile
+        seen = {}
+        original = router.claude_code_stream
+
+        def fake(prompt, **kw):
+            seen["prompt"] = prompt
+            return iter([{"type": "result", "subtype": "success",
+                          "is_error": False, "result": "ok"}])
+
+        router.claude_code_stream = fake
+        orig_root = dashboard_app.VAULT_ROOT
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "projects").mkdir()
+            dashboard_app.VAULT_ROOT = Path(tmp)
+            try:
+                agent.run_agent("summarizer", "count notes", tier="claude",
+                                folder="projects")
+            finally:
+                dashboard_app.VAULT_ROOT = orig_root
+                router.claude_code_stream = original
+        self.assertIn("only vault folder 'projects'", seen["prompt"])
+        self.assertIn("count notes", seen["prompt"])
+
+    def test_folder_traversal_rejected_in_run_agent(self):
+        with self.assertRaises(agent.AgentError):
+            agent.run_agent("summarizer", "x", tier="claude", folder="../../etc")
+
+    def test_registry_presets_are_strings(self):
+        for spec in agent.AGENTS.values():
+            for p in spec.get("presets", []):
+                self.assertIsInstance(p, str)
+                self.assertTrue(p.strip())
+
+    def test_email_only_agent_rejects_folder_scope(self):
+        self.assertFalse(agent.supports_folder("inbox_triage"))
+        r = self.client.post(
+            "/api/agent/run",
+            json={"agent": "inbox_triage", "task": "triage", "folder": "dashboard"},
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("no filesystem tools", r.get_json()["error"])
+
+
+class AgentRunStoreTests(unittest.TestCase):
+    """Run history keeps active work and supports incremental polling."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        with dashboard_app._RUNS_LOCK:
+            self._original = dict(dashboard_app._RUNS)
+            dashboard_app._RUNS.clear()
+
+    def tearDown(self):
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS.clear()
+            dashboard_app._RUNS.update(self._original)
+
+    @staticmethod
+    def _run(run_id, status, number, steps=None):
+        return {
+            "id": run_id, "agent": "summarizer", "name": "Daily Summarizer",
+            "task": "x", "tier": "fast", "folder": "", "status": status,
+            "steps": list(steps or []), "result": None, "error": None,
+            "started": f"2026-07-17T00:00:{number:02d}-07:00",
+        }
+
+    def test_trim_retains_all_active_and_newest_finished(self):
+        with dashboard_app._RUNS_LOCK:
+            for i in range(55):
+                run_id = f"active{i}"
+                dashboard_app._RUNS[run_id] = self._run(run_id, "running", i)
+            for i in range(51):
+                run_id = f"done{i}"
+                dashboard_app._RUNS[run_id] = self._run(run_id, "done", i)
+            dashboard_app._trim_runs_locked()
+            ids = set(dashboard_app._RUNS)
+        self.assertTrue({f"active{i}" for i in range(55)} <= ids)
+        self.assertNotIn("done0", ids)
+        self.assertTrue({f"done{i}" for i in range(1, 51)} <= ids)
+
+    def test_status_cursor_returns_only_new_steps(self):
+        events = [{"type": "think", "text": str(i)} for i in range(3)]
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS["cursor"] = self._run("cursor", "running", 1, events)
+        r = self.client.get("/api/agent/run/cursor?after=1")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["steps"], events[1:])
+        self.assertEqual(r.get_json()["cursor"], 3)
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS["cursor"]["steps"].append(
+                {"type": "final", "text": "done"})
+        r = self.client.get("/api/agent/run/cursor?after=3")
+        self.assertEqual(len(r.get_json()["steps"]), 1)
+        self.assertEqual(r.get_json()["cursor"], 4)
+        self.assertEqual(self.client.get("/api/agent/run/cursor?after=4").get_json()["steps"], [])
+
+    def test_status_cursor_rejects_invalid_values(self):
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS["cursor"] = self._run("cursor", "running", 1)
+        for value in ("-1", "nope"):
+            self.assertEqual(
+                self.client.get(f"/api/agent/run/cursor?after={value}").status_code, 400)
+
+    def test_client_has_terminal_404_and_incremental_polling(self):
+        html = (Path(__file__).parents[1] / "templates" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn("status === 404", html)
+        self.assertIn("?after=", html)
+        self.assertIn("This run expired or the app restarted.", html)
+
+
+class ExternalFolderTests(unittest.TestCase):
+    """v1.28 external folders: registry validation, vault-side context scaffolding,
+    ext: path resolution, and the no-scaffolding-in-the-external-folder contract.
+    Runs against a temp registry + temp vault + temp external dir throughout."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        import externals
+        self.externals = externals
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        (base / "vault").mkdir()
+        (base / "outside" / "proj").mkdir(parents=True)
+        (base / "outside" / "other").mkdir()
+        self._orig_store = externals.EXTERNALS_PATH
+        self._orig_root = dashboard_app.VAULT_ROOT
+        externals.EXTERNALS_PATH = base / ".external.json"
+        dashboard_app.VAULT_ROOT = base / "vault"
+        self.vault = base / "vault"
+        self.outside = base / "outside" / "proj"
+        self.other = base / "outside" / "other"
+
+    def tearDown(self):
+        self.externals.EXTERNALS_PATH = self._orig_store
+        dashboard_app.VAULT_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def test_add_validates(self):
+        for name, path in (
+            ("bad/name", str(self.outside)),
+            ("ok", "relative/path"),
+            ("ok", str(self.outside / "missing")),
+            ("ok", str(self.vault)),          # inside the vault → pointless
+            ("ok", str(self.vault.parent)),   # contains the vault → over-broad
+            ("", str(self.outside)),
+        ):
+            with self.assertRaises(ValueError, msg=f"({name!r}, {path!r})"):
+                self.externals.add(name, path, self.vault)
+        self.assertEqual(self.externals.load(), {})
+
+    def test_connect_scaffolds_vault_context_only(self):
+        r = self.client.post("/api/external",
+                             json={"name": "proj", "path": str(self.outside)})
+        self.assertEqual(r.status_code, 200)
+        d = r.get_json()
+        self.assertTrue(d["context_created"])
+        context = self.vault / "external" / "proj" / "_context_proj.md"
+        self.assertTrue(context.is_file())
+        text = context.read_text(encoding="utf-8")
+        self.assertIn("area/external", text)
+        self.assertNotIn(str(self.outside), text)
+        fm, _ = dashboard_app._parse_frontmatter(text)
+        self.assertEqual(fm["topic"], "Connected external workspace")
+        # The contract: nothing was written into the external folder itself.
+        self.assertEqual(list(self.outside.iterdir()), [])
+
+    def test_connect_rejects_non_object_json(self):
+        for body in (["proj", str(self.outside)], "proj", 7, None):
+            if body is None:
+                r = self.client.post(
+                    "/api/external", data="null", content_type="application/json")
+            else:
+                r = self.client.post("/api/external", json=body)
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("JSON object", r.get_json()["error"])
+        self.assertEqual(self.externals.load(), {})
+
+    def test_overlapping_external_roots_rejected(self):
+        self.externals.add("proj", str(self.outside), self.vault)
+        nested = self.outside / "nested"
+        nested.mkdir()
+        for name, path in (("same", self.outside), ("nested", nested),
+                           ("parent", self.outside.parent)):
+            with self.assertRaises(ValueError, msg=name):
+                self.externals.add(name, str(path), self.vault)
+        self.assertEqual(set(self.externals.load()), {"proj"})
+
+    def test_context_symlink_escape_is_not_written(self):
+        outside_context = self.other / "redirected"
+        outside_context.mkdir()
+        (self.vault / "external").mkdir()
+        link = self.vault / "external" / "proj"
+        try:
+            link.symlink_to(outside_context, target_is_directory=True)
+        except OSError as e:
+            self.skipTest(f"directory symlinks unavailable: {e}")
+        r = self.client.post("/api/external",
+                             json={"name": "proj", "path": str(self.outside)})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.get_json()["context_created"])
+        self.assertIn("outside the vault", r.get_json()["warning"])
+        self.assertEqual(list(outside_context.iterdir()), [])
+
+    def test_duplicate_conflicts_and_delete_keeps_context(self):
+        self.client.post("/api/external", json={"name": "proj", "path": str(self.outside)})
+        r = self.client.post("/api/external", json={"name": "PROJ", "path": str(self.outside)})
+        self.assertEqual(r.status_code, 409)
+        r = self.client.delete("/api/external/proj")
+        self.assertTrue(r.get_json()["kept_context"])
+        self.assertEqual(self.externals.load(), {})
+        self.assertTrue((self.vault / "external" / "proj").is_dir())
+
+    def test_resolve_and_safe_path(self):
+        self.externals.add("proj", str(self.outside), self.vault)
+        (self.outside / "notes.md").write_text("hi", encoding="utf-8")
+        self.assertEqual(self.externals.resolve("ext:proj/notes.md"),
+                         (self.outside / "notes.md").resolve())
+        self.assertIsNone(self.externals.resolve("plain/vault/path.md"))
+        with self.assertRaises(ValueError):
+            self.externals.resolve("ext:proj/../../escape")
+        with self.assertRaises(ValueError):
+            self.externals.resolve("ext:nope/x")
+        # Through the agent tool layer: readable, and traversal still fails.
+        scope = agent.resolve_scope("ext:proj")
+        self.assertEqual(agent._tool_read_note(path="ext:proj/notes.md", _scope=scope), "hi")
+        with self.assertRaises(agent.AgentError):
+            agent._tool_read_note(path="ext:proj/notes.md")
+        with self.assertRaises(agent.AgentError):
+            agent._safe_path("ext:proj/../../escape")
+
+    def test_run_scope_and_add_dirs(self):
+        self.externals.add("proj", str(self.outside), self.vault)
+        self.externals.add("other", str(self.other), self.vault)
+        seen = {}
+        original = router.claude_code_stream
+        router.claude_code_stream = lambda prompt, **kw: (
+            seen.update(prompt=prompt, **kw),
+            iter([{"type": "result", "subtype": "success", "is_error": False, "result": "ok"}]),
+        )[1]
+        try:
+            agent.run_agent("summarizer", "look around", tier="claude", folder="ext:proj")
+        finally:
+            router.claude_code_stream = original
+        self.assertIn("external folder 'proj'", seen["prompt"])
+        self.assertEqual(Path(seen["cwd"]), self.outside.resolve())
+        self.assertEqual(seen["builtin_tools"], ["Read", "Grep", "Glob", "Write", "Edit"])
+        self.assertEqual(seen["allowed_tools"], ["Read(./**)", "Edit(./**)"])
+        self.assertNotIn("extra_dirs", seen)
+        self.assertNotIn("ext:other", seen["prompt"].lower())
+        self.assertNotIn(str(self.other), seen["prompt"])
+
+    def test_selected_external_is_the_only_tool_scope(self):
+        self.externals.add("proj", str(self.outside), self.vault)
+        self.externals.add("other", str(self.other), self.vault)
+        (self.outside / "a.md").write_text("alpha-only", encoding="utf-8")
+        (self.other / "b.md").write_text("beta-only", encoding="utf-8")
+        (self.vault / "vault.md").write_text("vault-only", encoding="utf-8")
+        scope = agent.resolve_scope("ext:proj")
+        self.assertEqual(agent._tool_read_note("a.md", _scope=scope), "alpha-only")
+        self.assertIn("alpha-only", agent._tool_search_vault("only", _scope=scope))
+        self.assertNotIn("beta", agent._tool_search_vault("only", _scope=scope))
+        for path in ("ext:other/b.md", "../other/b.md", str(self.vault / "vault.md")):
+            with self.assertRaises(agent.AgentError, msg=path):
+                agent._safe_path(path, must_exist=True, scope=scope)
+
+    def test_selected_vault_folder_rejects_siblings_and_externals(self):
+        (self.vault / "one").mkdir()
+        (self.vault / "two").mkdir()
+        (self.vault / "one" / "a.md").write_text("a", encoding="utf-8")
+        (self.vault / "two" / "b.md").write_text("b", encoding="utf-8")
+        self.externals.add("proj", str(self.outside), self.vault)
+        scope = agent.resolve_scope("one")
+        self.assertEqual(agent._tool_read_note("a.md", _scope=scope), "a")
+        for path in ("../two/b.md", "two/b.md", "ext:proj/x.md"):
+            with self.assertRaises(agent.AgentError, msg=path):
+                agent._safe_path(path, must_exist=True, scope=scope)
 
 
 class ClaudeAgentTierTests(unittest.TestCase):
@@ -242,18 +564,23 @@ class MailboxMcpBridgeTests(unittest.TestCase):
         self.assertTrue(seen["config_existed_during_run"])
         self.assertIn("mailbox", seen["config_json"]["mcpServers"])
         allowed = seen["allowed_tools"]
+        self.assertEqual(seen["builtin_tools"], [])
+        self.assertEqual(Path(seen["cwd"]), dashboard_app.VAULT_ROOT.resolve())
         for t in agent.EMAIL_TOOL_NAMES:
             self.assertIn(f"mcp__mailbox__{t}", allowed)
         # Email-only agent: no filesystem tools at all.
         for t in ("Read", "Grep", "Glob", "Write", "Edit", "Bash"):
             self.assertNotIn(t, allowed)
+        self.assertNotIn("CONNECTED EXTERNAL", seen.get("system", ""))
         # Temp config is deleted once the run finishes.
         self.assertFalse(Path(seen["mcp_config"]).exists())
 
     def test_vault_agent_unchanged_no_mcp(self):
         seen = self._run_capturing("summarizer")
         self.assertIsNone(seen.get("mcp_config"))
-        self.assertIn("Read", seen["allowed_tools"])
+        self.assertIn("Read", seen["builtin_tools"])
+        self.assertIn("Read(./**)", seen["allowed_tools"])
+        self.assertNotIn("Read", seen["allowed_tools"])
         self.assertFalse(any(t.startswith("mcp__") for t in seen["allowed_tools"]))
 
     def test_inbox_triage_defaults_to_claude(self):
@@ -264,6 +591,89 @@ class MailboxMcpBridgeTests(unittest.TestCase):
         import mail_mcp
         self.assertFalse(hasattr(mail_mcp, "send_email"))
         self.assertFalse(hasattr(mail_mcp, "send"))
+
+
+class ClaudeCommandSafetyTests(unittest.TestCase):
+    """Automated Claude runs expose an exact tool/config boundary."""
+
+    def test_automation_flags_preserve_empty_arguments(self):
+        flags = router._claude_automation_flags([], [])
+        self.assertEqual(flags[flags.index("--setting-sources") + 1], "")
+        self.assertEqual(flags[flags.index("--tools") + 1], "")
+        self.assertEqual(flags[flags.index("--allowedTools") + 1], "")
+        self.assertEqual(flags[flags.index("--permission-mode") + 1], "dontAsk")
+        self.assertIn("--strict-mcp-config", flags)
+
+    def _chat_command(self, allow_write=False, attachment=False):
+        import tempfile
+        seen = {}
+        original_path = router._claude_cli_path
+        original_run = router.subprocess.run
+        original_cwd = router.CLAUDE_CLI_CWD
+
+        class FakeProc:
+            returncode = 0
+            stdout = json.dumps({"result": "ok", "modelUsage": {"test-model": {}}})
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            seen.update(cmd=cmd, **kwargs)
+            if attachment:
+                staged = Path(next(
+                    line[2:] for line in kwargs["input"].splitlines()
+                    if line.startswith("- ")
+                ))
+                seen["staged"] = staged
+                self.assertTrue(staged.is_file())
+                self.assertEqual(staged.read_text(encoding="utf-8"), "attachment")
+                if "--add-dir" in cmd:
+                    self.assertEqual(staged.parent, Path(cmd[cmd.index("--add-dir") + 1]))
+                else:
+                    self.assertEqual(staged.parent, Path(kwargs["cwd"]))
+            return FakeProc()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "upload.txt"
+            source.write_text("attachment", encoding="utf-8")
+            router._claude_cli_path = lambda: "claude"
+            router.subprocess.run = fake_run
+            router.CLAUDE_CLI_CWD = tmp
+            try:
+                router._claude_code_chat(
+                    [{"role": "user", "content": "hello"}], None, 100, None,
+                    [{"path": str(source), "name": source.name, "mime": "text/plain"}]
+                    if attachment else [],
+                    allow_write,
+                )
+            finally:
+                router._claude_cli_path = original_path
+                router.subprocess.run = original_run
+                router.CLAUDE_CLI_CWD = original_cwd
+        return seen
+
+    def test_text_chat_has_no_builtins_or_ambient_configuration(self):
+        seen = self._chat_command()
+        cmd = seen["cmd"]
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], "")
+        self.assertNotIn("--add-dir", cmd)
+        self.assertEqual(seen["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
+        for forbidden in ("Bash", "Agent", "WebFetch", "WebSearch"):
+            self.assertNotIn(forbidden, cmd)
+
+    def test_edit_chat_exposes_only_file_tools(self):
+        seen = self._chat_command(allow_write=True)
+        cmd = seen["cmd"]
+        self.assertEqual(
+            cmd[cmd.index("--tools") + 1], "Read,Edit,Write,Glob,Grep")
+        self.assertEqual(
+            cmd[cmd.index("--allowedTools") + 1], "Read(./**),Edit(./**)")
+        self.assertNotIn("Bash", cmd)
+
+    def test_attachment_is_staged_and_removed(self):
+        seen = self._chat_command(attachment=True)
+        self.assertFalse(seen["staged"].parent.exists())
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--tools") + 1], "Read")
 
 
 class EmailDraftsOnlyTests(unittest.TestCase):
@@ -540,6 +950,31 @@ class ChatStoreTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/chats/{other}").status_code, 404)
         self.assertEqual(len(self.client.get(f"/api/chats/{cid}").get_json()["messages"]), 1)
 
+    def test_concurrent_saves_never_leave_partial_json(self):
+        import threading
+
+        obj = chats.create_chat()
+        errors = []
+
+        def write(index):
+            try:
+                chats.save_chat({**obj, "messages": [
+                    {"role": "user", "content": f"message {index}"}
+                ]})
+            except Exception as exc:  # noqa: BLE001 — collected for the assertion
+                errors.append(exc)
+
+        workers = [threading.Thread(target=write, args=(i,)) for i in range(12)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+        self.assertEqual(errors, [])
+        loaded = chats.load_chat(obj["id"])
+        self.assertRegex(loaded["messages"][0]["content"], r"^message \d+$")
+        self.assertEqual(list(chats.CHATS_DIR.glob("*.tmp")), [])
+
 
 class SettingsTests(unittest.TestCase):
     """The settings store round-trips, rejects junk, and never leaks secrets."""
@@ -688,6 +1123,10 @@ class UiConfigTests(unittest.TestCase):
         self.assertEqual(
             self.client.post("/api/settings", json={"news_ttl": "-5"}).status_code, 400)
         self.assertEqual(
+            self.client.post("/api/settings", json={"codex_cli_timeout": "0"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings", json={"news_ttl": "86401"}).status_code, 400)
+        self.assertEqual(
             self.client.post("/api/settings", json={"ollama_host": "localhost:11434"}).status_code, 400)
         self.assertEqual(
             self.client.post("/api/settings", json={"openai_base": "ftp://x"}).status_code, 400)
@@ -770,9 +1209,19 @@ class ChatGptAccountTierTests(unittest.TestCase):
     """ChatGPT account tier is backed by Codex CLI, not the OpenAI API key path."""
 
     def test_chatgpt_chat_uses_codex_exec_and_account_env(self):
+        import os
+        import tempfile
+
         seen = {}
         original_path = router._codex_cli_path
         original_run = router.subprocess.run
+        original_cwd = router.CODEX_CLI_CWD
+        original_health = dict(router._CODEX_HEALTH)
+        secret_names = (
+            "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
+            "AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD",
+        )
+        original_secrets = {name: os.environ.get(name) for name in secret_names}
 
         class FakeProc:
             returncode = 0
@@ -784,31 +1233,198 @@ class ChatGptAccountTierTests(unittest.TestCase):
             seen["input"] = kwargs.get("input")
             seen["env"] = kwargs.get("env") or {}
             seen["cwd"] = kwargs.get("cwd")
+            seen["add_dir"] = Path(cmd[cmd.index("--add-dir") + 1])
+            seen["staged"] = Path(next(
+                line[2:] for line in seen["input"].splitlines()
+                if line.startswith("- ")
+            ))
+            self.assertTrue(seen["staged"].is_file())
+            self.assertEqual(seen["staged"].read_text(encoding="utf-8"), "attachment")
             return FakeProc()
 
-        router._codex_cli_path = lambda: "codex"
-        router.subprocess.run = fake_run
-        try:
-            res = router.chat([{"role": "user", "content": "hi"}],
-                              tier="chatgpt", system="be terse")
-        finally:
-            router._codex_cli_path = original_path
-            router.subprocess.run = original_run
+        with tempfile.TemporaryDirectory() as cwd, tempfile.TemporaryDirectory() as uploads:
+            source = Path(uploads) / "outside vault.txt"
+            source.write_text("attachment", encoding="utf-8")
+            router._codex_cli_path = lambda: "codex"
+            router.subprocess.run = fake_run
+            router.CODEX_CLI_CWD = cwd  # intentionally not a Git repository
+            for name in secret_names:
+                os.environ[name] = f"sentinel-{name.lower()}"
+            try:
+                res = router.chat(
+                    [{"role": "user", "content": "hi"}], tier="chatgpt",
+                    system="be terse",
+                    attachments=[{"path": str(source), "name": source.name,
+                                  "mime": "text/plain"}],
+                )
+            finally:
+                router._codex_cli_path = original_path
+                router.subprocess.run = original_run
+                router.CODEX_CLI_CWD = original_cwd
+                router._CODEX_HEALTH.clear()
+                router._CODEX_HEALTH.update(original_health)
+                for name, value in original_secrets.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
 
         self.assertEqual(res["tier"], "chatgpt")
         self.assertEqual(res["reply"], "hello from chatgpt")
         self.assertEqual(seen["cmd"][:2], ["codex", "exec"])
         self.assertIn("read-only", seen["cmd"])
+        self.assertIn("--skip-git-repo-check", seen["cmd"])
+        self.assertIn("--ignore-user-config", seen["cmd"])
+        self.assertIn("--ignore-rules", seen["cmd"])
+        self.assertIn('forced_login_method="chatgpt"', seen["cmd"])
+        self.assertNotIn("--ask-for-approval", seen["cmd"])
         self.assertTrue(seen["input"].startswith("System instructions:"))
-        self.assertNotIn("CODEX_API_KEY", seen["env"])
-        self.assertNotIn("OPENAI_API_KEY", seen["env"])
+        for name in secret_names:
+            self.assertNotIn(name, seen["env"])
         self.assertTrue(seen["cwd"])
+        self.assertEqual(seen["staged"].parent, seen["add_dir"])
+        self.assertFalse(seen["add_dir"].exists())
+
+    def test_health_rejects_api_key_login_and_marks_tier_unavailable(self):
+        import tempfile
+
+        original_path = router._codex_cli_path
+        original_run = router.subprocess.run
+        original_cwd = router.CODEX_CLI_CWD
+        original_health = dict(router._CODEX_HEALTH)
+
+        class FakeProc:
+            returncode = 0
+            stdout = "Logged in using an API key"
+            stderr = ""
+
+        with tempfile.TemporaryDirectory() as cwd:
+            router._codex_cli_path = lambda: "codex"
+            router.subprocess.run = lambda *args, **kwargs: FakeProc()
+            router.CODEX_CLI_CWD = cwd
+            try:
+                ok, reason = router.codex_cli_health()
+                status = router.status_for("chatgpt")
+            finally:
+                router._codex_cli_path = original_path
+                router.subprocess.run = original_run
+                router.CODEX_CLI_CWD = original_cwd
+                router._CODEX_HEALTH.clear()
+                router._CODEX_HEALTH.update(original_health)
+
+        self.assertFalse(ok)
+        self.assertIn("API key", reason)
+        self.assertFalse(status["authenticated"])
+        self.assertFalse(status["available"])
 
     def test_chatgpt_tool_loop_rejected(self):
         with self.assertRaises(router.RouterError) as ctx:
             router.chat_tools([{"role": "user", "content": "hi"}], [],
                               tier="chatgpt")
         self.assertEqual(ctx.exception.status, 400)
+
+
+class BackendRegressionTests(unittest.TestCase):
+    """Cross-feature regressions around targeted checks and agent tier routing."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def test_router_check_rejects_non_object_without_probing(self):
+        original_ollama = router._ollama_up
+        router._ollama_up = lambda: self.fail("unrelated Ollama probe ran")
+        try:
+            response = self.client.post("/api/router/check", json=["chatgpt"])
+        finally:
+            router._ollama_up = original_ollama
+        self.assertEqual(response.status_code, 400)
+
+    def test_mutating_routes_reject_non_object_json(self):
+        cases = (
+            ("post", "/api/project"),
+            ("post", "/api/connect/email"),
+            ("post", "/api/ollama/pull"),
+            ("post", "/api/email/draft"),
+            ("put", "/api/chats/c_00000000000000000000000000000000"),
+        )
+        for method, url in cases:
+            response = getattr(self.client, method)(url, json=["not", "an", "object"])
+            self.assertEqual(response.status_code, 400, url)
+
+    def test_chatgpt_check_does_not_probe_other_backends(self):
+        original_health = router.codex_cli_health
+        original_path = router._codex_cli_path
+        original_ollama = router._ollama_up
+        original_cache = dict(router._CODEX_HEALTH)
+
+        def healthy():
+            router._CODEX_HEALTH.update(exe="codex", ok=True, reason="ready")
+            return True, "ready"
+
+        router.codex_cli_health = healthy
+        router._codex_cli_path = lambda: "codex"
+        router._ollama_up = lambda: self.fail("unrelated Ollama probe ran")
+        try:
+            response = self.client.post("/api/router/check", json={"tier": "chatgpt"})
+        finally:
+            router.codex_cli_health = original_health
+            router._codex_cli_path = original_path
+            router._ollama_up = original_ollama
+            router._CODEX_HEALTH.clear()
+            router._CODEX_HEALTH.update(original_cache)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["status"]["available"])
+
+    def test_openai_agent_tier_is_preserved(self):
+        original_thread = dashboard_app.threading.Thread
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def start(self):
+                pass
+
+        dashboard_app.threading.Thread = FakeThread
+        run_id = None
+        try:
+            response = self.client.post(
+                "/api/agent/run",
+                json={"agent": "summarizer", "task": "Summarize today", "tier": "openai"},
+            )
+            body = response.get_json()
+            run_id = body.get("run_id")
+        finally:
+            dashboard_app.threading.Thread = original_thread
+            if run_id:
+                with dashboard_app._RUNS_LOCK:
+                    dashboard_app._RUNS.pop(run_id, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["tier"], "openai")
+
+    def test_unsupported_agent_tier_is_explicit_error(self):
+        response = self.client.post(
+            "/api/agent/run",
+            json={"agent": "summarizer", "task": "Summarize", "tier": "chatgpt"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot run agents", response.get_json()["error"])
+
+    def test_chat_and_agent_routes_reject_non_object_json(self):
+        self.assertEqual(self.client.post("/api/chat", json=[]).status_code, 400)
+        self.assertEqual(self.client.post("/api/agent/run", json=[]).status_code, 400)
+
+    def test_chat_route_rejects_unknown_tier_instead_of_falling_back(self):
+        response = self.client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}], "tier": "mystery"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unknown tier", response.get_json()["error"])
 
 
 class ProjectScaffoldTests(unittest.TestCase):
@@ -860,7 +1476,8 @@ class ProjectScaffoldTests(unittest.TestCase):
         self.assertEqual(res["path"], "Projects/app")
 
     def test_bad_areas_rejected_before_any_write(self):
-        for bad in ("../x", "..\\x", "a/b", ".obsidian", "dashboard", "templates", ""):
+        for bad in ("../x", "..\\x", "a/b", ".obsidian", "dashboard", "templates",
+                    "external", ""):
             with self.assertRaises(ValueError, msg=f"area {bad!r} should be rejected"):
                 dashboard_app.create_project_core("App", bad)
         self.assertEqual(list(Path(self._tmp.name).iterdir()), [])

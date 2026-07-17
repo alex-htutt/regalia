@@ -23,8 +23,10 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
+import externals
 import mailbox
 import router
 
@@ -49,34 +51,112 @@ def _ignore_dirs() -> set:
     return app.IGNORE_DIRS
 
 
-def _safe_path(rel: str, must_exist: bool = False) -> Path:
-    """Resolve a vault-relative path, refusing anything that escapes the vault."""
-    root = _vault_root()
-    rel = (rel or "").replace("\\", "/").strip("/")
+@dataclass(frozen=True)
+class AccessScope:
+    """One run's immutable filesystem boundary.
+
+    A missing folder means the vault root only. An explicit vault folder or
+    external folder narrows every in-process tool and the Claude CLI cwd to that
+    subtree; connected externals are never implicitly part of whole-vault runs.
+    """
+
+    kind: str                 # "vault" | "external"
+    root: Path
+    label: str = ""           # vault-relative folder or ext:<name>[/sub]
+    explicit: bool = False
+
+
+def resolve_scope(folder: str = "") -> AccessScope:
+    """Validate a UI folder value and return the run's canonical boundary."""
+    vault = _vault_root()
+    folder = (folder or "").replace("\\", "/").strip().strip("/")
+    if not folder:
+        return AccessScope("vault", vault)
+    if folder.lower().startswith("ext:"):
+        try:
+            target = externals.resolve(folder)
+        except ValueError as e:
+            raise AgentError(str(e))
+        if target is None or not target.is_dir():
+            raise AgentError(f"'{folder}' is not a connected external folder.")
+        body = folder[4:].strip("/")
+        name, _, sub = body.partition("/")
+        canonical = f"ext:{name}" + (f"/{sub}" if sub else "")
+        return AccessScope("external", target.resolve(), canonical, True)
+    target = (vault / folder).resolve()
+    if (target != vault and vault not in target.parents) or not target.is_dir():
+        raise AgentError(f"'{folder}' is not a folder in the vault.")
+    return AccessScope("vault", target, target.relative_to(vault).as_posix(), True)
+
+
+def _normalized_scope(scope: AccessScope | None) -> AccessScope:
+    return scope or AccessScope("vault", _vault_root())
+
+
+def _inside(root: Path, target: Path) -> bool:
+    return target == root or root in target.parents
+
+
+def _safe_path(rel: str, must_exist: bool = False,
+               scope: AccessScope | None = None) -> Path:
+    """Resolve a path inside one run's explicit scope, traversal-safe."""
+    active = _normalized_scope(scope)
+    vault = _vault_root()
+    rel = (rel or "").replace("\\", "/").strip().strip("/")
     if not rel:
         raise AgentError("A path is required.")
-    target = (root / rel).resolve()
-    if target != root and root not in target.parents:
-        raise AgentError(f"Path '{rel}' is outside the vault.")
+    if rel.lower().startswith("ext:"):
+        if active.kind != "external":
+            raise AgentError("External folders are available only when selected for this run.")
+        try:
+            target = externals.resolve(rel)
+        except ValueError as e:
+            raise AgentError(str(e))
+        if target is None or not _inside(active.root, target):
+            raise AgentError(f"Path '{rel}' is outside this run's assigned folder.")
+    elif active.kind == "external":
+        target = (active.root / rel).resolve()
+        if not _inside(active.root, target):
+            raise AgentError(f"Path '{rel}' is outside this run's assigned folder.")
+    else:
+        # In a narrowed vault scope, accept either a vault-relative path carrying
+        # the selected prefix or a convenient path relative to the assigned root.
+        if active.explicit and (rel == active.label or rel.startswith(active.label + "/")):
+            target = (vault / rel).resolve()
+        else:
+            target = (active.root / rel).resolve()
+        if not _inside(vault, target) or not _inside(active.root, target):
+            raise AgentError(f"Path '{rel}' is outside this run's assigned folder.")
     if must_exist and not target.exists():
         raise AgentError(f"Nothing found at '{rel}'.")
     return target
 
 
+def _rel_label(target: Path, scope: AccessScope | None = None) -> str:
+    """Return a model-safe label without leaking an external absolute path."""
+    active = _normalized_scope(scope)
+    if active.kind == "external":
+        sub = target.relative_to(active.root).as_posix()
+        return active.label + (f"/{sub}" if sub != "." else "")
+    return target.relative_to(_vault_root()).as_posix()
+
+
 # ── Tool implementations ─────────────────────────────────────────────────────
 # Each returns a plain string — what the model sees as the tool result.
 
-def _tool_search_vault(query: str = "", limit: int = 12, **_) -> str:
+def _tool_search_vault(query: str = "", limit: int = 12,
+                       _scope: AccessScope | None = None, **_) -> str:
     query = (query or "").strip()
     if not query:
         return "Error: search needs a non-empty query."
-    root = _vault_root()
-    ignore = _ignore_dirs()
+    active = _normalized_scope(_scope)
+    root = active.root
+    ignore = _ignore_dirs() if active.kind == "vault" else set()
     q = query.lower()
     hits = []
     for md in root.rglob("*.md"):
         rel = md.relative_to(root)
-        if any(part in ignore for part in rel.parts):
+        if any(part in ignore or part.startswith(".") for part in rel.parts):
             continue
         try:
             text = md.read_text(encoding="utf-8", errors="ignore")
@@ -89,7 +169,7 @@ def _tool_search_vault(query: str = "", limit: int = 12, **_) -> str:
                 line_hit = line.strip()[:160]
                 break
         if name_hit or line_hit:
-            hits.append(f"{rel.as_posix()} — {line_hit or '(filename match)'}")
+            hits.append(f"{_rel_label(md, active)} — {line_hit or '(filename match)'}")
         if len(hits) >= max(1, min(int(limit or 12), 40)):
             break
     if not hits:
@@ -97,8 +177,8 @@ def _tool_search_vault(query: str = "", limit: int = 12, **_) -> str:
     return f"{len(hits)} match(es) for '{query}':\n" + "\n".join(hits)
 
 
-def _tool_read_note(path: str = "", **_) -> str:
-    target = _safe_path(path, must_exist=True)
+def _tool_read_note(path: str = "", _scope: AccessScope | None = None, **_) -> str:
+    target = _safe_path(path, must_exist=True, scope=_scope)
     if target.is_dir() or target.suffix.lower() != ".md":
         return f"Error: '{path}' is not a markdown note."
     try:
@@ -110,9 +190,41 @@ def _tool_read_note(path: str = "", **_) -> str:
     return text or "(empty note)"
 
 
-def _tool_list_notes(area: str = "", status: str = "", type: str = "", limit: int = 60, **_) -> str:
+def _tool_list_notes(area: str = "", status: str = "", type: str = "", limit: int = 60,
+                     _scope: AccessScope | None = None, **_) -> str:
     import app
+    active = _normalized_scope(_scope)
+    if active.kind == "external":
+        rows = []
+        for md in active.root.rglob("*.md"):
+            rel = md.relative_to(active.root)
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            try:
+                text = md.read_text(encoding="utf-8", errors="ignore")
+                fm, _ = app._parse_frontmatter(text)
+            except OSError:
+                continue
+            tags = app._coerce_tags(fm.get("tags")) if fm else []
+            if area and f"area/{area.strip().lower()}" not in tags:
+                continue
+            if status and str(fm.get("status", "")).lower() != status.strip().lower():
+                continue
+            if type and f"type/{type.strip().lower()}" not in tags:
+                continue
+            rows.append(
+                f"[{fm.get('status', '?') if fm else '?'}] {_rel_label(md, active)}"
+                + (f" — {fm.get('topic')}" if fm and fm.get("topic") else "")
+            )
+            if len(rows) >= max(1, min(int(limit or 60), 200)):
+                break
+        return (f"{len(rows)} note(s):\n" + "\n".join(rows)) if rows else "No notes match those filters."
+
     tasks = app.load_tasks()
+    if active.explicit:
+        prefix = active.root.relative_to(_vault_root()).as_posix()
+        tasks = [t for t in tasks if t.get("file") == prefix
+                 or str(t.get("file") or "").startswith(prefix + "/")]
     area = (area or "").strip().lower()
     status = (status or "").strip().lower()
     type_ = (type or "").strip().lower()
@@ -140,10 +252,12 @@ def _tool_list_notes(area: str = "", status: str = "", type: str = "", limit: in
     return f"{len(rows)} note(s):\n" + "\n".join(lines)
 
 
-def _tool_list_folder(path: str = "", **_) -> str:
-    root = _vault_root()
+def _tool_list_folder(path: str = "", _scope: AccessScope | None = None, **_) -> str:
+    active = _normalized_scope(_scope)
+    root = active.root
     ignore = _ignore_dirs()
-    target = root if not (path or "").strip().strip("/") else _safe_path(path, must_exist=True)
+    target = root if not (path or "").strip().strip("/") else _safe_path(
+        path, must_exist=True, scope=active)
     if not target.is_dir():
         return f"Error: '{path}' is not a folder."
     folders, notes = [], []
@@ -154,7 +268,8 @@ def _tool_list_folder(path: str = "", **_) -> str:
             folders.append(child.name + "/")
         elif child.suffix.lower() == ".md":
             notes.append(child.name)
-    rel = target.relative_to(root).as_posix() if target != root else "(vault root)"
+    rel = _rel_label(target, active) if target != root else (
+        "(vault root)" if not active.explicit else active.label)
     body = []
     if folders:
         body.append("Folders: " + ", ".join(folders))
@@ -163,8 +278,9 @@ def _tool_list_folder(path: str = "", **_) -> str:
     return f"{rel}\n" + ("\n".join(body) if body else "(empty)")
 
 
-def _tool_write_note(path: str = "", content: str = "", **_) -> str:
-    target = _safe_path(path)
+def _tool_write_note(path: str = "", content: str = "",
+                     _scope: AccessScope | None = None, **_) -> str:
+    target = _safe_path(path, scope=_scope)
     if target.suffix.lower() != ".md":
         return "Error: write_note only writes .md files."
     if not (content or "").strip():
@@ -175,12 +291,25 @@ def _tool_write_note(path: str = "", content: str = "", **_) -> str:
         target.write_text(content, encoding="utf-8")
     except OSError as e:
         return f"Error writing '{path}': {e}"
-    root = _vault_root()
-    return f"{'Overwrote' if existed else 'Created'} {target.relative_to(root).as_posix()} ({len(content)} chars)."
+    return f"{'Overwrote' if existed else 'Created'} {_rel_label(target, _scope)} ({len(content)} chars)."
 
 
-def _tool_create_project(name: str = "", area: str = "projects", topic: str = "", deadline: str = "", **_) -> str:
+def _tool_create_project(name: str = "", area: str = "projects", topic: str = "",
+                         deadline: str = "", _scope: AccessScope | None = None, **_) -> str:
     import app
+    active = _normalized_scope(_scope)
+    if active.kind == "external":
+        return "Error: project scaffolding is never written into an external folder."
+    if active.explicit:
+        rel = active.root.relative_to(_vault_root())
+        if len(rel.parts) != 1:
+            return "Error: create_project needs the whole vault or a top-level area scope."
+        try:
+            requested = app._safe_area(area)
+        except ValueError as e:
+            return f"Error: {e}"
+        if requested.lower() != rel.parts[0].lower():
+            return f"Error: this run is assigned to area '{rel.parts[0]}'."
     try:
         result = app.create_project_core(name, area, topic, deadline)
     except ValueError as e:
@@ -430,6 +559,25 @@ _VAULT_RULES = (
     "When you finish, give a short plain-text summary of what you did."
 )
 
+def _scope_note(scope: AccessScope) -> str:
+    """Describe only the selected scope; never enumerate or leak other roots."""
+    if not scope.explicit:
+        return ""
+    if scope.kind == "external":
+        name = scope.label[4:].split("/", 1)[0]
+        return (
+            f"\n\nTHIS RUN IS SCOPED ONLY TO CONNECTED EXTERNAL FOLDER '{name}'. "
+            f"Vault tools accept paths relative to it or prefixed '{scope.label}/'. "
+            "Native file tools start in that assigned folder. Do not create Regalia "
+            "vault scaffolding inside it. No other vault or external folder is in scope."
+        )
+    return (
+        f"\n\nTHIS RUN IS SCOPED ONLY TO VAULT FOLDER '{scope.label}'. "
+        "Tool paths may be relative to that folder. No sibling vault folder or "
+        "connected external folder is in scope."
+    )
+
+
 AGENTS = {
     "summarizer": {
         "id": "summarizer",
@@ -438,6 +586,11 @@ AGENTS = {
         "tier": "fast",
         "tools": ["list_notes", "read_note", "write_note"],
         "default_task": "Summarize my most recent daily-log notes into a concise standup.",
+        "presets": [
+            "Summarize my most recent daily-log notes into a concise standup.",
+            "Write a short weekly review: what happened across my active notes, what's next, and any looming deadlines.",
+            "Find notes whose deadline is within the next 7 days and list them by urgency.",
+        ],
         "system": (
             "You are the Daily Summarizer. Use list_notes (type 'daily-log') to find "
             "recent logs, read the latest few with read_note, then synthesize a tight "
@@ -453,6 +606,10 @@ AGENTS = {
         "tier": "fast",
         "tools": ["list_folder", "create_project"],
         "default_task": "",
+        "presets": [
+            "List the vault's top-level folders and tell me where a new project would fit best.",
+            "Create a project called Scratchpad for quick experiments, under the area that fits best.",
+        ],
         "system": (
             "You are the Project Scaffolder. Turn the user's one-line brief into exactly "
             "one project: infer a clear name, pick the area (check the vault's top-level "
@@ -469,6 +626,10 @@ AGENTS = {
         "tier": "smart",
         "tools": ["search_vault", "read_note", "list_notes", "write_note"],
         "default_task": "",
+        "presets": [
+            "Survey my research notes and write an overview of the main themes and open questions.",
+            "Pick my most active project and synthesize a research note on its current state from the vault.",
+        ],
         "system": (
             "You are the Research Agent. Given a topic, search_vault and read the most "
             "relevant notes, then synthesize a well-structured research note (overview, "
@@ -489,6 +650,11 @@ AGENTS = {
         "tier": "claude",
         "tools": ["list_inboxes", "read_inbox", "search_email", "read_email", "draft_email"],
         "default_task": "Summarize the unread mail across my connected inboxes and flag anything that needs a reply.",
+        "presets": [
+            "Summarize the unread mail across my connected inboxes and flag anything that needs a reply.",
+            "Review the last 2 days of mail and draft replies for anything urgent — drafts only, I'll review them.",
+            "List everything work- or school-related that arrived today, most important first.",
+        ],
         "system": (
             "You are Inbox Triage. Use list_inboxes to see the connected accounts, then "
             "read_inbox / search_email / read_email to review recent and unread mail — "
@@ -502,11 +668,26 @@ AGENTS = {
     },
 }
 
+# Agent runs require tool-calling support. The ChatGPT-account backend is a
+# plain chat backend, so keep the agent-capable tiers explicit here rather than
+# inheriting every value accepted by router.chat().
+AGENT_TIERS = ("fast", "smart", "openai", "claude")
+VAULT_TOOL_NAMES = frozenset({
+    "search_vault", "read_note", "list_notes", "list_folder", "write_note", "create_project",
+})
+
+
+def supports_folder(agent_id: str) -> bool:
+    spec = AGENTS.get(agent_id) or {}
+    return any(name in VAULT_TOOL_NAMES for name in spec.get("tools", []))
+
 
 def list_agents() -> list:
     """Public, UI-facing view of the registry (no prompts/tools internals)."""
     return [
-        {"id": a["id"], "name": a["name"], "desc": a["desc"], "tier": a["tier"], "status": "idle"}
+        {"id": a["id"], "name": a["name"], "desc": a["desc"], "tier": a["tier"],
+         "status": "idle", "presets": list(a.get("presets", [])),
+         "folder_capable": supports_folder(a["id"])}
         for a in AGENTS.values()
     ]
 
@@ -603,7 +784,7 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
                 out = f"Error: no such tool '{tc['name']}'."
             else:
                 try:
-                    out = fn(**args) if isinstance(args, dict) else fn()
+                    out = fn(_scope=AccessScope("vault", _vault_root()), **args) if isinstance(args, dict) else fn()
                 except AgentError as e:
                     out = f"Error: {e.message}"
                 except Exception as e:  # noqa: BLE001 — tool errors feed back to the model
@@ -625,7 +806,7 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
 _CLAUDE_AGENT_RULES = (
     "\n\nRUNTIME NOTE: You are running with your own built-in tools (Read, Grep, "
     "Glob, and — when this task involves saving work — Write and Edit), with the "
-    "vault root as your current working directory. Any tool names referenced above "
+    "run's assigned filesystem scope as your current working directory. Any tool names referenced above "
     "(search_vault, read_note, list_notes, list_folder, write_note, create_project) "
     "are conceptual — accomplish the equivalent with your own tools: search with "
     "Grep/Glob, open notes with Read, and save notes by writing .md files (with "
@@ -655,12 +836,17 @@ _CLAUDE_EMAIL_RULES = (
 def _mailbox_mcp_config() -> str:
     """Write a temp MCP-config JSON pointing the CLI at mail_mcp.py; return its path.
 
-    Built per-run (machine-independent — no hardcoded paths on disk): the server is
-    this folder's mail_mcp.py run by the same Python interpreter as the dashboard.
-    The caller deletes the file when the run finishes.
+    Built per-run (machine-independent — no hardcoded paths on disk). Source runs
+    launch this folder's mail_mcp.py with Python; frozen desktop builds relaunch
+    the packaged executable through its --mail-mcp entrypoint. The caller deletes
+    the file when the run finishes.
     """
-    server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_mcp.py")
-    cfg = {"mcpServers": {"mailbox": {"command": sys.executable, "args": [server]}}}
+    if getattr(sys, "frozen", False):
+        args = ["--mail-mcp"]
+    else:
+        server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_mcp.py")
+        args = [server]
+    cfg = {"mcpServers": {"mailbox": {"command": sys.executable, "args": args}}}
     fd, path = tempfile.mkstemp(prefix="mailbox_mcp_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
@@ -682,7 +868,7 @@ def _tool_result_text(content) -> str:
     return str(content) if content is not None else ""
 
 
-def _run_agent_claude(spec, task, emit) -> dict:
+def _run_agent_claude(spec, task, emit, scope: AccessScope) -> dict:
     """Run an agent on the subscription `claude` CLI tier, streaming its steps.
 
     Consumes router.claude_code_stream and maps the CLI's native events onto the
@@ -698,13 +884,17 @@ def _run_agent_claude(spec, task, emit) -> dict:
     """
     vault_tools = [t for t in spec["tools"] if t not in EMAIL_TOOL_NAMES]
     email_tools = [t for t in spec["tools"] if t in EMAIL_TOOL_NAMES]
+    builtins: list = []
     allowed: list = []
     system = spec["system"]
     mcp_config = ""
     if vault_tools:
         writes = any(t in ("write_note", "create_project") for t in vault_tools)
-        allowed += ["Read", "Grep", "Glob"] + (["Write", "Edit"] if writes else [])
-        system += _CLAUDE_AGENT_RULES
+        builtins += ["Read", "Grep", "Glob"] + (["Write", "Edit"] if writes else [])
+        # Bare Read/Edit rules would approve access system-wide. Relative glob
+        # rules make the selected cwd the actual boundary (including symlinks).
+        allowed += ["Read(./**)"] + (["Edit(./**)"] if writes else [])
+        system += _CLAUDE_AGENT_RULES + _scope_note(scope)
     if email_tools:
         mcp_config = _mailbox_mcp_config()
         allowed += [f"mcp__mailbox__{t}" for t in email_tools]
@@ -716,8 +906,9 @@ def _run_agent_claude(spec, task, emit) -> dict:
     reply = ""
     model = ""
     try:
-        for ev in router.claude_code_stream(task, system=system, allowed_tools=allowed,
-                                            mcp_config=mcp_config or None):
+        for ev in router.claude_code_stream(
+                task, system=system, builtin_tools=builtins, allowed_tools=allowed,
+                cwd=str(scope.root), mcp_config=mcp_config or None):
             etype = ev.get("type")
             if etype == "system" and ev.get("subtype") == "init":
                 model = ev.get("model") or model
@@ -761,7 +952,8 @@ def _run_agent_claude(spec, task, emit) -> dict:
 
 # ── The run loop ─────────────────────────────────────────────────────────────
 
-def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8) -> dict:
+def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8,
+              folder: str = "") -> dict:
     """Drive one agent to completion. Returns {reply, steps, tier, model, agent}.
 
     `emit(event)` (optional) is called as each step happens, for live streaming.
@@ -774,8 +966,23 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
     task = (task or "").strip() or spec.get("default_task", "")
     if not task:
         raise AgentError(f"{spec['name']} needs a task — tell it what to do.")
+    folder = (folder or "").strip().strip("/")
+    scope = resolve_scope(folder)
+    if scope.explicit and not supports_folder(agent_id):
+        raise AgentError(f"{spec['name']} has no filesystem tools and cannot take a folder scope.")
+    if scope.kind == "external":
+        name = scope.label[4:].split("/", 1)[0]
+        task = (
+            f"[Scope: only connected external folder '{name}'. Tool paths may be relative "
+            f"to it or use '{scope.label}/…'. No vault or other external folder is accessible.]\n{task}"
+        )
+    elif scope.explicit:
+        task = (
+            f"[Scope: only vault folder '{scope.label}'. Tool paths may be relative to it; "
+            f"no sibling or external folder is accessible.]\n{task}"
+        )
     tier = (tier or spec["tier"]).lower()
-    if tier not in router.TIERS:
+    if tier not in AGENT_TIERS:
         tier = spec["tier"]
 
     def _emit(ev):
@@ -788,10 +995,10 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
     # The subscription tier doesn't drive our in-process tool loop — the external
     # CLI runs its own. Hand off to its runner and return its result.
     if tier == "claude":
-        return _run_agent_claude(spec, task, _emit)
+        return _run_agent_claude(spec, task, _emit, scope)
 
     tools = [TOOL_SCHEMAS[name] for name in spec["tools"] if name in TOOL_SCHEMAS]
-    system = spec["system"]
+    system = spec["system"] + (_scope_note(scope) if supports_folder(agent_id) else "")
     messages = [{"role": "user", "content": [{"type": "text", "text": task}]}]
 
     _emit({"type": "start", "agent": agent_id, "tier": tier, "task": task})
@@ -831,7 +1038,7 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
                 out = f"Error: no such tool '{name}'."
             else:
                 try:
-                    out = fn(**args) if isinstance(args, dict) else fn()
+                    out = fn(_scope=scope, **args) if isinstance(args, dict) else fn()
                 except AgentError as e:
                     out = f"Error: {e.message}"
                 except Exception as e:  # noqa: BLE001 — tool errors feed back to the model

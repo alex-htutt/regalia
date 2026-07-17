@@ -16,9 +16,10 @@ Regalia is a single-user cockpit for a Markdown knowledge vault. It reads YAML f
 - **Overview dashboard** — every note with frontmatter becomes a task: stat cards (active / overdue / complete), filters by status · area · course, live search, deadline highlighting.
 - **Landing page** — an ASCII-dither WebGL hero with pinned scrollytelling that lands you in your recently-worked folders.
 - **Chat, grounded in your vault** — multi-conversation chat that can search, open, and quote your actual notes; an opt-in ✏️ Edit mode lets it write them.
-- **Four model tiers, one router** — `fast` (local Ollama, private and free), `smart` (Anthropic API), `openai` (ChatGPT models via the OpenAI API), `claude` (Claude Code CLI, billed to your Claude subscription instead of API credits). Pick per conversation, per agent.
-- **Settings & connections** — theme (dark/light), accent color, default tier, and vault folder from a Settings view; connect Gmail/Outlook and add API keys in-app, no terminal required.
-- **Agents** — a real tool-use loop with streamed steps: Daily Summarizer, Project Scaffolder, Research Agent, and Inbox Triage. Vault-confined, traversal-safe tools.
+- **Five model tiers, one router** — `fast` (local Ollama), `smart` (Anthropic API), `openai` (OpenAI API), `chatgpt` (Codex CLI signed in to ChatGPT), and `claude` (Claude Code CLI signed in to a Claude plan).
+- **Settings & connections** — theme, accent, default tier, vault folder, model backends, Gmail/Outlook, and connected external workspaces from one view.
+- **Agents** — Daily Summarizer, Project Scaffolder, Research Agent, and Inbox Triage with streamed steps, task presets, per-run folder scope, and a live running-agents sidebar.
+- **External folders** — connect workspaces outside the vault without restructuring them; Regalia keeps context notes under `external/<name>/` while traversal-safe tools operate on the real folder.
 - **Inbox (drafts-only, by construction)** — connect Gmail and Outlook, read mail, and save drafts. There is deliberately **no send path anywhere in the codebase** — you review and send from your mail client.
 - **Daily briefing** — tech-news RSS, a profile-ranked job board scan, and an important-mail panel on the home page.
 - **Claude usage panel** — your Claude Code token usage (today / all-time / per-model, 14-day chart) read from local JSONL metadata. Message content is never read.
@@ -26,7 +27,7 @@ Regalia is a single-user cockpit for a Markdown knowledge vault. It reads YAML f
 
 ## Install
 
-**Download** (no Python required): grab the latest `Regalia-windows.zip` or `Regalia-macos.zip` from [Releases](../../releases). On Windows, unzip it and run the single `Regalia.exe` inside; on first run it creates `~/RegaliaVault` — point it at your own vault folder from **Settings**.
+**Download** (no Python required): grab the latest `Regalia-windows.zip` or Apple-Silicon `Regalia-macos-arm64.zip` from [Releases](../../releases). On Windows, unzip it and run the single `Regalia.exe` inside; on first run it creates `~/RegaliaVault` — point it at your own vault folder from **Settings**.
 
 > First launch is a little slow while the single-file app unpacks itself. Unsigned Windows builds may trip **SmartScreen**; click *More info* -> *Run anyway*.
 
@@ -49,6 +50,7 @@ From source, the dashboard indexes the vault it lives inside (the repo root) unl
 | `fast` | Ollama (local) | [Ollama](https://ollama.com) installed — pull models from Settings | Free / private |
 | `smart` | Anthropic API | API key (env or Settings) | API credits |
 | `openai` | OpenAI API | API key (env or Settings) | API credits |
+| `chatgpt` | Codex CLI | `codex` CLI signed in with ChatGPT (not an API key) | Your ChatGPT plan |
 | `claude` | Claude Code CLI | `claude` CLI signed in to a Claude subscription | Your subscription |
 
 Every model call goes through `dashboard/router.py`; adding a backend is one more branch there.
@@ -57,7 +59,7 @@ Every model call goes through `dashboard/router.py`; adding a backend is one mor
 
 Open **Settings** in the app — everything is configurable from there: theme and accent, model backends (Ollama host + one-click model pull, Anthropic/OpenAI keys and models, Claude CLI path + a connection test), email OAuth clients (paste your Google `client_secret.json` straight into the UI), and inbox connections. Nothing is required for the core dashboard; tiers and the inbox light up as you configure them.
 
-Prefer managing your own environment? Every knob also has an env var — see `.env.example` — and env vars win over Settings. Email OAuth tokens, chat transcripts, and attachments live in gitignored per-machine stores.
+Prefer managing your own environment? Every knob also has an env var — see `.env.example` — and env vars win over Settings. Email OAuth tokens, chat transcripts, attachments, and the external-folder registry live in gitignored per-machine stores.
 
 ## Privacy stance
 
@@ -65,6 +67,7 @@ Prefer managing your own environment? Every knob also has an env var — see `.e
 - The Claude usage panel reads token *counts* only — never message content.
 - Email is read + draft only; the Microsoft Graph token is requested **without** `Mail.Send`, the Gmail send endpoint is never called, and no send function exists. Smoke tests assert all three.
 - Secrets stay out of the repo: OAuth client creds come from env, per-account tokens live in a gitignored store, and tests guard against tokens leaking into API responses.
+- External-folder paths stay in a gitignored per-machine registry; vault-side context notes contain the connection name, not the machine's absolute path.
 
 ## The vault
 
@@ -77,7 +80,7 @@ cd dashboard
 python -m unittest discover -s tests   # smoke suite — the trust floor; run before & after changes
 ```
 
-Architecture notes live in `dashboard/CLAUDE.md`, the dense project snapshot in `dashboard/_context_dashboard.md`, the roadmap in `dashboard/PRODUCT_VISION.md`, and the full v1 → v1.23 feature log in `dashboard/VERSION_HISTORY.md`.
+Architecture notes live in `dashboard/CLAUDE.md`, the dense project snapshot in `dashboard/_context_dashboard.md`, the roadmap in `dashboard/PRODUCT_VISION.md`, and the full version log in `dashboard/VERSION_HISTORY.md`.
 
 ## License
 

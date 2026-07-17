@@ -27,8 +27,10 @@ a = Analysis(
         # Imported lazily at runtime (inbox connect), so Analysis can't see them.
         "google_auth_oauthlib.flow",
         "msal",
+        # The frozen --mail-mcp entrypoint imports these only in MCP mode.
+        "mail_mcp",
+        "mcp.server.fastmcp",
     ],
-    excludes=["mcp"],  # only the CLI-spawned mail_mcp.py subprocess needs it
     cipher=block_cipher,
 )
 

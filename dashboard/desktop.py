@@ -14,11 +14,28 @@ Run:  python desktop.py   (or double-click desktop.bat)
 from __future__ import annotations
 
 import socket
+import sys
 import threading
 import time
 import webbrowser
 from urllib.error import URLError
 from urllib.request import urlopen
+
+
+def _run_frozen_mail_mcp_entrypoint() -> None:
+    """Run the bundled mailbox MCP server when this executable is its launcher."""
+    if not (getattr(sys, "frozen", False) and sys.argv[1:] == ["--mail-mcp"]):
+        return
+
+    # Imported only in MCP mode so a normal desktop launch does not initialize
+    # the server or its optional SDK. PyInstaller includes it as a hidden import.
+    from mail_mcp import mcp
+
+    mcp.run()
+    raise SystemExit(0)
+
+
+_run_frozen_mail_mcp_entrypoint()
 
 try:
     import webview  # pywebview

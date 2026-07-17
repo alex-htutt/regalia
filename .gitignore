@@ -9,7 +9,7 @@
 !**/.env.example
 
 # --- Claude Code per-machine settings (personal paths + local permissions) ---
-.claude/settings.local.json
+**/.claude/settings.local.json
 
 # --- Python / dashboard ---
 __pycache__/
@@ -66,6 +66,7 @@ research/RAG-pipelines/resources/ai-system-design-guide-main/
 
 # --- Regalia settings store (may hold API keys; per-machine) ---
 dashboard/.config.json
+dashboard/.external.json
 
 # --- PyInstaller build outputs (regalia.spec stays tracked) ---
 dashboard/build/

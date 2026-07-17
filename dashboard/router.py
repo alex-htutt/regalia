@@ -24,11 +24,14 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import config as _config  # stdlib-only module; no circular import
 import paths as _paths
@@ -105,11 +108,11 @@ def _claude_cli_timeout() -> int:
 # same auth you use in Claude Code. CLAUDE_CLI_MODEL="" lets the CLI pick the
 # plan's default model.
 
-# The CLI confines file access to its working directory tree. Run it from the
-# vault root so Chat can read the whole vault, not just dashboard/. Vault
-# root follows the same resolution as app.py (REGALIA_VAULT env → the Settings
-# view's vault_path → the repo root). CLAUDE_CLI_CWD stays env-only on purpose —
-# it bounds what the CLI can touch, so it shouldn't be movable from the web UI.
+# The working directory is the CLI's primary workspace and write boundary; a
+# read-only sandbox is not a general filesystem-read isolation guarantee. Run
+# from the vault root so relative paths target the vault, not just dashboard/.
+# Root resolution matches app.py (REGALIA_VAULT env → Settings vault_path → repo
+# root). CLI cwd overrides stay env-only so the web UI cannot redirect agents.
 _vault_override = os.path.expanduser(
     os.environ.get("REGALIA_VAULT") or _config.get("vault_path") or ""
 )
@@ -123,6 +126,12 @@ CODEX_CLI_CWD = os.environ.get("CODEX_CLI_CWD", VAULT_ROOT)
 CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
 
 TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
+
+# ``status()`` stays cheap: it reports executable presence until the explicit
+# Settings health check has established the active Codex authentication mode.
+# The cache is keyed by the resolved executable so changing the CLI setting
+# cannot leave stale auth state attached to a different binary.
+_CODEX_HEALTH = {"exe": None, "ok": None, "reason": ""}
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────
@@ -182,10 +191,9 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attach
     system:      None, a string, or a list of Anthropic system blocks.
     attachments: None or [{"path", "name", "mime"}, ...] for the current turn;
                  applied to the most recent user message per the active tier.
-    allow_write: "Edit mode." Only the claude tier honors it here — it unlocks the
-                 CLI's file-editing tools (confined to the vault working dir) so the
-                 subscription tier can change notes. The fast/smart tiers write via
-                 agent.chat_vault's tool loop, not this path, so they ignore it.
+    allow_write: "Edit mode." The ChatGPT-account and Claude CLI tiers honor it
+                 here by switching their sandbox/tool policy. The fast/smart/API
+                 tiers write via agent.chat_vault's tool loop, not this path.
     """
     tier = (tier or "fast").lower()
     if tier not in TIERS:
@@ -236,33 +244,46 @@ def chat_tools(messages, tools, tier="smart", system=None, max_tokens=2048, mode
     return _anthropic_chat_tools(messages, tools, system, max_tokens, model)
 
 
-def status() -> dict:
-    """Best-effort availability of each tier, for the UI to show what's live."""
-    return {
-        "fast": {"backend": "ollama", "model": _ollama_model(), "available": _ollama_up()},
-        "smart": {
+def status_for(tier: str) -> dict:
+    """Best-effort status for one tier without probing unrelated backends."""
+    if tier == "fast":
+        return {"backend": "ollama", "model": _ollama_model(), "available": _ollama_up()}
+    if tier == "smart":
+        return {
             "backend": "anthropic",
             "model": _anthropic_model(),
-            "available": bool(
-                _anthropic_key() or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-            ),
-        },
-        "openai": {
+            "available": bool(_anthropic_key() or os.environ.get("ANTHROPIC_AUTH_TOKEN")),
+        }
+    if tier == "openai":
+        return {
             "backend": "openai",
             "model": _openai_model(),
             "available": bool(_openai_key()),
-        },
-        "chatgpt": {
+        }
+    if tier == "chatgpt":
+        exe = _codex_cli_path()
+        auth = _CODEX_HEALTH["ok"] if _CODEX_HEALTH["exe"] == exe else None
+        return {
             "backend": "codex-cli",
             "model": _codex_cli_model() or "ChatGPT account default",
-            "available": _codex_cli_path() is not None,
-        },
-        "claude": {
+            "installed": exe is not None,
+            "authenticated": auth,
+            # Executable presence alone is not readiness: an installed CLI may
+            # be logged out or authenticated with the wrong account method.
+            "available": exe is not None and auth is True,
+        }
+    if tier == "claude":
+        return {
             "backend": "claude-code",
             "model": _claude_cli_model() or "plan default",
             "available": _claude_cli_path() is not None,
-        },
-    }
+        }
+    raise ValueError(f"Unknown tier {tier!r}")
+
+
+def status() -> dict:
+    """Best-effort availability of every tier, for the UI status display."""
+    return {tier: status_for(tier) for tier in TIERS}
 
 
 # ── Cloud: Anthropic ─────────────────────────────────────────────────────────
@@ -545,15 +566,41 @@ def _codex_cli_path():
     return shutil.which(_codex_cli())
 
 
+_CODEX_ENV_KEYS = frozenset({
+    # Executable/runtime discovery and per-user Codex auth storage.
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
+    "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME", "USER", "USERNAME", "LOGNAME", "SHELL",
+    # Temporary files, locale, and corporate proxies/CAs. ChatGPT authentication
+    # itself comes from the Codex auth store under the user's profile/CODEX_HOME.
+    "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "HTTP_PROXY", "HTTPS_PROXY",
+    "ALL_PROXY", "NO_PROXY", "CODEX_HOME",
+    "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "SSL_CERT_DIR",
+})
+
+
+def _codex_env() -> dict:
+    """Minimal child environment: enough for Codex/auth, no unrelated secrets.
+
+    Edit-mode Codex can run shell commands inside its sandbox. Passing the full
+    dashboard environment would therefore expose unrelated cloud/database keys
+    to model-visible commands. Keys are compared case-insensitively for Windows.
+    """
+    return {k: v for k, v in os.environ.items() if k.upper() in _CODEX_ENV_KEYS}
+
+
 def codex_cli_health() -> tuple[bool, str]:
-    """Cheap explicit health check for the settings Check button."""
+    """Check that Codex is installed and using ChatGPT-backed authentication."""
     exe = _codex_cli_path()
+
+    def finish(ok: bool, reason: str) -> tuple[bool, str]:
+        _CODEX_HEALTH.update(exe=exe, ok=ok, reason=reason)
+        return ok, reason
+
     if exe is None:
-        return False, "Codex CLI was not found on PATH."
-    env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("CODEX_API_KEY", "OPENAI_API_KEY")
-    }
+        return finish(False, "Codex CLI was not found on PATH.")
+    if not os.path.isdir(CODEX_CLI_CWD):
+        return finish(False, f"Codex working folder does not exist: {CODEX_CLI_CWD}")
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         proc = subprocess.run(
@@ -561,23 +608,55 @@ def codex_cli_health() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=8,
-            env=env,
+            env=_codex_env(),
             cwd=CODEX_CLI_CWD,
             creationflags=creationflags,
         )
     except FileNotFoundError:
-        return False, "Codex CLI vanished mid-check."
+        return finish(False, "Codex CLI vanished mid-check.")
     except PermissionError as e:
-        return False, f"Couldn't start Codex CLI: {e}"
+        return finish(False, f"Couldn't start Codex CLI: {e}")
     except subprocess.TimeoutExpired:
-        return False, "Codex CLI login check timed out."
+        return finish(False, "Codex CLI login check timed out.")
+    except OSError as e:
+        return finish(False, f"Couldn't check Codex CLI: {e}")
     detail = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode == 0:
-        return True, detail or "Codex CLI is signed in."
+        low = detail.lower()
+        if "api key" in low or "api-key" in low:
+            return finish(
+                False,
+                "Codex CLI is signed in with an API key, not ChatGPT. Run `codex "
+                "logout`, then `codex login` and choose ChatGPT sign-in.",
+            )
+        return finish(True, detail or "Codex CLI is signed in with ChatGPT.")
     if "login" in detail.lower() or "auth" in detail.lower():
-        return False, "Codex CLI found, but not signed in. Run `codex login`."
-    return False, detail or "Codex CLI check failed."
+        return finish(False, "Codex CLI found, but not signed in. Run `codex login`.")
+    return finish(False, detail or "Codex CLI check failed.")
+
+
+def _stage_cli_attachments(attachments, directory: str) -> list[dict]:
+    """Copy uploads into a dedicated temp workspace visible to the CLI.
+
+    Frozen Regalia stores uploads outside the vault. Disposable staged copies
+    avoid granting write access to the source, and are removed after one turn.
+    """
+    staged = []
+    for index, attachment in enumerate(attachments or []):
+        source = str(attachment.get("path") or "")
+        if not os.path.isfile(source):
+            raise RouterError(f"Attached file is no longer available: {attachment.get('name') or source}", 400)
+        name = os.path.basename(str(attachment.get("name") or source)) or f"attachment-{index}"
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+        target = os.path.join(directory, f"{index}_{safe}")
+        try:
+            shutil.copy2(source, target)
+        except OSError as e:
+            raise RouterError(f"Couldn't prepare attachment {name}: {e}", 500)
+        staged.append({**attachment, "path": target, "name": name})
+    return staged
 
 
 def _codex_prompt(messages, system, attachments=None) -> str:
@@ -617,66 +696,81 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
             "`codex login` with your ChatGPT account, then restart the dashboard.",
             503,
         )
+    if not os.path.isdir(CODEX_CLI_CWD):
+        raise RouterError(f"Codex working folder does not exist: {CODEX_CLI_CWD}", 503)
 
-    prompt = _codex_prompt(messages, system, attachments)
-    if not prompt:
-        raise RouterError("Nothing to send to ChatGPT.", 400)
-
-    sandbox = "workspace-write" if allow_write else "read-only"
-    cmd = [
-        exe, "exec",
-        "--ephemeral",
-        "--sandbox", sandbox,
-        "--ask-for-approval", "never",
-    ]
-    mdl = model or _codex_cli_model()
-    if mdl:
-        cmd += ["-m", mdl]
-    cmd.append("-")  # read the full prompt from stdin; avoids command-line limits.
-
-    # Prefer the saved ChatGPT/Codex login. These env vars can force API-key mode
-    # for a single run, which would defeat the account-backed tier's purpose.
-    env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("CODEX_API_KEY", "OPENAI_API_KEY")
-    }
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-
+    # Frozen builds keep uploads outside the vault. Stage copies in a fresh temp
+    # workspace and grant only that directory to this one Codex invocation.
+    staged_dir = tempfile.TemporaryDirectory(prefix="regalia-codex-") if attachments else None
     try:
-        proc = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=_codex_cli_timeout(),
-            env=env,
-            cwd=CODEX_CLI_CWD,
-            creationflags=creationflags,
-        )
-    except FileNotFoundError:
-        raise RouterError("The Codex CLI vanished mid-call — is it still installed?", 503)
-    except PermissionError as e:
-        raise RouterError(f"Couldn't start the Codex CLI: {e}", 503)
-    except subprocess.TimeoutExpired:
-        raise RouterError(
-            "The ChatGPT account run took too long to answer. Try again, or switch tiers.",
-            504,
-        )
+        staged = _stage_cli_attachments(attachments, staged_dir.name) if staged_dir else []
+        prompt = _codex_prompt(messages, system, staged)
+        if not prompt:
+            raise RouterError("Nothing to send to ChatGPT.", 400)
 
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
-        hint = ""
-        if "login" in detail.lower() or "auth" in detail.lower():
-            hint = " Run `codex login` and choose ChatGPT sign-in."
-        raise RouterError(f"The Codex CLI failed: {detail or 'unknown error'}{hint}", 502)
+        sandbox = "workspace-write" if allow_write else "read-only"
+        cmd = [
+            exe, "exec",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--skip-git-repo-check",
+            "--sandbox", sandbox,
+            "-c", 'forced_login_method="chatgpt"',
+        ]
+        if staged_dir:
+            cmd += ["--add-dir", staged_dir.name]
+        mdl = model or _codex_cli_model()
+        if mdl:
+            cmd += ["-m", mdl]
+        cmd.append("-")  # stdin avoids command-line length limits.
 
-    reply = (proc.stdout or "").strip()
-    return {
-        "reply": reply or "…(the model went quiet — try again)",
-        "model": mdl or "ChatGPT account",
-        "tier": "chatgpt",
-    }
+        # Headless `codex exec` hardcodes approval policy to Never. Passing the
+        # interactive CLI's --ask-for-approval flag here is a parser error.
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_codex_cli_timeout(),
+                env=_codex_env(),
+                cwd=CODEX_CLI_CWD,
+                creationflags=creationflags,
+            )
+        except FileNotFoundError:
+            raise RouterError("The Codex CLI vanished mid-call — is it still installed?", 503)
+        except PermissionError as e:
+            raise RouterError(f"Couldn't start the Codex CLI: {e}", 503)
+        except subprocess.TimeoutExpired:
+            raise RouterError(
+                "The ChatGPT account run took too long to answer. Try again, or switch tiers.",
+                504,
+            )
+        except OSError as e:
+            raise RouterError(f"Couldn't run the Codex CLI: {e}", 503)
+
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()[:4000]
+            hint = ""
+            if "login" in detail.lower() or "auth" in detail.lower():
+                hint = " Run `codex login` and choose ChatGPT sign-in."
+                _CODEX_HEALTH.update(exe=exe, ok=False, reason=detail or hint.strip())
+            raise RouterError(f"The Codex CLI failed: {detail or 'unknown error'}{hint}", 502)
+
+        _CODEX_HEALTH.update(exe=exe, ok=True, reason="Codex CLI is signed in with ChatGPT.")
+        reply = (proc.stdout or "").strip()
+        return {
+            "reply": reply or "…(the model went quiet — try again)",
+            "model": mdl or "ChatGPT account",
+            "tier": "chatgpt",
+        }
+    finally:
+        if staged_dir:
+            staged_dir.cleanup()
 
 
 # ── Subscription: Claude Code CLI ────────────────────────────────────────────
@@ -704,7 +798,49 @@ def _flatten_conversation(messages) -> str:
     return "\n\n".join(lines)
 
 
-def _claude_code_chat(messages, system, max_tokens, model, attachments=None, allow_write=False) -> dict:
+def _claude_automation_flags(builtin_tools=None, allowed_tools=None) -> list[str]:
+    """Exact, non-interactive Claude Code capability/configuration boundary.
+
+    `--allowedTools` pre-approves calls but does not hide other built-ins. The
+    separate `--tools` list is therefore load-bearing: an empty element disables
+    every built-in for text/email-only calls. User/project/local settings, skills,
+    commands and ambient MCP servers are also excluded from automated runs.
+    """
+    builtins = ",".join(builtin_tools or [])
+    allowed = ",".join(allowed_tools or [])
+    return [
+        "--setting-sources", "",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--permission-mode", "dontAsk",
+        "--tools", builtins,
+        "--allowedTools", allowed,
+        "--strict-mcp-config",
+    ]
+
+
+def _claude_absolute_rule(tool: str, directory: str) -> str:
+    """Claude permission-rule syntax for one absolute directory, cross-platform."""
+    normalized = Path(directory).resolve().as_posix()
+    if re.match(r"^[A-Za-z]:/", normalized):
+        normalized = "/" + normalized[0].lower() + normalized[2:]
+    return f"{tool}(/{normalized.rstrip('/')}/**)"
+
+
+def _claude_code_chat(messages, system, max_tokens, model, attachments=None,
+                      allow_write=False) -> dict:
+    """Stage uploads into a disposable, explicitly granted CLI directory."""
+    if not attachments:
+        return _claude_code_chat_inner(
+            messages, system, max_tokens, model, [], allow_write, None)
+    with tempfile.TemporaryDirectory(prefix="regalia-claude-") as directory:
+        staged = _stage_cli_attachments(attachments, directory)
+        return _claude_code_chat_inner(
+            messages, system, max_tokens, model, staged, allow_write, directory)
+
+
+def _claude_code_chat_inner(messages, system, max_tokens, model, attachments=None,
+                            allow_write=False, attachment_dir=None) -> dict:
     """Run a chat turn through the Claude Code CLI (subscription-billed).
 
     max_tokens is accepted for signature parity but not forwarded — the CLI
@@ -738,14 +874,22 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None, all
         raise RouterError("Nothing to send to Claude.", 400)
 
     cmd = [exe, "-p", "--output-format", "json"]
-    # Tool permissions, narrowest-first. Edit mode unlocks the file tools and
-    # auto-accepts edits (no terminal to approve them); otherwise Read is granted
-    # only to ingest attachments. Never grant Bash.
+    # Exact available + pre-approved built-ins. Never expose Bash, Agent, Web,
+    # skills, plugins, hooks, ambient MCP servers, or connected external roots.
     if allow_write:
-        cmd += ["--allowedTools", "Read,Edit,Write,Glob,Grep",
-                "--permission-mode", "acceptEdits"]
+        builtin_tools = ["Read", "Edit", "Write", "Glob", "Grep"]
+        allowed_tools = ["Read(./**)", "Edit(./**)"]
+        if attachment_dir:
+            allowed_tools.append(_claude_absolute_rule("Read", attachment_dir))
     elif attachments:
-        cmd += ["--allowedTools", "Read"]
+        builtin_tools = ["Read"]
+        allowed_tools = ["Read(./**)"]
+    else:
+        builtin_tools = []
+        allowed_tools = []
+    cmd += _claude_automation_flags(builtin_tools, allowed_tools)
+    if attachment_dir and allow_write:
+        cmd += ["--add-dir", attachment_dir]
     sys_text = _flatten_system(system)
     if sys_text:
         cmd += ["--system-prompt", sys_text]
@@ -759,6 +903,7 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None, all
         k: v for k, v in os.environ.items()
         if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
     }
+    env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
 
     # On Windows the child console app would flash up its own terminal window;
     # CREATE_NO_WINDOW suppresses it. The flag only exists on Windows, so guard it.
@@ -773,7 +918,7 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None, all
             encoding="utf-8",
             timeout=_claude_cli_timeout(),
             env=env,
-            cwd=CLAUDE_CLI_CWD,
+            cwd=attachment_dir if attachment_dir and not allow_write else CLAUDE_CLI_CWD,
             creationflags=creationflags,
         )
     except FileNotFoundError:
@@ -805,8 +950,9 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None, all
     }
 
 
-def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
-                       cwd=None, timeout=None, mcp_config=None):
+def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=None,
+                       model=None, cwd=None, timeout=None, mcp_config=None,
+                       extra_dirs=None):
     """Run the Claude Code CLI in streaming mode, yielding parsed JSON events.
 
     This is the agentic, subscription-billed counterpart to chat_tools(): instead
@@ -817,10 +963,9 @@ def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
     so the caller can stream steps live. The trailing 'result' event carries the
     final summary text.
 
-    allowed_tools is a list of CLI tool names to pre-approve (e.g. ["Read","Grep",
-    "Write"]); when it includes a write tool the CLI is switched to acceptEdits so
-    it never blocks on a permission prompt (there's no terminal to answer one).
-    Callers here never grant Bash. File access stays confined to cwd. As with the
+    builtin_tools is the exact available built-in set; allowed_tools is the exact
+    built-in/MCP set pre-approved for this run. Callers never grant Bash. File
+    access stays confined to cwd plus explicit extra_dirs. As with the
     plain claude tier, ANTHROPIC_API_KEY/AUTH_TOKEN are stripped from the child env
     so it always bills the signed-in subscription, never API credits.
 
@@ -843,13 +988,13 @@ def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
         raise RouterError("Nothing to send to Claude.", 400)
 
     cmd = [exe, "-p", "--output-format", "stream-json", "--verbose"]
+    builtin_tools = list(builtin_tools or [])
     allowed_tools = list(allowed_tools or [])
-    if allowed_tools:
-        cmd += ["--allowedTools", ",".join(allowed_tools)]
-        if any(t in ("Write", "Edit") for t in allowed_tools):
-            cmd += ["--permission-mode", "acceptEdits"]
+    cmd += _claude_automation_flags(builtin_tools, allowed_tools)
+    for directory in extra_dirs or []:
+        cmd += ["--add-dir", str(directory)]
     if mcp_config:
-        cmd += ["--mcp-config", mcp_config, "--strict-mcp-config"]
+        cmd += ["--mcp-config", mcp_config]
     sys_text = _flatten_system(system)
     if sys_text:
         cmd += ["--append-system-prompt", sys_text]
@@ -861,6 +1006,7 @@ def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
         k: v for k, v in os.environ.items()
         if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
     }
+    env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
     try:
