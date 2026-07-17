@@ -27,7 +27,10 @@ import paths
 CONFIG_PATH = paths.data_dir() / ".config.json"
 
 # Every key the store accepts, with its default. Unknown keys are rejected so a
-# typo'd POST can't silently plant garbage.
+# typo'd POST can't silently plant garbage. For the backend/email knobs, "" means
+# "not set here — fall through to the env var, then the built-in default" (the
+# resolution order value()/secret() implement), so the store only ever pins what
+# the user actually typed into Settings.
 DEFAULTS: dict = {
     "theme": "dark",           # "dark" | "light"
     "accent": "",              # hex like "#e7c59a"; empty = theme default
@@ -36,11 +39,28 @@ DEFAULTS: dict = {
     "vault_path": "",          # vault root override; empty = repo root (restart to apply)
     "anthropic_api_key": "",   # secret — masked by the API
     "openai_api_key": "",      # secret — masked by the API
+    # ── backends (env var of the same upper-cased name wins; "" = unset) ──
+    "ollama_host": "",         # e.g. http://localhost:11434
+    "ollama_model": "",        # e.g. llama3.2
+    "anthropic_model": "",     # smart-tier model id
+    "openai_model": "",        # openai-tier model id
+    "openai_base": "",         # OpenAI-compatible API base URL
+    "claude_cli": "",          # claude binary name/path
+    "claude_cli_model": "",    # empty = plan default
+    "claude_cli_timeout": "",  # seconds (stored as string; "" = default)
+    "news_ttl": "",            # briefing cache seconds ("" = default)
+    # ── email OAuth client (app identity, not per-user tokens) ──
+    "ms_oauth_client_id": "",     # Azure public-client app id (not a secret)
+    "ms_oauth_tenant": "",        # "" = consumers
+    "gmail_oauth_client_json": "",  # secret — pasted client_secret.json contents
 }
 
-SECRET_KEYS = frozenset({"anthropic_api_key", "openai_api_key"})
+SECRET_KEYS = frozenset({"anthropic_api_key", "openai_api_key", "gmail_oauth_client_json"})
 
 _VALID_THEMES = ("dark", "light")
+
+# Store keys that must parse as a positive integer when non-empty.
+_INT_KEYS = ("claude_cli_timeout", "news_ttl")
 
 _lock = threading.Lock()
 
@@ -70,6 +90,12 @@ def secret(key: str, env_var: str) -> str:
     return os.environ.get(env_var) or str(load().get(key) or "")
 
 
+def value(key: str, env_var: str, default: str = "") -> str:
+    """Resolve a plain (non-secret) knob: env wins, then the store, then the
+    built-in default. Always returns a string — callers convert (int(...))."""
+    return os.environ.get(env_var) or str(load().get(key) or "") or default
+
+
 def update(changes: dict) -> dict:
     """Validate + merge a partial dict into the store; returns the new config.
     Raises ValueError with a UI-safe message on a bad key/value."""
@@ -82,13 +108,29 @@ def update(changes: dict) -> dict:
         raise ValueError(f"theme must be one of {_VALID_THEMES}")
     if "landing_enabled" in changes:
         changes["landing_enabled"] = bool(changes["landing_enabled"])
-    for k in ("accent", "vault_path", "default_tier", "anthropic_api_key", "openai_api_key"):
-        if k in changes:
-            if not isinstance(changes[k], str):
-                raise ValueError(f"{k} must be a string")
-            changes[k] = changes[k].strip()
+    for k in changes:
+        if k == "landing_enabled":
+            continue
+        if not isinstance(changes[k], str):
+            raise ValueError(f"{k} must be a string")
+        changes[k] = changes[k].strip()
     if changes.get("accent") and not _looks_like_hex(changes["accent"]):
         raise ValueError("accent must be a hex color like #e7c59a (or empty)")
+    for k in _INT_KEYS:
+        if changes.get(k) and not changes[k].isdigit():
+            raise ValueError(f"{k} must be a whole number of seconds (or empty)")
+    for k in ("ollama_host", "openai_base"):
+        if changes.get(k) and not changes[k].lower().startswith(("http://", "https://")):
+            raise ValueError(f"{k} must be an http(s):// URL (or empty)")
+    if changes.get("gmail_oauth_client_json"):
+        try:
+            parsed = json.loads(changes["gmail_oauth_client_json"])
+        except ValueError:
+            raise ValueError("That doesn't look like valid JSON — paste the whole client_secret file.")
+        if not isinstance(parsed, dict) or not ({"installed", "web"} & parsed.keys()):
+            raise ValueError(
+                'That JSON isn\'t a Google OAuth client — expected a top-level "installed" '
+                '(Desktop app) or "web" key. Download it from Google Cloud → Credentials.')
 
     with _lock:
         cfg = load()

@@ -14,9 +14,11 @@ against the REST endpoints below. Write scope is **drafts only** — note the Gr
 scopes deliberately omit ``Mail.Send`` so Outlook *cannot* send, and the Gmail code
 never calls the send endpoint.
 
-OAuth *client* credentials (the app identity, not per-user tokens) are read from the
-environment so nothing sensitive lives in the repo:
-  - Gmail:   GMAIL_OAUTH_CLIENT  -> path to the Google "Desktop app" client_secret JSON
+OAuth *client* credentials (the app identity, not per-user tokens) come from the
+environment OR the Settings view (env wins; nothing sensitive lives in the repo):
+  - Gmail:   GMAIL_OAUTH_CLIENT  -> path to the Google "Desktop app" client_secret JSON,
+             or paste the JSON itself into Settings → Email (stored in the gitignored
+             config, materialized to a private file on demand)
   - Outlook: MS_OAUTH_CLIENT_ID  -> the Azure app (public client) application id
              MS_OAUTH_TENANT     -> tenant; default "consumers" for personal accounts
 """
@@ -45,11 +47,50 @@ GMAIL_SCOPES = [
 # absent — without it the token literally cannot send, enforcing drafts-only.
 MS_SCOPES = ["Mail.Read", "Mail.ReadWrite", "User.Read"]
 
-# ── OAuth client credentials (app identity) — from env, never committed ──────
-GMAIL_CLIENT_SECRET_FILE = os.environ.get("GMAIL_OAUTH_CLIENT", "")
-MS_CLIENT_ID = os.environ.get("MS_OAUTH_CLIENT_ID", "")
-MS_TENANT = os.environ.get("MS_OAUTH_TENANT", "consumers")
-MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT}"
+# ── OAuth client credentials (app identity) — env wins, then Settings ────────
+# Resolved lazily so values saved in the Settings view apply without a restart.
+# The Gmail client can be provided two ways: GMAIL_OAUTH_CLIENT (a path to the
+# downloaded client_secret JSON — the power-user/env route) or pasted straight
+# into Settings → Email, in which case the store holds the JSON itself and we
+# materialize it to a private file for google-auth's from_client_secrets_file.
+
+def gmail_client_secret_file() -> str:
+    """Path to the Google client_secret JSON, or "" if not configured."""
+    path = os.environ.get("GMAIL_OAUTH_CLIENT", "")
+    if path:
+        return path
+    import config  # lazy: keep this module import-light
+
+    raw = str(config.get("gmail_oauth_client_json") or "")
+    if not raw:
+        return ""
+    import paths
+
+    dest = paths.data_dir() / ".oauth_clients" / "gmail_client_secret.json"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists() or dest.read_text(encoding="utf-8") != raw:
+            dest.write_text(raw, encoding="utf-8")
+            os.chmod(dest, 0o600)
+    except OSError:
+        return ""
+    return str(dest)
+
+
+def ms_client_id() -> str:
+    import config
+
+    return config.value("ms_oauth_client_id", "MS_OAUTH_CLIENT_ID", "")
+
+
+def ms_tenant() -> str:
+    import config
+
+    return config.value("ms_oauth_tenant", "MS_OAUTH_TENANT", "consumers")
+
+
+def ms_authority() -> str:
+    return f"https://login.microsoftonline.com/{ms_tenant()}"
 
 # ── Fetch limits + cache ─────────────────────────────────────────────────────
 DEFAULT_INBOX_LIMIT = 25     # messages shown in a list view by default

@@ -29,37 +29,62 @@ import threading
 import urllib.error
 import urllib.request
 
-# Local runtime. Override with env vars if Ollama lives elsewhere or you pull a
-# different default model.
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
+import config as _config  # stdlib-only module; no circular import
+import paths as _paths
 
-# Cloud runtime. Smart tier defaults to the same model the twin uses.
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+# ── Backend knobs — resolved lazily, per call ────────────────────────────────
+# Each accessor resolves env var → Settings store → built-in default (via
+# config.value), so a change saved in the Settings view applies to the next
+# request without a restart. Nothing here is read at import time.
 
-# OpenAI runtime (ChatGPT models) — plain REST over stdlib urllib, mirroring the
-# Ollama branch; no SDK dep. Default model = the current balanced/cost tier
-# (verify at platform.openai.com/docs/models if it 404s; override via env or
-# Settings). Key comes from OPENAI_API_KEY or the Settings store.
-OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com/v1").rstrip("/")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-terra")
 
-# Subscription runtime. The `claude` tier shells out to the Claude Code CLI, which
-# bills your logged-in Claude subscription (Pro/Max) instead of API credits — the
-# same auth you use in Claude Code. CLAUDE_CLI_MODEL="" lets the CLI pick the
-# plan's default model.
-CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
-CLAUDE_CLI_MODEL = os.environ.get("CLAUDE_CLI_MODEL", "")
-CLAUDE_CLI_TIMEOUT = int(os.environ.get("CLAUDE_CLI_TIMEOUT", "180"))
+def _ollama_host() -> str:
+    """Local runtime. Override if Ollama lives elsewhere."""
+    return _config.value("ollama_host", "OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+
+
+def _ollama_model() -> str:
+    return _config.value("ollama_model", "OLLAMA_MODEL", "llama3.2")
+
+
+def _anthropic_model() -> str:
+    """Smart tier defaults to the same model the twin uses."""
+    return _config.value("anthropic_model", "ANTHROPIC_MODEL", "claude-opus-4-8")
+
+
+def _openai_base() -> str:
+    """OpenAI runtime (ChatGPT models) — plain REST over stdlib urllib; no SDK dep."""
+    return _config.value("openai_base", "OPENAI_BASE", "https://api.openai.com/v1").rstrip("/")
+
+
+def _openai_model() -> str:
+    # Default = the current balanced/cost tier (verify at
+    # platform.openai.com/docs/models if it 404s; override via env or Settings).
+    return _config.value("openai_model", "OPENAI_MODEL", "gpt-5.6-terra")
+
+
+def _claude_cli() -> str:
+    """The `claude` tier shells out to the Claude Code CLI, which bills your
+    logged-in Claude subscription (Pro/Max) instead of API credits."""
+    return _config.value("claude_cli", "CLAUDE_CLI", "claude")
+
+
+def _claude_cli_model() -> str:
+    """Empty string lets the CLI pick the plan's default model."""
+    return _config.value("claude_cli_model", "CLAUDE_CLI_MODEL", "")
+
+
+def _claude_cli_timeout() -> int:
+    try:
+        return int(_config.value("claude_cli_timeout", "CLAUDE_CLI_TIMEOUT", "180"))
+    except ValueError:
+        return 180
 
 # The CLI confines file access to its working directory tree. Run it from the
 # vault root so Chat/Twin can read the whole vault, not just dashboard/. Vault
 # root follows the same resolution as app.py (REGALIA_VAULT env → the Settings
-# view's vault_path → the repo root); CLAUDE_CLI_CWD still overrides everything.
-import config as _config  # stdlib-only module; no circular import
-
-import paths as _paths
-
+# view's vault_path → the repo root). CLAUDE_CLI_CWD stays env-only on purpose —
+# it bounds what the CLI can touch, so it shouldn't be movable from the web UI.
 _vault_override = os.path.expanduser(
     os.environ.get("REGALIA_VAULT") or _config.get("vault_path") or ""
 )
@@ -179,22 +204,22 @@ def chat_tools(messages, tools, tier="smart", system=None, max_tokens=2048, mode
 def status() -> dict:
     """Best-effort availability of each tier, for the UI to show what's live."""
     return {
-        "fast": {"backend": "ollama", "model": OLLAMA_MODEL, "available": _ollama_up()},
+        "fast": {"backend": "ollama", "model": _ollama_model(), "available": _ollama_up()},
         "smart": {
             "backend": "anthropic",
-            "model": ANTHROPIC_MODEL,
+            "model": _anthropic_model(),
             "available": bool(
                 _anthropic_key() or os.environ.get("ANTHROPIC_AUTH_TOKEN")
             ),
         },
         "openai": {
             "backend": "openai",
-            "model": OPENAI_MODEL,
+            "model": _openai_model(),
             "available": bool(_openai_key()),
         },
         "claude": {
             "backend": "claude-code",
-            "model": CLAUDE_CLI_MODEL or "plan default",
+            "model": _claude_cli_model() or "plan default",
             "available": _claude_cli_path() is not None,
         },
     }
@@ -221,7 +246,7 @@ def _require_anthropic(model):
             401,
         )
     client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
-    return anthropic, client, (model or ANTHROPIC_MODEL)
+    return anthropic, client, (model or _anthropic_model())
 
 
 def _attach_to_anthropic(messages, atts) -> list:
@@ -328,7 +353,7 @@ def _openai_request(payload: dict) -> dict:
             401,
         )
     req = urllib.request.Request(
-        OPENAI_BASE + "/chat/completions",
+        _openai_base() + "/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
@@ -345,8 +370,8 @@ def _openai_request(payload: dict) -> dict:
             raise RouterError("OpenAI rejected the API key. Check it in Settings → Connections.", 401)
         if e.code == 404 and "model" in detail.lower():
             raise RouterError(
-                f"OpenAI model '{payload.get('model')}' wasn't found. Set OPENAI_MODEL "
-                "to a model your account can use (see platform.openai.com/docs/models).",
+                f"OpenAI model '{payload.get('model')}' wasn't found. Pick a model your "
+                "account can use in Settings → Models (see platform.openai.com/docs/models).",
                 503,
             )
         raise RouterError(f"OpenAI error: {detail or e}", 502)
@@ -418,7 +443,7 @@ def _to_openai_messages(messages, atts=None) -> list:
 
 
 def _openai_chat(messages, system, max_tokens, model, attachments=None) -> dict:
-    mdl = model or OPENAI_MODEL
+    mdl = model or _openai_model()
     msgs = _to_openai_messages(messages, attachments)
     sys_text = _flatten_system(system)
     if sys_text:
@@ -435,7 +460,7 @@ def _openai_chat(messages, system, max_tokens, model, attachments=None) -> dict:
 
 
 def _openai_chat_tools(messages, tools, system, max_tokens, model) -> dict:
-    mdl = model or OPENAI_MODEL
+    mdl = model or _openai_model()
     msgs = _to_openai_messages(messages)
     sys_text = _flatten_system(system)
     if sys_text:
@@ -477,7 +502,7 @@ def _openai_chat_tools(messages, tools, system, max_tokens, model) -> dict:
 
 def _claude_cli_path():
     """Resolve the `claude` executable on PATH, or None if it isn't installed."""
-    return shutil.which(CLAUDE_CLI)
+    return shutil.which(_claude_cli())
 
 
 def _flatten_conversation(messages) -> str:
@@ -543,7 +568,7 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None, all
     sys_text = _flatten_system(system)
     if sys_text:
         cmd += ["--system-prompt", sys_text]
-    mdl = model or CLAUDE_CLI_MODEL
+    mdl = model or _claude_cli_model()
     if mdl:
         cmd += ["--model", mdl]
 
@@ -565,7 +590,7 @@ def _claude_code_chat(messages, system, max_tokens, model, attachments=None, all
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=CLAUDE_CLI_TIMEOUT,
+            timeout=_claude_cli_timeout(),
             env=env,
             cwd=CLAUDE_CLI_CWD,
             creationflags=creationflags,
@@ -647,7 +672,7 @@ def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
     sys_text = _flatten_system(system)
     if sys_text:
         cmd += ["--append-system-prompt", sys_text]
-    mdl = model or CLAUDE_CLI_MODEL
+    mdl = model or _claude_cli_model()
     if mdl:
         cmd += ["--model", mdl]
 
@@ -703,7 +728,7 @@ def claude_code_stream(prompt, system=None, allowed_tools=None, model=None,
         except OSError:
             pass
 
-    timer = threading.Timer(timeout or CLAUDE_CLI_TIMEOUT, _kill)
+    timer = threading.Timer(timeout or _claude_cli_timeout(), _kill)
     timer.start()
 
     try:
@@ -744,7 +769,7 @@ def _flatten_system(system) -> str:
 
 def _ollama_up() -> bool:
     try:
-        with urllib.request.urlopen(OLLAMA_HOST + "/api/tags", timeout=2):
+        with urllib.request.urlopen(_ollama_host() + "/api/tags", timeout=2):
             return True
     except (urllib.error.URLError, OSError):
         return False
@@ -753,7 +778,7 @@ def _ollama_up() -> bool:
 def list_ollama_models() -> list:
     """Names of locally-pulled Ollama models ([] if Ollama is unreachable)."""
     try:
-        with urllib.request.urlopen(OLLAMA_HOST + "/api/tags", timeout=3) as r:
+        with urllib.request.urlopen(_ollama_host() + "/api/tags", timeout=3) as r:
             data = json.loads(r.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError):
         return []
@@ -789,7 +814,7 @@ def _attach_to_ollama(messages, atts) -> list:
 
 
 def _ollama_chat(messages, system, max_tokens, model, attachments=None) -> dict:
-    mdl = model or OLLAMA_MODEL
+    mdl = model or _ollama_model()
     msgs = list(messages)
     if attachments:
         msgs = _attach_to_ollama(msgs, attachments)
@@ -807,7 +832,7 @@ def _ollama_chat(messages, system, max_tokens, model, attachments=None) -> dict:
         }
     ).encode("utf-8")
     req = urllib.request.Request(
-        OLLAMA_HOST + "/api/chat",
+        _ollama_host() + "/api/chat",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -829,7 +854,7 @@ def _ollama_chat(messages, system, max_tokens, model, attachments=None) -> dict:
         raise RouterError(f"Local model error: {detail or e}", 502)
     except (urllib.error.URLError, OSError):
         raise RouterError(
-            f"Local model (Ollama) isn't reachable on {OLLAMA_HOST}. Install it from "
+            f"Local model (Ollama) isn't reachable on {_ollama_host()}. Install it from "
             f"ollama.com and run `ollama pull {mdl}`, or use the smart (cloud) tier.",
             503,
         )
@@ -899,7 +924,7 @@ def _to_ollama_tools(tools) -> list:
 
 
 def _ollama_chat_tools(messages, tools, system, max_tokens, model) -> dict:
-    mdl = model or OLLAMA_MODEL
+    mdl = model or _ollama_model()
     msgs = _to_ollama_messages(messages)
     if system is not None:
         sys_text = _flatten_system(system)
@@ -916,7 +941,7 @@ def _ollama_chat_tools(messages, tools, system, max_tokens, model) -> dict:
         }
     ).encode("utf-8")
     req = urllib.request.Request(
-        OLLAMA_HOST + "/api/chat",
+        _ollama_host() + "/api/chat",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -938,7 +963,7 @@ def _ollama_chat_tools(messages, tools, system, max_tokens, model) -> dict:
         raise RouterError(f"Local model error: {detail or e}", 502)
     except (urllib.error.URLError, OSError):
         raise RouterError(
-            f"Local model (Ollama) isn't reachable on {OLLAMA_HOST}. Install it from "
+            f"Local model (Ollama) isn't reachable on {_ollama_host()}. Install it from "
             f"ollama.com and run `ollama pull {mdl}`, or use the smart (cloud) tier.",
             503,
         )

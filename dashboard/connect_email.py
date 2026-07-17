@@ -30,15 +30,18 @@ import mailbox
 
 
 def _connect_gmail() -> str:
-    if not cfg.GMAIL_CLIENT_SECRET_FILE:
-        raise SystemExit("Set GMAIL_OAUTH_CLIENT to your Google client_secret JSON path first.")
+    client_file = cfg.gmail_client_secret_file()
+    if not client_file:
+        raise SystemExit(
+            "No Google OAuth client configured — paste your client_secret.json in "
+            "Settings → Email (or set GMAIL_OAUTH_CLIENT to its file path).")
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
     except ImportError:
         raise SystemExit("google-auth-oauthlib not installed — run: pip install -r requirements.txt")
 
     flow = InstalledAppFlow.from_client_secrets_file(
-        cfg.GMAIL_CLIENT_SECRET_FILE, scopes=cfg.GMAIL_SCOPES)
+        client_file, scopes=cfg.GMAIL_SCOPES)
     creds = flow.run_local_server(port=0, prompt="consent")
 
     # Resolve the account's email address for a friendly id/label.
@@ -56,8 +59,11 @@ def _connect_gmail() -> str:
 
 
 def _connect_outlook() -> str:
-    if not cfg.MS_CLIENT_ID:
-        raise SystemExit("Set MS_OAUTH_CLIENT_ID to your Azure app (public client) id first.")
+    client_id = cfg.ms_client_id()
+    if not client_id:
+        raise SystemExit(
+            "No Microsoft OAuth client configured — enter your Azure app (public "
+            "client) id in Settings → Email (or set MS_OAUTH_CLIENT_ID).")
     try:
         import msal
     except ImportError:
@@ -65,7 +71,7 @@ def _connect_outlook() -> str:
 
     cache = msal.SerializableTokenCache()
     app = msal.PublicClientApplication(
-        cfg.MS_CLIENT_ID, authority=cfg.MS_AUTHORITY, token_cache=cache)
+        client_id, authority=cfg.ms_authority(), token_cache=cache)
     result = app.acquire_token_interactive(scopes=cfg.MS_SCOPES)
     if "access_token" not in result:
         raise SystemExit(f"Consent failed: {result.get('error_description', result)}")

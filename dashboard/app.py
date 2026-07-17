@@ -442,7 +442,14 @@ def api_usage():
 # triggers a refresh; everything in between is served from memory. Every source
 # is wrapped so one dead feed degrades to a skipped section, never a 500.
 
-NEWS_TTL = int(os.environ.get("NEWS_TTL", "1800"))  # seconds; default 30 min
+def _news_ttl() -> int:
+    """Briefing cache TTL, seconds — env → Settings store → 30 min default."""
+    try:
+        return int(config.value("news_ttl", "NEWS_TTL", "1800"))
+    except ValueError:
+        return 1800
+
+
 _HTTP_TIMEOUT = 6
 _UA = "WorkVaultDashboard/1.0 (+local)"
 _NEWS_CACHE = {"data": None, "ts": 0.0}
@@ -589,7 +596,7 @@ def _build_briefing() -> dict:
 def load_briefing(force: bool = False) -> dict:
     """Return the cached briefing, refreshing if older than NEWS_TTL (or forced)."""
     with _NEWS_LOCK:
-        fresh = _NEWS_CACHE["data"] is not None and (time.time() - _NEWS_CACHE["ts"]) < NEWS_TTL
+        fresh = _NEWS_CACHE["data"] is not None and (time.time() - _NEWS_CACHE["ts"]) < _news_ttl()
         if fresh and not force:
             return _NEWS_CACHE["data"]
     data = _build_briefing()  # network I/O outside the lock
@@ -883,6 +890,101 @@ def api_connect_status():
     return jsonify(dict(_CONNECT_STATE))
 
 
+# ── Ollama model pull (Settings → Models) ────────────────────────────────────
+# `ollama pull` from the UI: POST starts a background thread streaming Ollama's
+# /api/pull (JSON-lines progress; can run for many minutes on a big model), GET
+# reports progress. Same single-flight shape as the email connect flow above.
+_PULL_STATE = {"state": "idle", "model": "", "detail": ""}
+_PULL_LOCK = threading.Lock()
+
+_MODEL_NAME_RE = re.compile(r"^[\w.\-/:]{1,128}$")
+
+
+def _run_ollama_pull(model: str) -> None:
+    req = urllib.request.Request(
+        router._ollama_host() + "/api/pull",
+        data=json.dumps({"model": model}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        # timeout guards socket inactivity, not total duration — pulls may run long.
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            for line in resp:
+                try:
+                    evt = json.loads(line)
+                except ValueError:
+                    continue
+                if evt.get("error"):
+                    _PULL_STATE.update(state="error", detail=str(evt["error"]))
+                    return
+                status = str(evt.get("status") or "")
+                total, done = evt.get("total") or 0, evt.get("completed") or 0
+                pct = f" {done * 100 // total}%" if total else ""
+                _PULL_STATE.update(detail=f"{status}{pct}".strip() or "pulling…")
+        _PULL_STATE.update(state="done", detail=f"Pulled {model} ✓")
+    except (urllib.error.URLError, OSError) as e:
+        _PULL_STATE.update(
+            state="error",
+            detail=f"Ollama isn't reachable on {router._ollama_host()} ({e}). "
+                   "Install/start it from ollama.com, then retry.")
+
+
+@app.route("/api/ollama/pull", methods=["POST"])
+def api_ollama_pull():
+    """Download a model into the local Ollama in the background."""
+    data = request.get_json(silent=True) or {}
+    model = str(data.get("model") or "").strip()
+    if not _MODEL_NAME_RE.match(model):
+        return jsonify({"error": "model must be a name like 'llama3.2' or 'qwen3:8b'"}), 400
+    with _PULL_LOCK:
+        if _PULL_STATE["state"] == "running":
+            return jsonify({"error": f"Already pulling {_PULL_STATE['model']} — one at a time."}), 409
+        _PULL_STATE.update(state="running", model=model, detail="Contacting Ollama…")
+        threading.Thread(target=_run_ollama_pull, args=(model,), daemon=True).start()
+    return jsonify({"started": True, "model": model})
+
+
+@app.route("/api/ollama/pull/status")
+def api_ollama_pull_status():
+    return jsonify(dict(_PULL_STATE))
+
+
+# ── Claude CLI connection test (Settings → Models) ───────────────────────────
+# The status dot only proves the binary is on PATH; this actually runs a tiny
+# prompt through the CLI to prove it's signed in (sign-in itself is interactive
+# in a terminal — the error detail says exactly that when it isn't).
+_CLAUDE_TEST_STATE = {"state": "idle", "detail": ""}
+_CLAUDE_TEST_LOCK = threading.Lock()
+
+
+def _run_claude_test() -> None:
+    try:
+        out = router.chat([{"role": "user", "content": "Reply with the single word: ok"}],
+                          tier="claude", max_tokens=20)
+        _CLAUDE_TEST_STATE.update(
+            state="done", detail=f"Signed in ✓ — {out.get('model') or 'CLI'} replied.")
+    except router.RouterError as e:
+        _CLAUDE_TEST_STATE.update(state="error", detail=e.message)
+    except Exception as e:  # noqa: BLE001 — surface anything to the UI
+        _CLAUDE_TEST_STATE.update(state="error", detail=f"Test failed: {e}")
+
+
+@app.route("/api/claude/test", methods=["POST"])
+def api_claude_test():
+    """Verify the Claude CLI is installed AND signed in by running a tiny prompt."""
+    with _CLAUDE_TEST_LOCK:
+        if _CLAUDE_TEST_STATE["state"] == "running":
+            return jsonify({"error": "A test is already running."}), 409
+        _CLAUDE_TEST_STATE.update(state="running", detail="Running a tiny prompt through the CLI…")
+        threading.Thread(target=_run_claude_test, daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/claude/test/status")
+def api_claude_test_status():
+    return jsonify(dict(_CLAUDE_TEST_STATE))
+
+
 @app.route("/api/mail/important")
 def api_mail_important():
     """Work/school-relevant mail (last N days) for the overview panel.
@@ -1096,7 +1198,7 @@ def api_router_status():
 @app.route("/api/ollama/models")
 def api_ollama_models():
     """Locally-pulled Ollama models + the configured default, for the model picker."""
-    return jsonify({"models": router.list_ollama_models(), "default": router.OLLAMA_MODEL})
+    return jsonify({"models": router.list_ollama_models(), "default": router._ollama_model()})
 
 
 # ── Chat attachments ────────────────────────────────────────────────────────

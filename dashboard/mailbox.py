@@ -163,13 +163,16 @@ def _ms_token(acct: dict) -> str:
         import msal
     except ImportError:
         raise MailboxError("msal not installed — run: pip install -r requirements.txt")
-    if not cfg.MS_CLIENT_ID:
-        raise MailboxError("MS_OAUTH_CLIENT_ID is not set — can't refresh Outlook tokens.", 401)
+    client_id = cfg.ms_client_id()
+    if not client_id:
+        raise MailboxError(
+            "No Microsoft OAuth client configured (Settings → Email, or "
+            "MS_OAUTH_CLIENT_ID) — can't refresh Outlook tokens.", 401)
     cache = msal.SerializableTokenCache()
     if acct.get("msal_cache"):
         cache.deserialize(acct["msal_cache"])
     app = msal.PublicClientApplication(
-        cfg.MS_CLIENT_ID, authority=cfg.MS_AUTHORITY, token_cache=cache)
+        client_id, authority=cfg.ms_authority(), token_cache=cache)
     accounts = app.get_accounts()
     if not accounts:
         raise MailboxError(f"Reconnect '{acct['id']}' — no cached Outlook session.", 401)
