@@ -4,10 +4,11 @@
 #   pip install -r requirements.txt -r requirements-dev.txt
 #   pyinstaller regalia.spec            (run from the dashboard/ folder)
 #
-# Output: dist/Regalia/ (onedir — data files beside the executable; faster
-# startup and fewer frozen-path surprises than onefile). Per-user state moves
-# to the OS data dir via paths.py when frozen; the vault defaults to
-# ~/RegaliaVault until pointed elsewhere in Settings.
+# Output: dist/Regalia.exe (onefile — a single self-contained binary users can
+# download and double-click; templates/static/Assets are bundled inside and
+# extracted to a temp dir at launch). Per-user state moves to the OS data dir
+# via paths.py when frozen; the vault defaults to ~/RegaliaVault until pointed
+# elsewhere in Settings.
 
 from pathlib import Path
 
@@ -33,28 +34,26 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# onefile: bundle scripts, binaries, zipfiles and datas all into one EXE (no
+# COLLECT). The bootloader unpacks them to a temp dir (sys._MEIPASS) at launch.
 exe = EXE(
     pyz,
     a.scripts,
-    exclude_binaries=True,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
     name="Regalia",
+    runtime_tmpdir=None,
     console=False,                      # windowed app — no terminal
     icon=str(HERE / "Assets" / "Regalia_Icon.png"),  # Pillow converts per-platform
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    name="Regalia",
-)
-
-# macOS: also wrap the collected app into a proper .app bundle.
+# macOS: wrap the single binary into a proper .app bundle.
 import sys
 if sys.platform == "darwin":
     app = BUNDLE(
-        coll,
+        exe,
         name="Regalia.app",
         icon=str(HERE / "Assets" / "Regalia_Icon.png"),
         bundle_identifier="com.regalia.dashboard",

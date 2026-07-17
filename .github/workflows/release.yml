@@ -18,7 +18,7 @@ jobs:
         include:
           - os: windows-latest
             artifact: Regalia-windows
-            pack: Compress-Archive -Path dist/Regalia -DestinationPath Regalia-windows.zip
+            pack: Compress-Archive -Path dist/Regalia.exe -DestinationPath Regalia-windows.zip
             file: Regalia-windows.zip
           - os: macos-latest
             artifact: Regalia-macos

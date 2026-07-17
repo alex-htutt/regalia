@@ -26,7 +26,9 @@ Regalia is a single-user cockpit for a Markdown knowledge vault. It reads YAML f
 
 ## Install
 
-**Download** (no Python required): grab the latest `Regalia-windows.zip` or `Regalia-macos.zip` from [Releases](../../releases), unzip, and run `Regalia`. On first run it creates `~/RegaliaVault` — point it at your own vault folder from **Settings**.
+**Download** (no Python required): grab the latest `Regalia-windows.zip` or `Regalia-macos.zip` from [Releases](../../releases). On Windows, unzip it and run the single `Regalia.exe` inside; on first run it creates `~/RegaliaVault` — point it at your own vault folder from **Settings**.
+
+> First launch is a little slow while the single-file app unpacks itself. Unsigned Windows builds may trip **SmartScreen**; click *More info* -> *Run anyway*.
 
 **Or run from source:**
 
