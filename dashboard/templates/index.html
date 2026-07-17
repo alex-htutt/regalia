@@ -73,6 +73,9 @@
     /* typography — Aeonik→Inter, Input→JetBrains Mono substitutes */
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
+
+    --page-pad: clamp(14px, 2.6vw, 24px);
+    --panel-pad: clamp(14px, 2vw, 18px);
   }
 
   /* ── Hyperstudio daylight — the light counterpart. Same token names, so every
@@ -136,7 +139,7 @@
   header {
     background: var(--bg);
     border-bottom: 1px solid var(--border);
-    padding: 0 24px;
+    padding: 0 var(--page-pad);
     height: 56px;
     display: flex;
     align-items: center;
@@ -152,14 +155,15 @@
     font-family: var(--font-mono); font-size: 11px; color: var(--faint);
     letter-spacing: -0.037em; text-transform: uppercase;
   }
-  .search-wrap { margin-left: auto; position: relative; }
+  .search-wrap { margin-left: auto; position: relative; min-width: min(100%, 140px); }
   .search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   #search {
     padding: 6px 10px 6px 30px;
     border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 13px;
-    width: 220px;
+    width: clamp(150px, 24vw, 220px);
+    max-width: 100%;
     background: var(--bg);
     color: var(--text);
     outline: none;
@@ -173,7 +177,7 @@
      beats Tailwind's layered padding/margin utilities, so px-/py-/pt-/mt- on
      #stats and its cards are dead. Restore that spacing (unlayered) to match the
      .usage / .news section rhythm (20px 24px 0) instead of sitting edge-to-edge. */
-  #stats { padding: 20px 24px 0; }
+  #stats { padding: 20px var(--page-pad) 0; }
   #stats > div { padding: 14px 18px; }          /* the stat cards */
   #stats > div > div + div { margin-top: 4px; }  /* label gap under the number */
 
@@ -188,7 +192,7 @@
   }
 
   /* -- Claude usage -- */
-  .usage { padding: 20px 24px 0; }
+  .usage { padding: 20px var(--page-pad) 0; }
   .usage-panel {
     background: var(--glass);
     backdrop-filter: var(--glass-blur);
@@ -200,14 +204,14 @@
   .usage-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
   .usage-head h2 { font-size: 13px; font-weight: 600; }
   .usage-head .sub { font-size: 11px; color: var(--faint); }
-  .usage-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .usage-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 138px), 1fr)); gap: 12px; margin-bottom: 16px; }
   .u-card { background: var(--glass-inset); border: 1px solid var(--glass-border); border-radius: 8px; padding: 12px 14px; }
   .u-card .num { font-size: 24px; font-weight: 400; letter-spacing: -0.02em; line-height: 1; }
   .u-card .lbl { font-size: 10.5px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
   .u-card .num small { font-size: 13px; font-weight: 600; color: var(--muted); }
 
   .usage-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 22px; }
-  @media (max-width: 720px) { .usage-cols { grid-template-columns: 1fr; } .usage-cards { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 720px) { .usage-cols { grid-template-columns: 1fr; } }
 
   .chart-title, .model-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
   .bars { display: flex; align-items: flex-end; gap: 4px; height: 90px; }
@@ -224,14 +228,14 @@
   .usage.empty-state { color: var(--faint); font-size: 12.5px; }
 
   /* -- Briefing (tech news / social / jobs) -- */
-  .news { padding: 20px 24px 0; }
+  .news { padding: 20px var(--page-pad) 0; }
   .news-panel { background: var(--glass); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); border-radius: 10px; padding: 16px 18px; }
   .news-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
   .news-head h2 { font-size: 13px; font-weight: 600; }
   .news-head .sub { font-size: 11px; color: var(--faint); }
   .news-head .refresh { margin-left: auto; font-size: 11px; color: var(--muted); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
   .news-head .refresh:hover { color: var(--text); border-color: var(--muted); }
-  .news-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .news-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 22px; }
   @media (max-width: 860px) { .news-cols { grid-template-columns: 1fr; } }
   .news-col h3 { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
   .news-item { padding: 7px 0; border-bottom: 1px solid var(--border); }
@@ -246,14 +250,14 @@
   .news.empty-state { color: var(--faint); font-size: 12.5px; }
 
   /* ── Browse ── */
-  .browse { padding: 16px 24px 0; }
+  .browse { padding: 16px var(--page-pad) 0; }
   .crumbs { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--muted); margin-bottom: 8px; flex-wrap: wrap; }
   .crumb { cursor: pointer; padding: 2px 6px; border-radius: 4px; }
   .crumb:hover { background: var(--gray-bg); color: var(--text); }
   .crumb.cur { color: var(--text); font-weight: 600; cursor: default; }
   .crumb.cur:hover { background: none; }
   .crumb-sep { color: var(--faint); }
-  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 12px; }
   .g-card {
     background: var(--glass);
     backdrop-filter: var(--glass-blur);
@@ -287,7 +291,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 20px;
-    max-width: 760px; width: 100%;
+    max-width: min(100%, 760px); width: 100%;
     max-height: calc(100vh - 96px);
     overflow-y: auto;
     padding: 20px 26px 26px;
@@ -332,7 +336,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 16px 24px 12px;
+    padding: 16px var(--page-pad) 12px;
     flex-wrap: wrap;
   }
   .filter-group { display: flex; gap: 4px; }
@@ -353,7 +357,7 @@
   .pill.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
   /* ── Task list ── */
-  .task-list { padding: 0 24px 32px; display: flex; flex-direction: column; gap: 6px; }
+  .task-list { padding: 0 var(--page-pad) 32px; display: flex; flex-direction: column; gap: 6px; }
 
   .task {
     background: var(--glass);
@@ -411,7 +415,7 @@
   /* ── Workspace shell (sidebar + views) ── */
   .app { display: flex; align-items: flex-start; position: relative; z-index: 1; }
   .sidebar {
-    width: 188px; flex-shrink: 0;
+    width: clamp(156px, 16vw, 188px); flex-shrink: 0;
     position: sticky; top: 52px;
     height: calc(100vh - 52px);
     border-right: 1px solid var(--border);
@@ -431,15 +435,15 @@
   .nav.on { background: var(--accent); color: var(--accent-fg); }
   .main { flex: 1; min-width: 0; }
   .view[hidden] { display: none; }
-  .view-head { padding: 20px 24px 0; }
+  .view-head { padding: 20px var(--page-pad) 0; }
   .view-head h2 { font-size: 23px; font-weight: 400; letter-spacing: -0.011em; }
   .view-head p { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
 
   /* ── New-project form ── */
-  .panel-wrap { padding: 16px 24px 32px; max-width: 880px; }
+  .panel-wrap { padding: 16px var(--page-pad) 32px; max-width: min(100%, 1120px); }
   .np-form {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 18px;
+    border-radius: 10px; padding: var(--panel-pad);
     display: flex; flex-direction: column; gap: 12px;
   }
   .np-form label {
@@ -455,7 +459,9 @@
   }
   .np-form textarea { resize: vertical; flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; }
   .np-form input:focus, .np-form select:focus, .np-form textarea:focus { border-color: var(--border-hover); }
-  .np-row { display: flex; gap: 12px; align-items: flex-end; }
+  .np-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; min-width: 0; }
+  .np-row > label { flex: 1 1 min(280px, 100%); }
+  .np-row .pill, .np-row .np-submit { flex: 0 0 auto; }
   .np-submit {
     border: none; background: var(--accent); color: var(--accent-fg);
     border-radius: 7px; padding: 0 18px; height: 37px;
@@ -471,8 +477,45 @@
   }
   .empty-sm { color: var(--faint); font-size: 12.5px; }
 
+  .settings-card { margin-top: 16px; }
+  .backend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+    gap: 10px 12px;
+  }
+  .backend-line {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 12px;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .backend-title { font-size: 12.5px; font-weight: 650; color: var(--text); text-transform: none; letter-spacing: 0; }
+  .backend-copy { color: var(--muted); font-size: 12px; line-height: 1.4; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .backend-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+  .backend-actions input {
+    flex: 1 1 150px;
+    min-width: 0;
+  }
+  .pill.compact {
+    padding: 4px 9px;
+    border-radius: 7px;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+  .np-row .pill[title] {
+    padding: 4px 9px;
+    border-radius: 7px;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
   /* ── Chat (model router) ── */
-  .tier-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tier-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; min-width: 0; }
+  .tier-bar .filter-group { flex-wrap: wrap; }
   .tier-status { font-size: 12px; color: var(--muted); }
   .tier-status .dot-sm { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
   .tier-status .dot-sm.up { background: var(--green); }
@@ -480,7 +523,7 @@
   .model-select {
     border: 1px solid var(--border); border-radius: 6px;
     padding: 5px 8px; font-size: 12px; font-family: ui-monospace, monospace;
-    background: var(--surface); color: var(--text); outline: none; max-width: 220px;
+    background: var(--surface); color: var(--text); outline: none; max-width: min(100%, 220px);
   }
   .model-select:hover { border-color: var(--border-hover); }
   .model-select:disabled { color: var(--faint); cursor: default; }
@@ -491,11 +534,11 @@
   }
   .chat-clear:hover { border-color: var(--border-hover); color: var(--text); }
   /* Multi-chat sidebar (v1.20) — conversations persist server-side and run in parallel */
-  .chat-wrap { max-width: 1080px; }
-  .chat-split { display: grid; grid-template-columns: 210px 1fr; gap: 12px; }
+  .chat-wrap { max-width: min(100%, 1180px); }
+  .chat-split { display: grid; grid-template-columns: minmax(170px, 22%) minmax(0, 1fr); gap: 12px; }
   .chat-side {
     display: flex; flex-direction: column; gap: 8px;
-    height: calc(100vh - 280px); min-height: 380px;
+    height: min(720px, calc(100vh - 280px)); min-height: 320px;
   }
   .chat-new {
     border: 1px dashed var(--border); background: var(--surface); color: var(--muted);
@@ -524,15 +567,15 @@
     .chat-split { grid-template-columns: 1fr; }
     .chat-side { height: auto; min-height: 0; }
     .chat-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
-    .chat-item { flex: none; max-width: 180px; }
+    .chat-item { flex: 0 1 clamp(128px, 42vw, 180px); max-width: none; }
   }
   .chat-box {
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    display: flex; flex-direction: column; height: calc(100vh - 280px); min-height: 380px; overflow: hidden;
+    display: flex; flex-direction: column; height: min(720px, calc(100vh - 280px)); min-height: 320px; overflow: hidden;
   }
   .chat-log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); }
-  .chat-empty { color: var(--faint); font-size: 12.5px; margin: auto; text-align: center; max-width: 360px; }
-  .chat-msg { font-size: 13.5px; line-height: 1.55; max-width: 80%; }
+  .chat-empty { color: var(--faint); font-size: 12.5px; margin: auto; text-align: center; max-width: min(100%, 360px); }
+  .chat-msg { font-size: 13.5px; line-height: 1.55; max-width: min(80%, 760px); }
   .chat-msg.user {
     align-self: flex-end; background: var(--accent); color: var(--accent-fg);
     padding: 9px 13px; border-radius: 12px 12px 3px 12px; white-space: pre-wrap; word-wrap: break-word;
@@ -549,9 +592,9 @@
     border: 1px solid var(--err-border); padding: 9px 13px; border-radius: 8px; font-size: 12.5px;
   }
   .chat-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
-  .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); }
+  .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); min-width: 0; }
   .chat-input textarea {
-    flex: 1; resize: none; border: 1px solid var(--border); border-radius: 8px;
+    flex: 1 1 180px; min-width: 0; resize: none; border: 1px solid var(--border); border-radius: 8px;
     padding: 9px 11px; font-size: 13.5px; font-family: inherit;
     background: var(--bg); color: var(--text); outline: none; max-height: 140px; line-height: 1.4;
   }
@@ -567,7 +610,7 @@
     background: var(--surface);
   }
   .attach-chip {
-    display: inline-flex; align-items: center; gap: 6px; max-width: 240px;
+    display: inline-flex; align-items: center; gap: 6px; max-width: min(100%, 240px);
     font-size: 11.5px; color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: 99px; padding: 3px 6px 3px 10px;
   }
@@ -581,7 +624,7 @@
   .bubble-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 
   /* ── Agents ── */
-  .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 12px; }
+  .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 258px), 1fr)); gap: 12px; }
   .agent-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 14px 16px;
@@ -601,7 +644,7 @@
   .agent-tier-select {
     font-size: 11px; color: var(--muted); background: var(--surface-2, #212121);
     border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px;
-    cursor: pointer; max-width: 120px;
+    cursor: pointer; max-width: min(100%, 120px);
   }
   .agent-tier-select:focus { border-color: var(--border-hover); outline: none; }
   .agent-run { display: flex; gap: 6px; margin-top: 2px; }
@@ -675,14 +718,22 @@
     .app { flex-direction: column; }
     .sidebar {
       width: 100%; height: auto; position: static;
-      flex-direction: row; overflow-x: auto;
+      flex-direction: row; flex-wrap: wrap; overflow-x: visible;
       border-right: none; border-bottom: 1px solid var(--border);
+      padding: 8px var(--page-pad);
     }
-    .nav { width: auto; white-space: nowrap; }
+    .nav { flex: 1 1 112px; width: auto; white-space: nowrap; }
   }
 
   @media (max-width: 640px) {
     header, .filter-bar, .task-list { padding-left: 16px; padding-right: 16px; }
+    header { gap: 9px; }
+    header .tagline, header .wordmark-sep { display: none; }
+    .search-wrap { min-width: 0; flex: 1; }
+    #search { width: 100%; }
+    .chat-clear { margin-left: 0; }
+    .chat-input { flex-wrap: wrap; }
+    .chat-input textarea { flex-basis: calc(100% - 46px); }
   }
 
   /* ── Background beams (ambient) ──
@@ -764,12 +815,12 @@
   }
   .scroll-hint .chev { animation: bob 1.8s ease-in-out infinite; }
   @keyframes bob { 0%,100% { transform: translateY(0); opacity: 0.5; } 50% { transform: translateY(5px); opacity: 1; } }
-  .parallax-head { max-width: 1100px; margin: 0 auto 48px; text-align: center; }
+  .parallax-head { max-width: min(100%, 1100px); margin: 0 auto 48px; text-align: center; }
   .parallax-head h2 { font-size: clamp(26px, 4vw, 40px); font-weight: 400; letter-spacing: -0.02em; }
   .parallax-head p { color: var(--muted); margin-top: 10px; font-size: 14px; }
   .parallax-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
-    max-width: 1100px; margin: 0 auto; align-items: start;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 20px;
+    max-width: min(100%, 1100px); margin: 0 auto; align-items: start;
   }
   .pcol { display: flex; flex-direction: column; gap: 20px; will-change: transform; }
   .pcol[data-col="2"] { margin-top: 56px; }
@@ -813,13 +864,13 @@
   }
 
   /* ── Inbox view ── */
-  .inbox-wrap { max-width: 1040px; }
+  .inbox-wrap { max-width: min(100%, 1040px); }
   .inbox-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   .inbox-bar select, .inbox-bar input {
     border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px;
     font-size: 12.5px; font-family: inherit; background: var(--bg); color: var(--text); outline: none;
   }
-  .inbox-bar select { cursor: pointer; max-width: 280px; }
+  .inbox-bar select { cursor: pointer; max-width: min(100%, 280px); }
   .inbox-bar input { flex: 1; min-width: 140px; }
   .inbox-bar select:focus, .inbox-bar input:focus { border-color: var(--border-hover); }
   .inbox-btn {
@@ -831,7 +882,7 @@
   .inbox-btn.primary { border: none; background: var(--accent); color: var(--accent-fg); }
   .inbox-btn.ghost { padding: 6px 10px; color: var(--muted); }
   .inbox-btn:disabled { opacity: 0.5; cursor: default; }
-  .inbox-split { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 14px; align-items: start; }
+  .inbox-split { display: grid; grid-template-columns: minmax(min(100%, 260px), 360px) minmax(0, 1fr); gap: 14px; align-items: start; }
   .inbox-list { display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; }
   .mail-item {
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
@@ -855,7 +906,7 @@
     margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
   .reader-actions { margin-top: 14px; }
   /* Compose modal */
-  .modal.compose { max-width: 620px; }
+  .modal.compose { max-width: min(100%, 620px); }
   .compose-body { display: flex; flex-direction: column; gap: 9px; padding: 4px 2px 2px; }
   .compose-acct { font-size: 12px; color: var(--muted); }
   .compose-body input, .compose-body textarea {
@@ -1035,7 +1086,7 @@
     <section class="view" data-view="chat" hidden>
       <div class="view-head">
         <h2>Chat</h2>
-        <p>Many chats, four backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on the Anthropic API and <b>GPT</b> on the OpenAI API (billed to API credits); <b>Claude</b> runs on Claude in the cloud, billed to your subscription. Conversations persist and run in parallel — start another while one is thinking.</p>
+        <p>Many chats, multiple backends. <b>Fast</b> runs locally on Ollama; <b>Smart</b> and <b>GPT API</b> use API credits; <b>ChatGPT</b> uses your signed-in Codex/ChatGPT account; <b>Claude</b> uses your Claude plan. Conversations persist and run in parallel.</p>
       </div>
       <div class="panel-wrap chat-wrap">
         <div class="tier-bar">
@@ -1043,6 +1094,7 @@
             <button class="pill on" id="tier-fast"   onclick="setTier('fast')">⚡ Fast · local</button>
             <button class="pill"    id="tier-smart"  onclick="setTier('smart')">🧠 Smart · API</button>
             <button class="pill"    id="tier-openai" onclick="setTier('openai')">🤖 GPT · API</button>
+            <button class="pill"    id="tier-chatgpt" onclick="setTier('chatgpt')">● ChatGPT · account</button>
             <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
           </div>
           <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
@@ -1057,7 +1109,7 @@
         </aside>
         <div class="chat-box">
           <div class="chat-log" id="chat-log">
-            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; Claude reaches for the cloud on your plan. Attach images, PDFs, or text with 📎 (Claude reads any type; Fast handles images on a vision model).</div>
+            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; ChatGPT and Claude use signed-in account CLIs. Attach files with 📎.</div>
           </div>
           <div class="chat-attachments" id="chat-attachments" hidden></div>
           <div class="chat-input">
@@ -1136,6 +1188,7 @@
               <option value="fast">⚡ Fast · local Ollama</option>
               <option value="smart">🧠 Smart · Anthropic API</option>
               <option value="openai">🤖 GPT · OpenAI API</option>
+              <option value="chatgpt">● ChatGPT · account</option>
               <option value="claude">✨ Claude · subscription</option>
             </select></label>
           </div>
@@ -1703,8 +1756,9 @@
         <div class="np-row">
           <label>API key<span class="np-row" style="gap:8px">
             <input id="con-anthropic" type="password" autocomplete="off" placeholder="${keyPh('anthropic_api_key') || 'sk-ant-…'}">
-            <button type="button" class="pill" onclick="stgSaveKey('anthropic_api_key','con-anthropic')">Save</button>
-            <button type="button" class="pill" onclick="stgClearKey('anthropic_api_key')">Clear</button>
+            <button type="button" class="pill compact" onclick="stgSaveKey('anthropic_api_key','con-anthropic')">Save</button>
+            <button type="button" class="pill compact" onclick="stgClearKey('anthropic_api_key')">Clear</button>
+            <button type="button" class="pill compact" onclick="stgCheckTier('smart')" title="Check Anthropic API">Check</button>
           </span></label>
           <label>Model<input id="con-anthropic-model" type="text" value="${v('anthropic_model')}" placeholder="(app default)" autocomplete="off"></label>
         </div>
@@ -1713,11 +1767,22 @@
         <div class="np-row">
           <label>API key<span class="np-row" style="gap:8px">
             <input id="con-openai" type="password" autocomplete="off" placeholder="${keyPh('openai_api_key') || 'sk-…'}">
-            <button type="button" class="pill" onclick="stgSaveKey('openai_api_key','con-openai')">Save</button>
-            <button type="button" class="pill" onclick="stgClearKey('openai_api_key')">Clear</button>
+            <button type="button" class="pill compact" onclick="stgSaveKey('openai_api_key','con-openai')">Save</button>
+            <button type="button" class="pill compact" onclick="stgClearKey('openai_api_key')">Clear</button>
+            <button type="button" class="pill compact" onclick="stgCheckTier('openai')" title="Check OpenAI API">Check</button>
           </span></label>
           <label>Model<input id="con-openai-model" type="text" value="${v('openai_model')}" placeholder="(app default)" autocomplete="off"></label>
           <label>API base URL<input id="con-openai-base" type="text" value="${v('openai_base')}" placeholder="https://api.openai.com/v1" autocomplete="off"></label>
+        </div>
+
+        <div class="np-msg"><b id="con-dot-chatgpt"></b>ChatGPT account - uses Codex CLI and your ChatGPT sign-in. Run <code>codex login</code> once.</div>
+        <div class="np-row">
+          <label>CLI command/path<input id="con-codex-cli" type="text" value="${v('codex_cli')}" placeholder="codex" autocomplete="off"></label>
+          <label>Model<input id="con-codex-model" type="text" value="${v('codex_cli_model')}" placeholder="(account default)" autocomplete="off"></label>
+          <label>Timeout (s)<span class="np-row" style="gap:8px">
+            <input id="con-codex-timeout" type="text" inputmode="numeric" value="${v('codex_cli_timeout')}" placeholder="180" autocomplete="off">
+            <button type="button" class="pill compact" onclick="stgCheckTier('chatgpt')" title="Check Codex CLI">Check</button>
+          </span></label>
         </div>
 
         <div class="np-msg"><b id="con-dot-claude"></b>Claude CLI (subscription tier) — bills your Claude plan, not API credits. <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Install Claude Code</a>, sign in once in a terminal, then test here.</div>
@@ -1734,6 +1799,36 @@
         <div class="np-row">
           <button type="button" class="np-submit" onclick="stgSaveBackends()">Save backend settings</button>
         </div>
+        <!-- Hidden duplicate block left by rebase conflict; the detailed backend form above is authoritative.
+                     placeholder="${s.anthropic_api_key && s.anthropic_api_key.set ? 'saved ✓ — enter to replace' : 'sk-ant-…'}">
+          <div class="backend-line">
+            <div class="backend-title">OpenAI API</div>
+            <div class="backend-copy">GPT API tier, billed to API credits.</div>
+            <div class="backend-actions">
+              <input id="con-openai" type="password" autocomplete="off" aria-label="OpenAI API key"
+                     placeholder="${s.openai_api_key && s.openai_api_key.set ? 'saved ✓ — enter to replace' : 'sk-…'}">
+              <button type="button" class="pill compact" onclick="stgSaveKey('openai_api_key','con-openai')">Save</button>
+              <button type="button" class="pill compact" onclick="stgClearKey('openai_api_key')">Clear</button>
+              <button type="button" class="pill compact" title="Check OpenAI API" onclick="stgCheckTier('openai')">Check</button>
+            </div>
+          </div>
+          <div class="backend-line">
+            <div class="backend-title">ChatGPT account</div>
+            <div class="backend-copy">Uses Codex CLI and your ChatGPT sign-in. Run <code>codex login</code> once.</div>
+            <div class="backend-actions">
+              <button type="button" class="pill compact" title="Check Codex CLI" onclick="stgCheckTier('chatgpt')">Check</button>
+            </div>
+          </div>
+          <div class="backend-line">
+            <div class="backend-title">Claude CLI</div>
+            <div class="backend-copy">Uses Claude Code and your Claude subscription. Run <code>claude</code> sign-in once.</div>
+            <div class="backend-actions">
+              <button type="button" class="pill compact" title="Check Claude CLI" onclick="stgCheckTier('claude')">Check</button>
+            </div>
+          </div>
+        </div>
+        <div class="np-msg">Keys are stored locally and never returned by the API. Environment variables win if both are set.</div>
+        -->
         <div class="np-msg" id="con-msg"></div>
         <div class="np-msg">Keys are stored in a local, gitignored file on this machine and never returned by the API. Leave a field empty to use the environment variable / built-in default. Changes apply to the next request — no restart.</div>
       </form>
@@ -1789,8 +1884,9 @@
       const bk = document.getElementById('con-backends');
       if (bk) bk.innerHTML =
         `${dot('fast')} Ollama (local) &nbsp; ${dot('smart')} Anthropic API &nbsp; ` +
-        `${dot('openai')} OpenAI API &nbsp; ${dot('claude')} Claude CLI (subscription)`;
-      for (const t of ['fast', 'smart', 'openai', 'claude']) {
+        `${dot('openai')} OpenAI API &nbsp; ${dot('chatgpt')} ChatGPT account &nbsp; ` +
+        `${dot('claude')} Claude CLI (subscription)`;
+      for (const t of ['fast', 'smart', 'openai', 'chatgpt', 'claude']) {
         const el = document.getElementById('con-dot-' + t);
         if (el) el.innerHTML = dot(t) + ' ';
       }
@@ -1801,7 +1897,8 @@
         if (el && st[t] && st[t].model) el.placeholder = st[t].model;
       };
       ph('con-ollama-model', 'fast'); ph('con-anthropic-model', 'smart');
-      ph('con-openai-model', 'openai'); ph('con-claude-model', 'claude');
+      ph('con-openai-model', 'openai'); ph('con-codex-model', 'chatgpt');
+      ph('con-claude-model', 'claude');
     }).catch(() => {});
   }
 
@@ -1837,6 +1934,8 @@
       ollama_host: 'con-ollama-host', ollama_model: 'con-ollama-model',
       anthropic_model: 'con-anthropic-model',
       openai_model: 'con-openai-model', openai_base: 'con-openai-base',
+      codex_cli: 'con-codex-cli', codex_cli_model: 'con-codex-model',
+      codex_cli_timeout: 'con-codex-timeout',
       claude_cli: 'con-claude-cli', claude_cli_model: 'con-claude-model',
       claude_cli_timeout: 'con-claude-timeout',
     }, 'con-msg');
@@ -1882,6 +1981,32 @@
           }).catch(() => clearInterval(claudePoll));
         }, 1500);
       }).catch(() => { msg.textContent = 'Could not start the test.'; });
+  }
+
+  function stgRenderBackendDots(st) {
+    const el = document.getElementById('con-backends');
+    if (!el) return;
+    const dot = t => `<span class="dot-sm ${st[t] && st[t].available ? 'up' : 'down'}"></span>`;
+    el.innerHTML =
+      `${dot('fast')} Ollama (local) &nbsp; ${dot('smart')} Anthropic API &nbsp; ` +
+      `${dot('openai')} OpenAI API &nbsp; ${dot('chatgpt')} ChatGPT account &nbsp; ` +
+      `${dot('claude')} Claude CLI (subscription)`;
+  }
+
+  function stgCheckTier(tier) {
+    const msg = document.getElementById('con-msg');
+    if (msg) msg.textContent = 'Checking…';
+    fetch('/api/router/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier }),
+    }).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+      if (!msg) return;
+      if (!ok) { msg.textContent = d.error || 'Could not check that backend.'; return; }
+      const model = d.status && d.status.model ? ` · ${d.status.model}` : '';
+      msg.textContent = `${d.tier}: ${d.reason}${model}`;
+      loadRouterStatus();
+      fetch('/api/router/status').then(r => r.json()).then(stgRenderBackendDots).catch(() => {});
+    }).catch(() => { if (msg) msg.textContent = 'Could not check that backend.'; });
   }
 
   function stgListInboxes() {
@@ -2180,7 +2305,7 @@
     const log = document.getElementById('chat-log');
     log.innerHTML = '';
     if (!c || !c.msgs.length) {
-      log.innerHTML = '<div class="chat-empty">Pick a tier and say something. Fast keeps it local; Claude reaches for the cloud on your plan. Attach images, PDFs, or text with 📎.</div>';
+      log.innerHTML = '<div class="chat-empty">Pick a tier and say something. Fast keeps it local; ChatGPT and Claude use signed-in account CLIs. Attach files with 📎.</div>';
     } else {
       c.msgs.forEach(m => {
         if (m.role === 'user') addChatBubble('user', m.content, null, m.attachments);
@@ -2200,6 +2325,8 @@
   function chatThinker(c) {
     return c.tier === 'fast' ? (c.model || 'local model')
          : c.tier === 'smart' ? ((routerStatus && routerStatus.smart && routerStatus.smart.model) || 'Smart')
+         : c.tier === 'openai' ? ((routerStatus && routerStatus.openai && routerStatus.openai.model) || 'GPT API')
+         : c.tier === 'chatgpt' ? 'ChatGPT'
          : 'Claude';
   }
 
@@ -2215,6 +2342,7 @@
     document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
     document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
     document.getElementById('tier-openai').classList.toggle('on', tier === 'openai');
+    document.getElementById('tier-chatgpt').classList.toggle('on', tier === 'chatgpt');
     document.getElementById('tier-claude').classList.toggle('on', tier === 'claude');
     const sel = document.getElementById('model-select');
     sel.style.display = tier === 'fast' ? '' : 'none';
@@ -2263,7 +2391,8 @@
     if (!t) { document.getElementById('tier-status').textContent = ''; return; }
     const cls = t.available ? 'up' : 'down';
     const state = t.available ? 'ready'
-      : (tier === 'fast' ? 'Ollama offline' : tier === 'claude' ? 'Claude CLI not found'
+      : (tier === 'fast' ? 'Ollama offline' : tier === 'chatgpt' ? 'Codex CLI not found'
+         : tier === 'claude' ? 'Claude CLI not found'
          : 'no API key — add one in Settings');
     const model = (tier === 'fast' && c && c.model) ? c.model : t.model;
     document.getElementById('tier-status').innerHTML =

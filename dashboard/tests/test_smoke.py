@@ -588,6 +588,8 @@ class SettingsTests(unittest.TestCase):
             self.client.post("/api/settings", json={"theme": "solarized"}).status_code, 400)
         self.assertEqual(
             self.client.post("/api/settings", json={"accent": "red"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings", json={"default_tier": "banana"}).status_code, 400)
 
     def test_secrets_are_never_returned(self):
         self.client.post("/api/settings", json={"anthropic_api_key": "sk-ant-secret123"})
@@ -610,6 +612,9 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("openai", d)
         self.assertEqual(d["openai"]["backend"], "openai")
         self.assertIn("available", d["openai"])
+        self.assertIn("chatgpt", d)
+        self.assertEqual(d["chatgpt"]["backend"], "codex-cli")
+        self.assertIn("available", d["chatgpt"])
 
     def test_openai_key_from_store_flips_availability(self):
         import os
@@ -635,12 +640,12 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 401)
 
     def test_new_chat_uses_default_tier(self):
-        self.client.post("/api/settings", json={"default_tier": "claude"})
+        self.client.post("/api/settings", json={"default_tier": "chatgpt"})
         cid = None
         try:
             d = self.client.post("/api/chats").get_json()
             cid = d["id"]
-            self.assertEqual(d["tier"], "claude")
+            self.assertEqual(d["tier"], "chatgpt")
         finally:
             if cid:
                 self.client.delete(f"/api/chats/{cid}")
@@ -703,16 +708,25 @@ class UiConfigTests(unittest.TestCase):
 
     def test_env_wins_over_store(self):
         import os
-        self._config.update({"ollama_model": "from-store"})
-        self.assertEqual(router._ollama_model(), "from-store")
-        os.environ["OLLAMA_MODEL"] = "from-env"
+        old = os.environ.pop("OLLAMA_MODEL", None)
         try:
+            self._config.update({"ollama_model": "from-store"})
+            self.assertEqual(router._ollama_model(), "from-store")
+            os.environ["OLLAMA_MODEL"] = "from-env"
             self.assertEqual(router._ollama_model(), "from-env")
         finally:
-            del os.environ["OLLAMA_MODEL"]
+            if old is None:
+                os.environ.pop("OLLAMA_MODEL", None)
+            else:
+                os.environ["OLLAMA_MODEL"] = old
         # unset everywhere -> built-in default
+        old = os.environ.pop("OLLAMA_MODEL", None)
         self._config.update({"ollama_model": ""})
-        self.assertEqual(router._ollama_model(), "llama3.2")
+        try:
+            self.assertEqual(router._ollama_model(), "llama3.2")
+        finally:
+            if old is not None:
+                os.environ["OLLAMA_MODEL"] = old
 
     def test_pasted_gmail_client_materializes_to_file(self):
         import os
@@ -750,6 +764,51 @@ class UiConfigTests(unittest.TestCase):
             encoding="utf-8")
         self.assertNotIn("connect_email.py", html)
         self.assertNotIn("GMAIL_OAUTH_CLIENT", html)
+
+
+class ChatGptAccountTierTests(unittest.TestCase):
+    """ChatGPT account tier is backed by Codex CLI, not the OpenAI API key path."""
+
+    def test_chatgpt_chat_uses_codex_exec_and_account_env(self):
+        seen = {}
+        original_path = router._codex_cli_path
+        original_run = router.subprocess.run
+
+        class FakeProc:
+            returncode = 0
+            stdout = "hello from chatgpt"
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["input"] = kwargs.get("input")
+            seen["env"] = kwargs.get("env") or {}
+            seen["cwd"] = kwargs.get("cwd")
+            return FakeProc()
+
+        router._codex_cli_path = lambda: "codex"
+        router.subprocess.run = fake_run
+        try:
+            res = router.chat([{"role": "user", "content": "hi"}],
+                              tier="chatgpt", system="be terse")
+        finally:
+            router._codex_cli_path = original_path
+            router.subprocess.run = original_run
+
+        self.assertEqual(res["tier"], "chatgpt")
+        self.assertEqual(res["reply"], "hello from chatgpt")
+        self.assertEqual(seen["cmd"][:2], ["codex", "exec"])
+        self.assertIn("read-only", seen["cmd"])
+        self.assertTrue(seen["input"].startswith("System instructions:"))
+        self.assertNotIn("CODEX_API_KEY", seen["env"])
+        self.assertNotIn("OPENAI_API_KEY", seen["env"])
+        self.assertTrue(seen["cwd"])
+
+    def test_chatgpt_tool_loop_rejected(self):
+        with self.assertRaises(router.RouterError) as ctx:
+            router.chat_tools([{"role": "user", "content": "hi"}], [],
+                              tier="chatgpt")
+        self.assertEqual(ctx.exception.status, 400)
 
 
 if __name__ == "__main__":

@@ -125,7 +125,7 @@ def create_chat(tier: str = "fast") -> dict:
         "title": DEFAULT_TITLE,
         "created": now,
         "updated": now,
-        "tier": tier if tier in ("fast", "smart", "openai", "claude") else "fast",
+        "tier": tier if tier in ("fast", "smart", "openai", "chatgpt", "claude") else "fast",
         "model": None,
         "edit": False,
         "messages": [],

@@ -1,4 +1,4 @@
-"""Model router — one chat() over four backends.
+"""Model router — one chat() over five backends.
 
 This is the core primitive of the self-hosted workspace: every model call in the
 app goes through chat(), which picks a backend by tier.
@@ -6,6 +6,7 @@ app goes through chat(), which picks a backend by tier.
     tier="fast"   -> Ollama, local HTTP on :11434  (no API cost, needs Ollama)
     tier="smart"  -> Anthropic, cloud              (needs an Anthropic API key)
     tier="openai" -> OpenAI, cloud                 (needs an OpenAI API key)
+    tier="chatgpt"-> Codex CLI, subprocess         (uses your ChatGPT/Codex login)
     tier="claude" -> Claude Code CLI, subprocess   (bills your Claude subscription,
                                                     not API credits; needs `claude`
                                                     installed and signed in)
@@ -48,7 +49,7 @@ def _ollama_model() -> str:
 
 
 def _anthropic_model() -> str:
-    """Smart tier defaults to the same model the twin uses."""
+    """Smart tier model id."""
     return _config.value("anthropic_model", "ANTHROPIC_MODEL", "claude-opus-4-8")
 
 
@@ -61,6 +62,23 @@ def _openai_model() -> str:
     # Default = the current balanced/cost tier (verify at
     # platform.openai.com/docs/models if it 404s; override via env or Settings).
     return _config.value("openai_model", "OPENAI_MODEL", "gpt-5.6-terra")
+
+
+def _codex_cli() -> str:
+    """ChatGPT account runtime via Codex CLI."""
+    return _config.value("codex_cli", "CODEX_CLI", "codex")
+
+
+def _codex_cli_model() -> str:
+    """Empty string lets Codex choose the signed-in account default."""
+    return _config.value("codex_cli_model", "CODEX_CLI_MODEL", "")
+
+
+def _codex_cli_timeout() -> int:
+    try:
+        return int(_config.value("codex_cli_timeout", "CODEX_CLI_TIMEOUT", "180"))
+    except ValueError:
+        return 180
 
 
 def _claude_cli() -> str:
@@ -79,9 +97,16 @@ def _claude_cli_timeout() -> int:
         return int(_config.value("claude_cli_timeout", "CLAUDE_CLI_TIMEOUT", "180"))
     except ValueError:
         return 180
+# ChatGPT account runtime via Codex CLI. The CLI reuses the user's saved
+# Codex/ChatGPT login by default; CODEX_CLI_MODEL="" lets Codex choose.
+
+# Subscription runtime. The `claude` tier shells out to the Claude Code CLI, which
+# bills your logged-in Claude subscription (Pro/Max) instead of API credits — the
+# same auth you use in Claude Code. CLAUDE_CLI_MODEL="" lets the CLI pick the
+# plan's default model.
 
 # The CLI confines file access to its working directory tree. Run it from the
-# vault root so Chat/Twin can read the whole vault, not just dashboard/. Vault
+# vault root so Chat can read the whole vault, not just dashboard/. Vault
 # root follows the same resolution as app.py (REGALIA_VAULT env → the Settings
 # view's vault_path → the repo root). CLAUDE_CLI_CWD stays env-only on purpose —
 # it bounds what the CLI can touch, so it shouldn't be movable from the web UI.
@@ -94,9 +119,10 @@ elif _paths.is_frozen():
     VAULT_ROOT = str(_paths.default_vault())
 else:
     VAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CODEX_CLI_CWD = os.environ.get("CODEX_CLI_CWD", VAULT_ROOT)
 CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
 
-TIERS = ("fast", "smart", "openai", "claude")
+TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────
@@ -169,6 +195,8 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attach
         return _anthropic_chat(messages, system, max_tokens, model, atts)
     if tier == "openai":
         return _openai_chat(messages, system, max_tokens, model, atts)
+    if tier == "chatgpt":
+        return _codex_exec_chat(messages, system, max_tokens, model, atts, allow_write)
     if tier == "claude":
         return _claude_code_chat(messages, system, max_tokens, model, atts, allow_write)
     return _ollama_chat(messages, system, max_tokens, model, atts)
@@ -198,6 +226,13 @@ def chat_tools(messages, tools, tier="smart", system=None, max_tokens=2048, mode
         return _ollama_chat_tools(messages, tools, system, max_tokens, model)
     if tier == "openai":
         return _openai_chat_tools(messages, tools, system, max_tokens, model)
+    if tier == "chatgpt":
+        raise RouterError(
+            "The ChatGPT account tier runs through Codex CLI and cannot use this "
+            "app's in-process tool loop. Use Chat for ChatGPT account runs, or "
+            "pick Fast, Smart, or OpenAI API for custom tools.",
+            400,
+        )
     return _anthropic_chat_tools(messages, tools, system, max_tokens, model)
 
 
@@ -216,6 +251,11 @@ def status() -> dict:
             "backend": "openai",
             "model": _openai_model(),
             "available": bool(_openai_key()),
+        },
+        "chatgpt": {
+            "backend": "codex-cli",
+            "model": _codex_cli_model() or "ChatGPT account default",
+            "available": _codex_cli_path() is not None,
         },
         "claude": {
             "backend": "claude-code",
@@ -495,6 +535,147 @@ def _openai_chat_tools(messages, tools, system, max_tokens, model) -> dict:
         "stop_reason": "tool_use" if stop == "tool_calls" else (stop or "end_turn"),
         "model": data.get("model") or mdl,
         "tier": "openai",
+    }
+
+
+# ── Account: ChatGPT via Codex CLI ───────────────────────────────────────────
+
+def _codex_cli_path():
+    """Resolve the `codex` executable on PATH, or None if it isn't installed."""
+    return shutil.which(_codex_cli())
+
+
+def codex_cli_health() -> tuple[bool, str]:
+    """Cheap explicit health check for the settings Check button."""
+    exe = _codex_cli_path()
+    if exe is None:
+        return False, "Codex CLI was not found on PATH."
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("CODEX_API_KEY", "OPENAI_API_KEY")
+    }
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        proc = subprocess.run(
+            [exe, "login", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=8,
+            env=env,
+            cwd=CODEX_CLI_CWD,
+            creationflags=creationflags,
+        )
+    except FileNotFoundError:
+        return False, "Codex CLI vanished mid-check."
+    except PermissionError as e:
+        return False, f"Couldn't start Codex CLI: {e}"
+    except subprocess.TimeoutExpired:
+        return False, "Codex CLI login check timed out."
+    detail = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode == 0:
+        return True, detail or "Codex CLI is signed in."
+    if "login" in detail.lower() or "auth" in detail.lower():
+        return False, "Codex CLI found, but not signed in. Run `codex login`."
+    return False, detail or "Codex CLI check failed."
+
+
+def _codex_prompt(messages, system, attachments=None) -> str:
+    """Build one stdin prompt for `codex exec -`.
+
+    Codex exec already persists/reuses its ChatGPT login; the app persists chat
+    history separately, so each subprocess receives the relevant transcript.
+    """
+    parts = []
+    sys_text = _flatten_system(system)
+    if sys_text:
+        parts.append("System instructions:\n" + sys_text)
+    convo = _flatten_conversation(messages)
+    if convo.strip():
+        parts.append("Conversation:\n" + convo)
+    if attachments:
+        listing = "\n".join(f"- {a['path']}" for a in attachments)
+        parts.append(
+            "The user attached these file(s). If the sandbox permits it, read "
+            "them before answering:\n" + listing
+        )
+    return "\n\n".join(parts).strip()
+
+
+def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
+                     allow_write=False) -> dict:
+    """Run a chat turn through Codex CLI using the signed-in ChatGPT account.
+
+    max_tokens is accepted for signature parity but not forwarded; Codex manages
+    its own output budget. Normal chat runs read-only. Edit mode switches Codex
+    to workspace-write so it can change vault files when the user asks.
+    """
+    exe = _codex_cli_path()
+    if exe is None:
+        raise RouterError(
+            "The Codex CLI isn't installed or isn't on PATH. Install Codex, run "
+            "`codex login` with your ChatGPT account, then restart the dashboard.",
+            503,
+        )
+
+    prompt = _codex_prompt(messages, system, attachments)
+    if not prompt:
+        raise RouterError("Nothing to send to ChatGPT.", 400)
+
+    sandbox = "workspace-write" if allow_write else "read-only"
+    cmd = [
+        exe, "exec",
+        "--ephemeral",
+        "--sandbox", sandbox,
+        "--ask-for-approval", "never",
+    ]
+    mdl = model or _codex_cli_model()
+    if mdl:
+        cmd += ["-m", mdl]
+    cmd.append("-")  # read the full prompt from stdin; avoids command-line limits.
+
+    # Prefer the saved ChatGPT/Codex login. These env vars can force API-key mode
+    # for a single run, which would defeat the account-backed tier's purpose.
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("CODEX_API_KEY", "OPENAI_API_KEY")
+    }
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=_codex_cli_timeout(),
+            env=env,
+            cwd=CODEX_CLI_CWD,
+            creationflags=creationflags,
+        )
+    except FileNotFoundError:
+        raise RouterError("The Codex CLI vanished mid-call — is it still installed?", 503)
+    except PermissionError as e:
+        raise RouterError(f"Couldn't start the Codex CLI: {e}", 503)
+    except subprocess.TimeoutExpired:
+        raise RouterError(
+            "The ChatGPT account run took too long to answer. Try again, or switch tiers.",
+            504,
+        )
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        hint = ""
+        if "login" in detail.lower() or "auth" in detail.lower():
+            hint = " Run `codex login` and choose ChatGPT sign-in."
+        raise RouterError(f"The Codex CLI failed: {detail or 'unknown error'}{hint}", 502)
+
+    reply = (proc.stdout or "").strip()
+    return {
+        "reply": reply or "…(the model went quiet — try again)",
+        "model": mdl or "ChatGPT account",
+        "tier": "chatgpt",
     }
 
 

@@ -1106,6 +1106,33 @@ def api_router_status():
     return jsonify(router.status())
 
 
+@app.route("/api/router/check", methods=["POST"])
+def api_router_check():
+    """Cheap backend check for Settings.
+
+    This verifies local reachability/configuration only (Ollama HTTP, API key
+    presence, CLI on PATH). It deliberately avoids sending a model prompt.
+    """
+    data = request.get_json(silent=True) or {}
+    tier = str(data.get("tier") or "").strip().lower()
+    st = router.status()
+    if tier not in st:
+        return jsonify({"error": f"Unknown tier '{tier}'."}), 400
+    info = st[tier]
+    if tier == "chatgpt":
+        ok, reason = router.codex_cli_health()
+        return jsonify({"ok": ok, "tier": tier, "reason": reason, "status": info})
+    ok = bool(info.get("available"))
+    reason = "ready" if ok else {
+        "fast": "Ollama is not reachable.",
+        "smart": "No Anthropic API key is configured.",
+        "openai": "No OpenAI API key is configured.",
+        "chatgpt": "Codex CLI was not found on PATH.",
+        "claude": "Claude CLI was not found on PATH.",
+    }.get(tier, "Not available.")
+    return jsonify({"ok": ok, "tier": tier, "reason": reason, "status": info})
+
+
 @app.route("/api/ollama/models")
 def api_ollama_models():
     """Locally-pulled Ollama models + the configured default, for the model picker."""

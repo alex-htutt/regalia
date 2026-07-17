@@ -45,6 +45,9 @@ DEFAULTS: dict = {
     "anthropic_model": "",     # smart-tier model id
     "openai_model": "",        # openai-tier model id
     "openai_base": "",         # OpenAI-compatible API base URL
+    "codex_cli": "",           # codex binary name/path
+    "codex_cli_model": "",     # empty = ChatGPT account default
+    "codex_cli_timeout": "",   # seconds (stored as string; "" = default)
     "claude_cli": "",          # claude binary name/path
     "claude_cli_model": "",    # empty = plan default
     "claude_cli_timeout": "",  # seconds (stored as string; "" = default)
@@ -58,9 +61,10 @@ DEFAULTS: dict = {
 SECRET_KEYS = frozenset({"anthropic_api_key", "openai_api_key", "gmail_oauth_client_json"})
 
 _VALID_THEMES = ("dark", "light")
+_VALID_TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
 
 # Store keys that must parse as a positive integer when non-empty.
-_INT_KEYS = ("claude_cli_timeout", "news_ttl")
+_INT_KEYS = ("codex_cli_timeout", "claude_cli_timeout", "news_ttl")
 
 _lock = threading.Lock()
 
@@ -106,6 +110,8 @@ def update(changes: dict) -> dict:
             raise ValueError(f"Unknown setting: {k!r}")
     if "theme" in changes and changes["theme"] not in _VALID_THEMES:
         raise ValueError(f"theme must be one of {_VALID_THEMES}")
+    if "default_tier" in changes and changes["default_tier"] not in _VALID_TIERS:
+        raise ValueError(f"default_tier must be one of {_VALID_TIERS}")
     if "landing_enabled" in changes:
         changes["landing_enabled"] = bool(changes["landing_enabled"])
     for k in changes:
