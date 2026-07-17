@@ -1,0 +1,54 @@
+name: release
+
+# Cut a release by pushing a tag like v1.24 (or run manually). Builds the
+# standalone desktop app on Windows + macOS with PyInstaller (regalia.spec)
+# and attaches the archives to the GitHub Release for that tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Regalia-windows
+            pack: Compress-Archive -Path dist/Regalia -DestinationPath Regalia-windows.zip
+            file: Regalia-windows.zip
+          - os: macos-latest
+            artifact: Regalia-macos
+            pack: ditto -c -k --sequesterRsrc --keepParent dist/Regalia.app Regalia-macos.zip
+            file: Regalia-macos.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the smoke suite first
+        working-directory: dashboard
+        run: |
+          pip install flask pyyaml anthropic google-auth-oauthlib msal mcp
+          python -m unittest discover -s tests
+      - name: Build with PyInstaller
+        working-directory: dashboard
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+          pyinstaller --noconfirm regalia.spec
+      - name: Package
+        working-directory: dashboard
+        run: ${{ matrix.pack }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dashboard/${{ matrix.file }}
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dashboard/${{ matrix.file }}

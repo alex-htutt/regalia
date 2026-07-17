@@ -23,7 +23,9 @@ import time
 import uuid
 from pathlib import Path
 
-CHATS_DIR = Path(__file__).parent / ".chats"
+import paths
+
+CHATS_DIR = paths.data_dir() / ".chats"
 DEFAULT_TITLE = "New chat"
 TITLE_MAX_CHARS = 40
 
@@ -114,15 +116,16 @@ def save_chat(obj: dict) -> dict:
     return obj
 
 
-def create_chat() -> dict:
-    """Mint a new empty conversation with defaults and persist it."""
+def create_chat(tier: str = "fast") -> dict:
+    """Mint a new empty conversation with defaults and persist it.
+    `tier` seeds the conversation's model tier (the Settings default)."""
     now = time.time()
     obj = {
         "id": f"c_{uuid.uuid4().hex}",
         "title": DEFAULT_TITLE,
         "created": now,
         "updated": now,
-        "tier": "fast",
+        "tier": tier if tier in ("fast", "smart", "openai", "claude") else "fast",
         "model": None,
         "edit": False,
         "messages": [],

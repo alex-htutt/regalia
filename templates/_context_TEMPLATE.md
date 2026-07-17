@@ -9,7 +9,7 @@ related: []
 
 # {{ Area }} — Context
 
-> Copy into a folder and rename to `_context_<folder>.md` (e.g. `_context_pull_healthcare_card.md`).
+> Copy into a folder and rename to `_context_<folder>.md` (e.g. `_context_payments_api.md`).
 > Dense, manually maintained snapshot. Prime any Cursor chat with `@file <path>/_context_<folder>.md`.
 
 ## Current state

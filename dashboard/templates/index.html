@@ -12,6 +12,27 @@
      no preflight; the hand-written <style> below stays authoritative. Rebuild
      after changing markup: see dashboard/CLAUDE.md "Tailwind". -->
 <link rel="stylesheet" href="/static/tailwind.css">
+<script>
+  /* Boot settings (server-injected, secrets masked) — applied before first
+     paint so the theme/accent never flash. Keep this ABOVE the <style>. */
+  window.__settings = {{ boot_settings|safe }};
+  (function (s) {
+    var root = document.documentElement;
+    if (s.theme === 'light') root.dataset.theme = 'light';
+    if (!s.landing_enabled) root.classList.add('no-landing');
+    if (s.accent) {
+      root.style.setProperty('--amber', s.accent);
+      root.style.setProperty('--amber-fg', s.accent);
+      var n = parseInt(s.accent.length === 4
+        ? s.accent.slice(1).split('').map(function (c) { return c + c; }).join('')
+        : s.accent.slice(1), 16);
+      if (!isNaN(n)) {
+        var r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+        root.style.setProperty('--amber-bg', 'rgba(' + r + ',' + g + ',' + b + ',0.13)');
+      }
+    }
+  })(window.__settings || {});
+</script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -53,6 +74,45 @@
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
   }
+
+  /* ── Hyperstudio daylight — the light counterpart. Same token names, so every
+     component follows automatically. Set from Settings (data-theme on <html>);
+     the landing hero keeps its dark art either way (it's a cover, not chrome). ── */
+  :root[data-theme="light"] {
+    --bg: #f6f5f2;            /* warm paper */
+    --surface: #ffffff;
+    --elevated: #efede8;
+    --border: #e3dfd7;
+    --border-hover: #beb8ab;
+    --text: #1c1b18;
+    --muted: #6d6960;
+    --faint: #97928a;
+    --accent: #1c1b18;        /* dark button on light canvas */
+    --accent-fg: #f6f5f2;
+    --amber: #a06a24;         /* amber whisper, deepened for light-bg contrast */
+    --red: #b5533d;
+    --green: #2f7d4f;
+
+    --glass: rgba(255,255,255,0.55);
+    --glass-elev: rgba(255,255,255,0.72);
+    --glass-inset: rgba(240,238,232,0.55);
+    --glass-border: rgba(0,0,0,0.07);
+
+    --blue-bg: rgba(70,110,180,0.10);   --blue-fg: #3d5f96;
+    --green-bg: rgba(47,125,79,0.10);   --green-fg: #2f7d4f;
+    --purple-bg: rgba(110,85,170,0.10); --purple-fg: #6a53a1;
+    --amber-bg: rgba(160,106,36,0.12);  --amber-fg: #a06a24;
+    --gray-bg: #eceae4;                 --gray-fg: #5b5850;
+
+    --err-bg: rgba(181,83,61,0.08);
+    --err-border: rgba(181,83,61,0.30);
+  }
+  :root[data-theme="light"] * { scrollbar-color: #c9c4b9 transparent; }
+  :root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #cdc8bd; border-color: var(--bg); }
+  :root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #b8b2a5; }
+
+  /* Landing disabled (Settings): drop the scrollytelling cover entirely. */
+  .no-landing .scrolly { display: none; }
 
   body {
     font-family: var(--font-sans);
@@ -944,6 +1004,7 @@
     <button class="nav"    data-view="twin"     onclick="setView('twin')">😈 Twin</button>
     <button class="nav"    data-view="inbox"    onclick="setView('inbox')">📨 Inbox</button>
     <button class="nav"    data-view="agents"   onclick="setView('agents')">🤖 Agents</button>
+    <button class="nav"    data-view="settings" onclick="setView('settings')">⚙️ Settings</button>
   </nav>
   <main class="main">
 
@@ -1011,13 +1072,14 @@
     <section class="view" data-view="chat" hidden>
       <div class="view-head">
         <h2>Chat</h2>
-        <p>Many chats, three backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on the Anthropic API (billed to API credits); <b>Claude</b> runs on Claude in the cloud, billed to your subscription. Conversations persist and run in parallel — start another while one is thinking.</p>
+        <p>Many chats, four backends. <b>Fast</b> runs locally on Ollama (no API cost); <b>Smart</b> runs on the Anthropic API and <b>GPT</b> on the OpenAI API (billed to API credits); <b>Claude</b> runs on Claude in the cloud, billed to your subscription. Conversations persist and run in parallel — start another while one is thinking.</p>
       </div>
       <div class="panel-wrap chat-wrap">
         <div class="tier-bar">
           <div class="filter-group">
             <button class="pill on" id="tier-fast"   onclick="setTier('fast')">⚡ Fast · local</button>
             <button class="pill"    id="tier-smart"  onclick="setTier('smart')">🧠 Smart · API</button>
+            <button class="pill"    id="tier-openai" onclick="setTier('openai')">🤖 GPT · API</button>
             <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
           </div>
           <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
@@ -1107,6 +1169,47 @@
           <div class="activity-head">Activity</div>
           <div class="activity-log" id="activity-log"><div class="empty-sm">No runs yet.</div></div>
         </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="settings" hidden>
+      <div class="view-head">
+        <h2>Settings</h2>
+        <p>Appearance and defaults. Changes save to a local, gitignored store and apply immediately (vault path needs a restart).</p>
+      </div>
+      <div class="panel-wrap">
+        <form class="np-form" onsubmit="stgSave(event)">
+          <div class="proj-list-head">Appearance</div>
+          <div class="np-row">
+            <label>Theme<select id="stg-theme">
+              <option value="dark">Dark — Hyperstudio midnight</option>
+              <option value="light">Light — Hyperstudio daylight</option>
+            </select></label>
+            <label>Accent color<span class="np-row" style="gap:8px">
+              <input id="stg-accent" type="color" value="#e7c59a" style="min-width:52px; height:34px; padding:2px;">
+              <button type="button" class="pill" onclick="stgClearAccent()" title="Back to the theme default">Reset</button>
+            </span></label>
+          </div>
+          <label class="np-row" style="align-items:center; gap:8px">
+            <input id="stg-landing" type="checkbox" style="width:auto"> Show the landing page (scrollytelling hero) on load
+          </label>
+          <div class="proj-list-head">Defaults</div>
+          <div class="np-row">
+            <label>New chats start on<select id="stg-tier">
+              <option value="fast">⚡ Fast · local Ollama</option>
+              <option value="smart">🧠 Smart · Anthropic API</option>
+              <option value="openai">🤖 GPT · OpenAI API</option>
+              <option value="claude">✨ Claude · subscription</option>
+            </select></label>
+            <label>Vault folder<input id="stg-vault" type="text" placeholder="(this repo)" autocomplete="off"></label>
+          </div>
+          <div class="np-msg" id="stg-vault-now"></div>
+          <div class="np-row">
+            <button class="np-submit" type="submit">Save settings</button>
+          </div>
+          <div class="np-msg" id="stg-msg"></div>
+        </form>
+        <div id="stg-connections"></div>
       </div>
     </section>
 
@@ -1680,7 +1783,7 @@
 
 <script>
   /* ── Workspace shell: view switching + projects + agents ── */
-  const loaded = { projects: false, agents: false, chat: false, twin: false, inbox: false };
+  const loaded = { projects: false, agents: false, chat: false, twin: false, inbox: false, settings: false };
 
   function setView(v) {
     document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.view === v));
@@ -1690,6 +1793,173 @@
     if (v === 'inbox'    && !loaded.inbox)    { loaded.inbox = true;     loadInboxes(); }
     if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); initChats(); }
     if (v === 'twin'     && !loaded.twin)     { loaded.twin = true;      initTwin(); }
+    if (v === 'settings' && !loaded.settings) { loaded.settings = true;  stgLoad(); }
+  }
+
+  /* ── Settings ── */
+  function stgLoad() {
+    fetch('/api/settings').then(r => r.json()).then(d => {
+      window.__settings = d.settings;
+      stgFill(d.settings, d.vault_root);
+      stgConnections();
+    }).catch(() => { stgFill(window.__settings || {}, ''); stgConnections(); });
+  }
+
+  function stgFill(s, vaultRoot) {
+    document.getElementById('stg-theme').value = s.theme === 'light' ? 'light' : 'dark';
+    document.getElementById('stg-accent').value = s.accent || '#e7c59a';
+    document.getElementById('stg-landing').checked = s.landing_enabled !== false;
+    document.getElementById('stg-tier').value = s.default_tier || 'fast';
+    document.getElementById('stg-vault').value = s.vault_path || '';
+    document.getElementById('stg-vault-now').textContent =
+      vaultRoot ? `Currently serving: ${vaultRoot} — changing the folder takes effect after a restart.` : '';
+  }
+
+  let stgAccentCleared = false;
+  function stgClearAccent() {
+    stgAccentCleared = true;
+    document.getElementById('stg-accent').value =
+      document.getElementById('stg-theme').value === 'light' ? '#a06a24' : '#e7c59a';
+  }
+
+  function stgApplyLive(s) {
+    const root = document.documentElement;
+    if (s.theme === 'light') root.dataset.theme = 'light'; else delete root.dataset.theme;
+    root.classList.toggle('no-landing', s.landing_enabled === false);
+    if (s.accent) {
+      root.style.setProperty('--amber', s.accent);
+      root.style.setProperty('--amber-fg', s.accent);
+      const hex = s.accent.length === 4
+        ? s.accent.slice(1).split('').map(c => c + c).join('') : s.accent.slice(1);
+      const n = parseInt(hex, 16);
+      if (!isNaN(n)) {
+        root.style.setProperty('--amber-bg',
+          `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},0.13)`);
+      }
+    } else {
+      root.style.removeProperty('--amber');
+      root.style.removeProperty('--amber-fg');
+      root.style.removeProperty('--amber-bg');
+    }
+  }
+
+  function stgSave(ev) {
+    ev.preventDefault();
+    const msg = document.getElementById('stg-msg');
+    const payload = {
+      theme: document.getElementById('stg-theme').value,
+      accent: stgAccentCleared ? '' : document.getElementById('stg-accent').value,
+      landing_enabled: document.getElementById('stg-landing').checked,
+      default_tier: document.getElementById('stg-tier').value,
+      vault_path: document.getElementById('stg-vault').value.trim(),
+    };
+    msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+      if (!ok) { msg.textContent = d.error || 'Could not save.'; return; }
+      window.__settings = d.settings;
+      stgAccentCleared = false;
+      stgApplyLive(d.settings);
+      stgFill(d.settings, d.vault_root);
+      msg.textContent = 'Saved ✓';
+      setTimeout(() => { if (msg.textContent === 'Saved ✓') msg.textContent = ''; }, 1600);
+    }).catch(() => { msg.textContent = 'Could not save.'; });
+  }
+
+  /* ── Connections (Settings) — API keys, model backends, inboxes ── */
+  function stgConnections() {
+    const s = window.__settings || {};
+    const host = document.getElementById('stg-connections');
+    host.innerHTML = `
+      <div class="proj-list-head">Connections</div>
+      <form class="np-form" onsubmit="return false">
+        <div class="np-row">
+          <label>Anthropic API key (smart tier)<span class="np-row" style="gap:8px">
+            <input id="con-anthropic" type="password" autocomplete="off"
+                   placeholder="${s.anthropic_api_key && s.anthropic_api_key.set ? 'saved ✓ — enter to replace' : 'sk-ant-…'}">
+            <button type="button" class="pill" onclick="stgSaveKey('anthropic_api_key','con-anthropic')">Save</button>
+            <button type="button" class="pill" onclick="stgClearKey('anthropic_api_key')">Clear</button>
+          </span></label>
+          <label>OpenAI API key (GPT tier)<span class="np-row" style="gap:8px">
+            <input id="con-openai" type="password" autocomplete="off"
+                   placeholder="${s.openai_api_key && s.openai_api_key.set ? 'saved ✓ — enter to replace' : 'sk-…'}">
+            <button type="button" class="pill" onclick="stgSaveKey('openai_api_key','con-openai')">Save</button>
+            <button type="button" class="pill" onclick="stgClearKey('openai_api_key')">Clear</button>
+          </span></label>
+        </div>
+        <div class="np-msg">Keys are stored in a local, gitignored file on this machine and never returned by the API. Environment variables win if both are set.</div>
+        <div class="np-msg" id="con-msg"></div>
+        <div class="np-msg" id="con-backends">Checking backends…</div>
+        <div class="proj-list-head">Inboxes (read + drafts only — nothing can send)</div>
+        <div class="np-msg" id="con-inboxes">Loading…</div>
+        <div class="np-row">
+          <button type="button" class="pill" onclick="stgConnectEmail('gmail')">Connect Gmail</button>
+          <button type="button" class="pill" onclick="stgConnectEmail('outlook')">Connect Outlook</button>
+          <span class="np-msg" id="con-email-msg"></span>
+        </div>
+        <div class="np-msg">One-time setup: Gmail needs <code>GMAIL_OAUTH_CLIENT</code> pointing at a Google “Desktop app” client secret; Outlook needs <code>MS_OAUTH_CLIENT_ID</code>. See .env.example.</div>
+      </form>`;
+    fetch('/api/router/status').then(r => r.json()).then(st => {
+      const dot = t => `<span class="dot-sm ${st[t] && st[t].available ? 'up' : 'down'}"></span>`;
+      document.getElementById('con-backends').innerHTML =
+        `${dot('fast')} Ollama (local) &nbsp; ${dot('smart')} Anthropic API &nbsp; ` +
+        `${dot('openai')} OpenAI API &nbsp; ${dot('claude')} Claude CLI (subscription)`;
+    }).catch(() => {});
+    stgListInboxes();
+  }
+
+  function stgListInboxes() {
+    fetch('/api/inboxes').then(r => r.json()).then(d => {
+      const el = document.getElementById('con-inboxes');
+      if (!el) return;
+      const accts = d.accounts || [];
+      el.innerHTML = accts.length
+        ? accts.map(a => `• ${esc(a.address || a.id)} (${esc(a.provider)})`).join('<br>')
+        : 'No inboxes connected yet.';
+    }).catch(() => {});
+  }
+
+  function stgSaveKey(key, inputId) {
+    const v = document.getElementById(inputId).value.trim();
+    const msg = document.getElementById('con-msg');
+    if (!v) { msg.textContent = 'Enter a key first (or use Clear).'; return; }
+    fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                             body: JSON.stringify({ [key]: v }) })
+      .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+        msg.textContent = ok ? 'Key saved ✓' : (d.error || 'Could not save.');
+        if (ok) { window.__settings = d.settings; stgConnections(); loadRouterStatus(); }
+      }).catch(() => { msg.textContent = 'Could not save.'; });
+  }
+
+  function stgClearKey(key) {
+    fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                             body: JSON.stringify({ [key]: '' }) })
+      .then(r => r.json()).then(d => {
+        window.__settings = d.settings; stgConnections(); loadRouterStatus();
+      }).catch(() => {});
+  }
+
+  let conPoll = null;
+  function stgConnectEmail(provider) {
+    const msg = document.getElementById('con-email-msg');
+    msg.textContent = 'Opening the consent flow…';
+    fetch('/api/connect/email', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ provider }) })
+      .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+        if (!ok) { msg.textContent = d.error || 'Could not start.'; return; }
+        msg.textContent = 'Approve access in the browser window…';
+        clearInterval(conPoll);
+        conPoll = setInterval(() => {
+          fetch('/api/connect/status').then(r => r.json()).then(st => {
+            if (st.state === 'running') return;
+            clearInterval(conPoll);
+            msg.textContent = st.detail || '';
+            if (st.state === 'done') stgListInboxes();
+          }).catch(() => clearInterval(conPoll));
+        }, 1500);
+      }).catch(() => { msg.textContent = 'Could not start.'; });
   }
 
   /* ── Inbox (Gmail + Outlook) ── */
@@ -1970,6 +2240,7 @@
     const tier = c ? c.tier : 'fast';
     document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
     document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
+    document.getElementById('tier-openai').classList.toggle('on', tier === 'openai');
     document.getElementById('tier-claude').classList.toggle('on', tier === 'claude');
     const sel = document.getElementById('model-select');
     sel.style.display = tier === 'fast' ? '' : 'none';
@@ -2018,7 +2289,8 @@
     if (!t) { document.getElementById('tier-status').textContent = ''; return; }
     const cls = t.available ? 'up' : 'down';
     const state = t.available ? 'ready'
-      : (tier === 'fast' ? 'Ollama offline' : tier === 'claude' ? 'Claude CLI not found' : 'no API key');
+      : (tier === 'fast' ? 'Ollama offline' : tier === 'claude' ? 'Claude CLI not found'
+         : 'no API key — add one in Settings');
     const model = (tier === 'fast' && c && c.model) ? c.model : t.model;
     document.getElementById('tier-status').innerHTML =
       `<span class="dot-sm ${cls}"></span>${esc(model)} · ${state}`;
@@ -2275,6 +2547,7 @@
           <select id="tier-${esc(a.id)}" class="agent-tier-select" title="Which backend runs this agent">
             <option value="fast"   ${a.tier === 'fast'   ? 'selected' : ''}>⚡ fast · local</option>
             <option value="smart"  ${a.tier === 'smart'  ? 'selected' : ''}>🧠 smart · API</option>
+            <option value="openai" ${a.tier === 'openai' ? 'selected' : ''}>🤖 gpt · API</option>
             <option value="claude" ${a.tier === 'claude' ? 'selected' : ''}>✨ claude · plan</option>
           </select>
         </div>
@@ -2409,6 +2682,7 @@
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const lerp  = (a, b, t) => a + (b - a) * t;
     const disabled = () =>
+      document.documentElement.classList.contains('no-landing') ||
       window.matchMedia('(prefers-reduced-motion: reduce)').matches || window.innerWidth <= 640;
 
     let ticking = false;

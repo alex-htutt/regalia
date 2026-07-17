@@ -522,7 +522,7 @@ CHAT_TOOLS = ["search_vault", "read_note", "list_notes", "list_folder"]
 CHAT_WRITE_TOOLS = ["write_note", "create_project"]
 
 CHAT_SYSTEM = (
-    "You are a helpful assistant for Alex's Obsidian knowledge vault, \"Regalia\". "
+    "You are a helpful assistant for the user's Obsidian knowledge vault, \"Regalia\". "
     "You have tools to search, list, and read the real notes — use them to ground "
     "your answers in actual vault content instead of guessing. To answer a question "
     "about what a note says, find it (search_vault / list_folder / list_notes) and "
@@ -771,7 +771,7 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
     if not task:
         raise AgentError(f"{spec['name']} needs a task — tell it what to do.")
     tier = (tier or spec["tier"]).lower()
-    if tier not in ("fast", "smart", "claude"):
+    if tier not in router.TIERS:
         tier = spec["tier"]
 
     def _emit(ev):

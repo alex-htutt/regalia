@@ -43,9 +43,12 @@ from pathlib import Path
 
 import email_sources as cfg
 
-# Per-account token store. Gitignored (see .gitignore). Lives under dashboard/,
-# which the vault walk ignores, so tokens never surface as notes.
-TOKENS_DIR = Path(__file__).parent / ".email_tokens"
+# Per-account token store. Gitignored (see .gitignore). From source it lives
+# under dashboard/, which the vault walk ignores, so tokens never surface as
+# notes; packaged builds keep it in the per-user data dir (paths.data_dir).
+import paths
+
+TOKENS_DIR = paths.data_dir() / ".email_tokens"
 
 
 class MailboxError(Exception):

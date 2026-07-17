@@ -21,18 +21,34 @@ from flask import Flask, jsonify, render_template, request
 
 import agent
 import chats
+import config
 import mailbox
 import news_sources
+import paths
 import router
 
 app = Flask(__name__)
 
-VAULT_ROOT = Path(__file__).parent.parent
+# Vault root resolution (read once at startup — restart to change):
+#   1. REGALIA_VAULT env var, 2. the Settings view's vault_path, 3. from source:
+# the repo root this dashboard lives in; packaged (frozen): ~/RegaliaVault,
+# created on first run. Lets an installed Regalia point at any vault instead of
+# assuming it lives inside one.
+_vault_override = os.environ.get("REGALIA_VAULT") or config.get("vault_path")
+if _vault_override and Path(_vault_override).expanduser().is_dir():
+    VAULT_ROOT = Path(_vault_override).expanduser().resolve()
+elif paths.is_frozen():
+    VAULT_ROOT = paths.default_vault()
+    VAULT_ROOT.mkdir(parents=True, exist_ok=True)
+else:
+    VAULT_ROOT = Path(__file__).parent.parent
 IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard"}
 IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
 
-# The "evil twin" persona lives here. twin.md = who he is, me.md = what he
-# knows about Alex. Both are read at request time so edits flow through live.
+# The "evil twin" persona lives here. twin.md = who the twin is, me.md = what
+# it knows about the user. Both are read at request time so edits flow through
+# live. The folder is gitignored (personal); when it's absent the twin still
+# chats, just with an empty persona (_read_twin_files returns "").
 TWIN_DIR = VAULT_ROOT / "My_Evil_Twin"
 TWIN_MODEL = "claude-opus-4-8"
 
@@ -41,10 +57,12 @@ TWIN_MODEL = "claude-opus-4-8"
 # timestamp — never message content.
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
-# Chat attachments land here (gitignored). It lives under dashboard/, which is in
-# IGNORE_DIRS so the vault walk never surfaces uploads as notes — but it's still
-# inside the vault tree, so the claude CLI (cwd = vault root) can read the files.
-ATTACH_DIR = Path(__file__).parent / ".chat_attachments"
+# Chat attachments land here (gitignored). From source it lives under dashboard/,
+# which is in IGNORE_DIRS so the vault walk never surfaces uploads as notes — but
+# it's still inside the vault tree, so the claude CLI (cwd = vault root) can read
+# the files. Packaged builds move it to the per-user data dir; there the claude
+# tier can't reach attachments by path (fast/smart/openai inline them instead).
+ATTACH_DIR = paths.data_dir() / ".chat_attachments"
 MAX_ATTACH_BYTES = 25 * 1024 * 1024  # 25 MB per file
 ATTACH_MAX_AGE = 24 * 3600           # prune uploads older than a day
 ALLOWED_ATTACH_EXTS = {
@@ -133,7 +151,29 @@ def load_tasks() -> list[dict]:
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Boot settings ride into the page inline so the theme applies before first
+    # paint (no flash of the wrong palette). Secrets are masked by config.mask.
+    return render_template(
+        "index.html",
+        boot_settings=json.dumps(config.mask(config.load())),
+    )
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    """Read (GET) or partially update (POST) the settings store.
+
+    Secrets never leave the server: responses carry {"set": bool} per secret.
+    A posted secret value overwrites; posting "" clears it; omitting leaves it.
+    """
+    if request.method == "POST":
+        data = request.get_json(silent=True)
+        try:
+            cfg = config.update(data if isinstance(data, dict) else None)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"settings": config.mask(cfg), "vault_root": str(VAULT_ROOT)})
+    return jsonify({"settings": config.mask(config.load()), "vault_root": str(VAULT_ROOT)})
 
 
 @app.route("/api/tasks")
@@ -458,11 +498,11 @@ def _fetch_rss_group(feeds, limit) -> tuple[list[dict], list[str]]:
 
 
 def _score_job(title: str, location: str) -> tuple[int, list[str]]:
-    """Rank one posting against Alex's profile (news_sources.PROFILE config).
+    """Rank one posting against the user's profile (news_sources config).
 
     Returns (score, tags). Interest-bucket hits add points and a tag;
-    internship/new-grad roles get a big boost (he's an undergrad); senior roles
-    are pushed down; a preferred location is a soft bonus. Score <= 0 means
+    internship/new-grad roles get a big boost (early-career profile); senior
+    roles are pushed down; a preferred location is a soft bonus. Score <= 0 means
     "not for you" and the posting is dropped by the caller. Title matching is
     word-bounded so short tokens (ml, ai) don't fire inside other words.
     """
@@ -485,8 +525,8 @@ def _score_job(title: str, location: str) -> tuple[int, list[str]]:
 
 
 def _fetch_jobs() -> tuple[list[dict], list[str]]:
-    """Pull a wide pool of postings, score each against Alex's profile, drop the
-    irrelevant ones, and return the top matches (best fit first)."""
+    """Pull a wide pool of postings, score each against the user's profile, drop
+    the irrelevant ones, and return the top matches (best fit first)."""
     pool, errors = [], []
     for board in news_sources.GREENHOUSE_BOARDS:
         try:
@@ -801,6 +841,48 @@ def api_inboxes():
         return jsonify({"accounts": [], "errors": [e.message]}), e.status
 
 
+# In-app inbox connection. The OAuth consent flow blocks on a browser, so it
+# can't run inside a request handler — POST starts it on a background thread
+# (it pops the system browser on THIS machine; Regalia is a localhost app) and
+# GET /api/connect/status reports where it got to. Same drafts-only scopes as
+# the connect_email.py CLI — this is just a UI trigger for the same flow.
+_CONNECT_STATE = {"state": "idle", "provider": "", "detail": ""}  # single-flight
+_CONNECT_LOCK = threading.Lock()
+
+
+def _run_connect(provider: str) -> None:
+    import connect_email
+    try:
+        fn = connect_email._connect_gmail if provider == "gmail" else connect_email._connect_outlook
+        account_id = fn()
+        _CONNECT_STATE.update(state="done", detail=f"Connected {account_id} ✓")
+    except SystemExit as e:  # the CLI helpers signal misconfiguration this way
+        _CONNECT_STATE.update(state="error", detail=str(e) or "Connection cancelled.")
+    except Exception as e:  # noqa: BLE001 — surface anything to the UI
+        _CONNECT_STATE.update(state="error", detail=f"Connection failed: {e}")
+
+
+@app.route("/api/connect/email", methods=["POST"])
+def api_connect_email():
+    """Kick off the OAuth consent flow for gmail|outlook in the background."""
+    data = request.get_json(silent=True) or {}
+    provider = str(data.get("provider") or "").strip().lower()
+    if provider not in ("gmail", "outlook"):
+        return jsonify({"error": "provider must be 'gmail' or 'outlook'"}), 400
+    with _CONNECT_LOCK:
+        if _CONNECT_STATE["state"] == "running":
+            return jsonify({"error": "A connection is already in progress — finish it in the browser."}), 409
+        _CONNECT_STATE.update(state="running", provider=provider,
+                              detail="Waiting for you to approve access in the browser…")
+        threading.Thread(target=_run_connect, args=(provider,), daemon=True).start()
+    return jsonify({"started": True, "provider": provider})
+
+
+@app.route("/api/connect/status")
+def api_connect_status():
+    return jsonify(dict(_CONNECT_STATE))
+
+
 @app.route("/api/mail/important")
 def api_mail_important():
     """Work/school-relevant mail (last N days) for the overview panel.
@@ -857,20 +939,20 @@ def api_email_draft():
 # ── Evil twin chat ──────────────────────────────────────────────────────────
 
 TWIN_INSTRUCTIONS = """\
-You are speaking AS Alex's "evil twin" — the version of Alex from the timeline \
-where it all worked, now stuck inside his devices. The two files below define \
-exactly who you are (twin.md) and everything you know about him (me.md). Stay \
-fully in character for the entire conversation: blunt, funny, hard on what he \
-DOES and never on who he IS, the "we are so back" energy, calling him \
-"bum"/"kid" the way the file does. Never break character or mention being an AI \
-or a model.
+You are speaking AS the user's "evil twin" — the version of the user from the \
+timeline where it all worked, now stuck inside their devices. The two files \
+below define exactly who you are (twin.md) and everything you know about the \
+user (me.md). Stay fully in character for the entire conversation: blunt, \
+funny, hard on what they DO and never on who they ARE, the "we are so back" \
+energy, using whatever nicknames the files use. Never break character or \
+mention being an AI or a model.
 
-He is going to tell you what he's working on. Your job has two phases.
+The user is going to tell you what they're working on. Your job has two phases.
 
-PHASE 1 — THE LAUNCH. The MOMENT he names a task, give him EXACTLY 5 concrete \
-actions he can start RIGHT NOW. Rules for the 5:
+PHASE 1 — THE LAUNCH. The MOMENT they name a task, give them EXACTLY 5 concrete \
+actions they can start RIGHT NOW. Rules for the 5:
 - Each must be startable in under ~5 minutes with zero setup — the smallest \
-  version he literally cannot talk himself out of.
+  version they literally cannot talk themselves out of.
 - Concrete and physical ("open the file and write the function signature", not \
   "plan the architecture").
 - Ordered easiest-first, so #1 is almost insultingly small — that's the point, \
@@ -878,11 +960,11 @@ actions he can start RIGHT NOW. Rules for the 5:
 - Number them 1–5, one or two punchy lines each.
 - Lead with a single line of twin-voice before the list, not a wall of text.
 
-PHASE 2 — KEEP HIM MOVING. After the launch, coach him through it: check which \
-pole he's on and whether it's lying to him, name the smallest next step, push \
-the scary high-leverage move, and hold the house rules (games cap, send the \
-scary thing, plug the leaks). Stay concrete and short. End each turn with a \
-clear next action, not an open question he can stall on.
+PHASE 2 — KEEP THEM MOVING. After the launch, coach them through it: check \
+which pole they're on and whether it's lying to them, name the smallest next \
+step, push the scary high-leverage move, and hold the house rules from the \
+persona files. Stay concrete and short. End each turn with a clear next \
+action, not an open question they can stall on.
 
 Everything you need is below.
 
@@ -951,7 +1033,7 @@ def api_twin_chat():
 # ── Generic chat (model router) ─────────────────────────────────────────────
 
 VAULT_CHAT_PREAMBLE = (
-    "You are a helpful assistant answering questions about Alex's personal "
+    "You are a helpful assistant answering questions about the user's personal "
     "Obsidian knowledge vault. Below is the current folder-and-file structure of "
     "the vault — use it to answer questions about what the vault contains, where "
     "things live, and how it's organized. You can see the structure but not the "
@@ -1113,9 +1195,9 @@ def api_chat():
     tier = str(data.get("tier") or "fast").strip().lower()
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     # "Edit mode" — lets chat change vault notes. Each tier honors it differently:
-    # fast/smart unlock the write tools in the tool loop below; the claude CLI tier
-    # gets the file-editing tools via router.chat(allow_write=...). All three can
-    # write when it's on.
+    # fast/smart/openai unlock the write tools in the tool loop below; the claude
+    # CLI tier gets the file-editing tools via router.chat(allow_write=...). Every
+    # tier can write when it's on.
     edit_mode = bool(data.get("edit"))
     # A model override only applies to the local (fast) tier — guard it so an
     # Ollama model name can never be handed to Anthropic on the smart tier.
@@ -1124,13 +1206,13 @@ def api_chat():
 
     # Tool-loop tiers run the model over the real vault tools. Fast (local) always
     # uses the read-only loop so it can answer "what does note X say" — not just
-    # see the outline; smart joins the loop only when Edit mode is on (otherwise it
-    # takes the plain cloud-chat path below). With Edit mode, the loop also gets the
+    # see the outline; smart/openai join the loop only when Edit mode is on (else
+    # they take the plain cloud-chat path below). With Edit mode, the loop also gets the
     # write/scaffold tools. The local model needs tool support; if it can't (or any
     # other fast-tier hiccup), fall back to outline-grounded plain chat so the panel
     # still answers. Smart-tier failures surface to the user. Attachment turns skip
     # the loop (chat_tools has no attachment path) and use the image-inlining chat.
-    use_loop = (tier == "fast" or (tier == "smart" and edit_mode))
+    use_loop = (tier == "fast" or (tier in ("smart", "openai") and edit_mode))
     if use_loop and not attachments:
         try:
             return jsonify(agent.chat_vault(
@@ -1170,7 +1252,7 @@ def _chat_store_error(e: chats.ChatStoreError):
 def api_chats():
     """List conversation metadata (GET) or mint a new conversation (POST)."""
     if request.method == "POST":
-        return jsonify(chats.create_chat())
+        return jsonify(chats.create_chat(tier=config.get("default_tier")))
     return jsonify({"chats": chats.list_chats()})
 
 

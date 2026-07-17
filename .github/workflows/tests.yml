@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime deps (browser path — no pywebview needed)
+        run: pip install flask pyyaml anthropic google-auth-oauthlib msal mcp
+      - name: Smoke suite (the trust floor)
+        working-directory: dashboard
+        run: python -m unittest discover -s tests -v

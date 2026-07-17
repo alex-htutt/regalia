@@ -4,23 +4,26 @@ tags: [type/reference]
 status: active
 ---
 
-# Regalia
+# Regalia — the vault
 
-Obsidian knowledge vault + Cursor context system. Single home for all work: the summer internship (active) and side projects, with finished RPI coursework archived for reference. (Formerly "Work Vault" — renamed to **Regalia** v1.14; the on-disk folder is still `Work_Vault`.)
+This document describes the **vault** (the Obsidian knowledge base + Cursor context system) that the Regalia app runs on. For the app itself — features, install, configuration — see the repo-root `README.md`.
+
+The vault is a single home for all work: active projects and self-directed research, with finished coursework archived for reference. Private areas (internships, classes, personal projects) are **gitignored** — the public repo carries only this skeleton; add your own folders locally.
 
 ## Layout
-- `Internship-Projects/` — active work. One subfolder per assigned project, each with its own `_context_<project>.md`. Area-level status in `Internship-Projects/_context_internship_projects.md`.
-- `projects/` — personal/side projects (competitive programming, algo trading, embedded).
-- `research/` — self-directed learning outside classwork (RAG pipelines, ML, etc.). One subfolder per subject; add `_context_<subject>.md` when a topic gets dense.
+- `dashboard/` — **the Regalia app** (Flask). See root `README.md` and `dashboard/_context_dashboard.md`.
+- `projects/` — personal/side projects.
+- `research/` — self-directed learning (RAG pipelines, ML, etc.). One subfolder per subject; add `_context_<subject>.md` when a topic gets dense.
 - `archive/courses/` — finished RPI courses (engr2350, ecse2610, focs, phys, writ). Reference-only.
 - `meetings/`, `ideas/`, `attachments/` — cross-cutting.
+- *(local-only, gitignored)* `Internship-Projects/`, `schoolwork/`, and similar private areas — one subfolder per project, each with its own `_context_<project>.md`.
 - `templates/` — note templates (point Obsidian's Templates/Templater plugin here).
 - `.cursor/rules/` — Cursor `.mdc` rules. `global.mdc` always applies; `internship.mdc` and `projects.mdc` scope by path; `archive-*.mdc` are inactive references.
 - `.cursorignore` — keeps `.obsidian/`, `attachments/`, `templates/`, and view files (`*.base`, `*.canvas`) out of Cursor's index.
 
 ## Context model (3 layers)
 1. **Rules** (`.mdc`) — ambient, auto-loaded by file path. Keep lightweight.
-2. **`_context_<folder>.md`** — dense per-folder status file (named after its folder, e.g. `_context_pull_healthcare_card.md`). Prime a chat with `@file Internship-Projects/<project>/_context_<project>.md`.
+2. **`_context_<folder>.md`** — dense per-folder status file (named after its folder, e.g. `_context_payments_api.md`). Prime a chat with `@file <area>/<project>/_context_<project>.md`.
 3. **`@file`** — surgical, single-note context.
 
 ## Frontmatter schema
@@ -62,4 +65,4 @@ Needs the Claude Code CLI signed in to a Claude subscription for the `claude` ti
 **Further steps:** Stage 4 automations (an in-process scheduler running agents on a cron — e.g. a morning standup or inbox triage), run-history persistence + a write-confirm gate (the trust floor for unattended runs), then optional send-with-confirm for email. Full roadmap in `dashboard/PRODUCT_VISION.md`.
 
 ## Bases
-`Internship-Projects/internship.base` is a live table view (Obsidian 1.9+) filtering all `area/internship` notes — data lives in note frontmatter, not the `.base` file.
+Obsidian 1.9+ `.base` files give live table views over note frontmatter (e.g. filter all `area/projects` notes, sort by deadline). Data lives in the notes' frontmatter, not the `.base` file — keep tags/status accurate and the tables stay current.
