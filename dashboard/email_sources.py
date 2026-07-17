@@ -127,7 +127,7 @@ IMPORTANT_KEYWORDS = {
 
 # sender-address substring -> weight (e.g. school/work domains).
 IMPORTANT_SENDER_DOMAINS = {
-    ".edu": 3,          # any university address (rpi.edu, …)
+    ".edu": 3,          # any university address (example.edu, …)
     "greenhouse.io": 2, # recruiting pipeline mail
     "lever.co": 2,
 }

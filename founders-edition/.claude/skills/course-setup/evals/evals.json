@@ -3,7 +3,7 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "Set up my new class ANTH 2A at Foothill — syllabus attached.",
+      "prompt": "Set up my new class ANTH 2A at State University — syllabus attached.",
       "expected_output": "Reads vault CLAUDE.md + template; scaffolds schoolwork/anth2a/ with notes/problem-sets/exams/research + _context_anth2a.md (tag course/anth2a); links it from Home.md; ingests the syllabus into the context file (instructor, grading, calendar, links), marking unknowns _TBD_; offers to add deadlines to the calendar and build study materials.",
       "files": ["syllabus.pdf"]
     },

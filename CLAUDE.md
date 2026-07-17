@@ -24,7 +24,7 @@ deadline: YYYY-MM-DD
 related: []
 ```
 
-**Tag taxonomy:** `area/{internship,projects,schoolwork}` · `type/{daily-log,standup,meeting,project,lab,lecture,problem-set,reference}` · `status/{active,complete,archived}` · `course/<slug>` (schoolwork notes; lowercase slug matching the course folder name, e.g. `course/math1c`, `course/focs`). Always `category/subcategory` format.
+**Tag taxonomy:** `area/{internship,projects,schoolwork}` · `type/{daily-log,standup,meeting,project,lab,lecture,problem-set,reference}` · `status/{active,complete,archived}` · `course/<slug>` (schoolwork notes; lowercase slug matching the course folder name, e.g. `course/math1a`, `course/cs101`). Always `category/subcategory` format.
 
 ## Planning coding projects (macro + micro)
 
@@ -47,11 +47,12 @@ The micro plan exists so a building agent has a solid, component-level blueprint
 ## Cursor rules (auto-loaded by path)
 
 - `.cursor/rules/global.mdc` — always on; vault-wide defaults
-- `.cursor/rules/internship.mdc` — fires on `Internship-Projects/**`
-- `.cursor/rules/projects.mdc` — fires on `projects/**`
-- `.cursor/rules/research.mdc` — fires on `research/**`
 - `.cursor/rules/python.mdc` — fires on `**/*.py` (backend-first Python conventions)
-- `archive-*.mdc` — inactive reference rules for finished RPI courses
+
+The area-specific rules (`internship.mdc`, `projects.mdc`, `research.mdc`, and the
+`archive-*.mdc` finished-course archives) are the creator's personal workflow and are
+**not** part of the default/shipped vault. A de-identified, opt-in copy lives in
+`founders-edition/` — see its `README.md` to adopt them.
 
 ## Dashboard (`dashboard/`)
 

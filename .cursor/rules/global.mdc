@@ -17,4 +17,4 @@ Behavior:
 - Stay scoped: make the smallest change that satisfies the request; don't refactor or add abstractions unasked.
 - Match the repo's git history for commit messages: conventional-commit style, `type(scope): summary` (e.g. `feat(dashboard): …`).
 
-Active scope is `Internship-Projects/`, `projects/`, and `research/`. The `archive/` tree (finished RPI coursework) is reference-only — search it when relevant, but do not treat it as active work.
+Active scope is `Internship-Projects/`, `projects/`, and `research/`. The `archive/` tree (finished-course archives) is reference-only — search it when relevant, but do not treat it as active work.

@@ -60,6 +60,7 @@ schoolwork/
 Roblox_Dev/
 My_Evil_Twin/
 Resume/
+archive/courses/
 
 # --- Vendored third-party reading material (own license; fetch upstream instead) ---
 research/RAG-pipelines/resources/ai-system-design-guide-main/
@@ -71,3 +72,18 @@ dashboard/.external.json
 # --- PyInstaller build outputs (regalia.spec stays tracked) ---
 dashboard/build/
 dashboard/dist/
+
+# --- Founder's Edition: the creator's personal workflow, kept LOCAL only. ---
+# Regalia ships workflow-agnostic; a de-identified, opt-in copy of the reusable
+# parts lives in founders-edition/ (tracked). These in-place originals stay on
+# disk so the creator's own Cursor/Claude setup keeps working, but never ship.
+/projects/CLAUDE.md
+/research/CLAUDE.md
+/research/claude-cursor-rules-levels.md
+/.cursor/rules/internship.mdc
+/.cursor/rules/projects.mdc
+/.cursor/rules/research.mdc
+/.cursor/rules/archive-*.mdc
+/.claude/skills/
+/skills/course-setup/
+/templates/skills/

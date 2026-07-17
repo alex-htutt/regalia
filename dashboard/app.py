@@ -43,7 +43,7 @@ elif paths.is_frozen():
     VAULT_ROOT.mkdir(parents=True, exist_ok=True)
 else:
     VAULT_ROOT = Path(__file__).parent.parent
-IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard"}
+IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard", "founders-edition"}
 IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
 
 # Claude Code writes per-session transcripts here; each line carries a

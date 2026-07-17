@@ -461,6 +461,122 @@ class ExternalFolderTests(unittest.TestCase):
                 agent._safe_path(path, must_exist=True, scope=scope)
 
 
+class WorkflowRulesTests(unittest.TestCase):
+    """v1.29 adaptive workflow rules: vault runs keep the Regalia conventions;
+    external runs get the folder's OWN detected conventions (CLAUDE.md/AGENTS.md/
+    cursor rules/README) or a neutral no-scaffolding fallback — never _VAULT_RULES.
+    Same temp-registry/vault/external fixture as ExternalFolderTests."""
+
+    def setUp(self):
+        import tempfile
+        import externals
+        self.externals = externals
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        (base / "vault").mkdir()
+        (base / "outside" / "proj" / "sub").mkdir(parents=True)
+        self._orig_store = externals.EXTERNALS_PATH
+        self._orig_root = dashboard_app.VAULT_ROOT
+        externals.EXTERNALS_PATH = base / ".external.json"
+        dashboard_app.VAULT_ROOT = base / "vault"
+        self.vault = base / "vault"
+        self.outside = base / "outside" / "proj"
+        externals.add("proj", str(self.outside), self.vault)
+
+    def tearDown(self):
+        self.externals.EXTERNALS_PATH = self._orig_store
+        dashboard_app.VAULT_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def test_vault_scope_gets_vault_rules(self):
+        for folder in ("", "sub"):
+            if folder:
+                (self.vault / folder).mkdir(exist_ok=True)
+            rules = agent._workflow_rules(agent.resolve_scope(folder))
+            self.assertIn(agent._VAULT_RULES, rules, msg=folder or "(root)")
+            self.assertIn("[[wikilinks]]", rules)
+
+    def test_external_scope_never_gets_vault_rules(self):
+        rules = agent._workflow_rules(agent.resolve_scope("ext:proj"))
+        self.assertNotIn(agent._VAULT_RULES, rules)
+        self.assertNotIn("Obsidian", rules)
+        # Empty folder → the neutral anti-imposition fallback.
+        self.assertIn("Do NOT add YAML frontmatter", rules)
+
+    def test_detects_folder_claude_md(self):
+        (self.outside / "CLAUDE.md").write_text(
+            "Use tabs. Tests live in spec/.", encoding="utf-8")
+        rules = agent._workflow_rules(agent.resolve_scope("ext:proj"))
+        self.assertIn("Use tabs. Tests live in spec/.", rules)
+        self.assertIn("own working conventions", rules)
+        self.assertIn("CLAUDE.md", rules)
+        self.assertNotIn(agent._VAULT_RULES, rules)
+
+    def test_subfolder_scope_finds_connection_root_conventions(self):
+        (self.outside / "CLAUDE.md").write_text("root conventions", encoding="utf-8")
+        rules = agent._workflow_rules(agent.resolve_scope("ext:proj/sub"))
+        self.assertIn("root conventions", rules)
+
+    def test_priority_and_readme_fallback(self):
+        (self.outside / "README.md").write_text("just a readme", encoding="utf-8")
+        rules = agent._detect_external_workflow(agent.resolve_scope("ext:proj"))
+        self.assertIn("just a readme", rules)
+        self.assertIn("Context about this folder", rules)   # softer wrap
+        self.assertNotIn("Follow them instead", rules)
+        # A CLAUDE.md outranks the README.
+        (self.outside / "CLAUDE.md").write_text("the real rules", encoding="utf-8")
+        rules = agent._detect_external_workflow(agent.resolve_scope("ext:proj"))
+        self.assertIn("the real rules", rules)
+        self.assertNotIn("just a readme", rules)
+
+    def test_detected_content_is_capped(self):
+        (self.outside / "CLAUDE.md").write_text("x" * 20000, encoding="utf-8")
+        rules = agent._detect_external_workflow(agent.resolve_scope("ext:proj"))
+        self.assertLess(len(rules), agent._WORKFLOW_CHAR_CAP + 200)
+
+    def test_email_only_agents_get_no_workflow_rules(self):
+        # inbox_triage has no vault tools: the run_agent gate must never append
+        # vault rules to it (it had none before the v1.29 refactor either).
+        self.assertFalse(agent.supports_folder("inbox_triage"))
+        self.assertNotIn("Obsidian", agent.AGENTS["inbox_triage"]["system"])
+        self.assertNotIn("frontmatter", agent.AGENTS["inbox_triage"]["system"])
+
+    def test_claude_tier_external_run_system_is_adapted(self):
+        (self.outside / "CLAUDE.md").write_text("house style: kebab-case",
+                                                encoding="utf-8")
+        seen = {}
+        original = router.claude_code_stream
+        router.claude_code_stream = lambda prompt, **kw: (
+            seen.update(prompt=prompt, **kw),
+            iter([{"type": "result", "subtype": "success",
+                   "is_error": False, "result": "ok"}]),
+        )[1]
+        try:
+            agent.run_agent("summarizer", "look around", tier="claude",
+                            folder="ext:proj")
+        finally:
+            router.claude_code_stream = original
+        self.assertIn("house style: kebab-case", seen["system"])
+        self.assertNotIn(agent._VAULT_RULES, seen["system"])
+        self.assertNotIn("Home.md", seen["system"])         # no vault scaffolding steps
+        self.assertIn("matching the folder's existing formats", seen["system"])
+
+    def test_claude_tier_vault_run_system_unchanged(self):
+        seen = {}
+        original = router.claude_code_stream
+        router.claude_code_stream = lambda prompt, **kw: (
+            seen.update(prompt=prompt, **kw),
+            iter([{"type": "result", "subtype": "success",
+                   "is_error": False, "result": "ok"}]),
+        )[1]
+        try:
+            agent.run_agent("summarizer", "look around", tier="claude")
+        finally:
+            router.claude_code_stream = original
+        self.assertIn(agent._VAULT_RULES, seen["system"])
+        self.assertIn(agent._CLAUDE_AGENT_RULES, seen["system"])
+
+
 class ClaudeAgentTierTests(unittest.TestCase):
     """The subscription `claude` tier routes the Agents view through the streamed
     CLI runner (not the in-process tool loop) and maps its events to step events.
@@ -819,7 +935,7 @@ class ImportantMailTests(unittest.TestCase):
     def test_scorer_boosts_school_and_work(self):
         score, why = mailbox._importance_score({
             "subject": "Assignment 3 due Friday", "snippet": "submission deadline",
-            "from": "prof@rpi.edu", "unread": True})
+            "from": "prof@example.edu", "unread": True})
         self.assertGreaterEqual(score, email_sources.IMPORTANT_MIN_SCORE)
         self.assertIn("assignment", why)
         self.assertIn(".edu", why)
@@ -849,7 +965,7 @@ class ImportantMailTests(unittest.TestCase):
             {"id": "m1", "subject": "Interview schedule", "snippet": "onboarding",
              "from": "HR <hr@corp.com>", "date": fresh, "unread": True},
             {"id": "m2", "subject": "Exam deadline", "snippet": "",
-             "from": "prof@rpi.edu", "date": stale, "unread": True},   # too old
+             "from": "prof@example.edu", "date": stale, "unread": True},   # too old
             {"id": "m3", "subject": "Weekend sale", "snippet": "unsubscribe",
              "from": "promo@shop.com", "date": fresh, "unread": False},  # junk
         ]}

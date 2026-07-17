@@ -578,6 +578,89 @@ def _scope_note(scope: AccessScope) -> str:
     )
 
 
+# External folders keep their own conventions: agents must never impose the
+# Regalia vault schema on a connected folder. If the folder declares a workflow
+# (CLAUDE.md, AGENTS.md, cursor rules, …) we inject that instead; otherwise
+# this neutral fallback applies.
+_GENERIC_EXTERNAL_RULES = (
+    "You are working in the user's own folder, which does not follow Regalia's "
+    "vault conventions. Do NOT add YAML frontmatter, [[wikilinks]], _context_ "
+    "files, or any Regalia scaffolding. Match the folder's existing structure, "
+    "file types, and naming. Use the tools to read real content — never invent "
+    "file contents or paths. When you finish, give a short plain-text summary "
+    "of what you did."
+)
+
+# Convention files probed (in priority order) inside an external folder. Only
+# the first group that yields content is used; .cursor/rules/*.mdc are read raw
+# and concatenated (no frontmatter parsing).
+_WORKFLOW_FILES = ("CLAUDE.md", "AGENTS.md", ".cursor/rules/*.mdc",
+                   ".github/copilot-instructions.md", "README.md")
+_WORKFLOW_CHAR_CAP = 4000
+
+
+def _external_conn_root(scope: AccessScope) -> Path | None:
+    """The registered connection root for an external scope (label ext:<name>[/sub])."""
+    if scope.kind != "external" or not scope.label.lower().startswith("ext:"):
+        return None
+    name = scope.label[4:].split("/", 1)[0]
+    match = next((p for n, p in externals.load().items()
+                  if n.lower() == name.lower()), None)
+    return Path(match).resolve() if match else None
+
+
+def _detect_external_workflow(scope: AccessScope) -> str:
+    """Read the external folder's own convention files, wrapped for injection.
+
+    Probes the run's scope root first, then the registered connection root (an
+    ext:<name>/sub scope roots at the subfolder while CLAUDE.md usually lives at
+    the connection root). Best-effort: unreadable files are skipped, content is
+    capped, and "" means nothing was found.
+    """
+    roots = [scope.root]
+    conn = _external_conn_root(scope)
+    if conn is not None and conn != scope.root:
+        roots.append(conn)
+    for root in roots:
+        for pattern in _WORKFLOW_FILES:
+            try:
+                files = sorted(root.glob(pattern)) if "*" in pattern else \
+                    [root / pattern]
+                parts = []
+                for f in files:
+                    if not f.is_file():
+                        continue
+                    text = f.read_text(encoding="utf-8", errors="replace").strip()
+                    if text:
+                        parts.append((f.name, text))
+                if not parts:
+                    continue
+                body = "\n\n".join(f"--- {name} ---\n{text}" if len(parts) > 1
+                                   else text for name, text in parts)
+                body = body[:_WORKFLOW_CHAR_CAP]
+                names = ", ".join(name for name, _ in parts)
+                if pattern == "README.md":
+                    return (
+                        f"Context about this folder (from its {names}) — use it to "
+                        "match the project's structure and purpose; do not impose "
+                        f"any other schema:\n\n{body}"
+                    )
+                return (
+                    f"This folder defines its own working conventions (from "
+                    f"{names}). Follow them instead of any other schema:\n\n{body}"
+                )
+            except OSError:
+                continue
+    return ""
+
+
+def _workflow_rules(scope: AccessScope) -> str:
+    """The workflow block appended to a vault-tool agent's system prompt."""
+    if scope.kind == "external":
+        return "\n\n" + (_detect_external_workflow(scope) or _GENERIC_EXTERNAL_RULES)
+    return "\n\n" + _VAULT_RULES
+
+
 AGENTS = {
     "summarizer": {
         "id": "summarizer",
@@ -596,7 +679,7 @@ AGENTS = {
             "recent logs, read the latest few with read_note, then synthesize a tight "
             "standup: what got done, what's next, and any blockers. If the user asks you "
             "to save it, write it with write_note as a type/standup note with correct "
-            "frontmatter; otherwise just return the standup text. " + _VAULT_RULES
+            "frontmatter; otherwise just return the standup text."
         ),
     },
     "scaffolder": {
@@ -616,7 +699,7 @@ AGENTS = {
             "folders with list_folder and reuse one that fits, else choose a short new "
             "name — default 'projects'), write a one-line topic, and call create_project "
             "once. If the brief is too vague to name a project, ask for the missing "
-            "detail instead of guessing. " + _VAULT_RULES
+            "detail instead of guessing."
         ),
     },
     "researcher": {
@@ -635,7 +718,7 @@ AGENTS = {
             "relevant notes, then synthesize a well-structured research note (overview, "
             "key findings with note references via [[wikilinks]], open questions). Save it "
             "with write_note under the relevant project's research/ folder as a "
-            "type/research note with proper frontmatter, then summarize what you wrote. " + _VAULT_RULES
+            "type/research note with proper frontmatter, then summarize what you wrote."
         ),
     },
     "inbox_triage": {
@@ -817,6 +900,25 @@ _CLAUDE_AGENT_RULES = (
     "short plain-text summary."
 )
 
+# External-scope variant: same tool translation, but no Regalia scaffolding
+# steps — the connected folder keeps its own structure and file formats.
+_CLAUDE_EXTERNAL_AGENT_RULES = (
+    "\n\nRUNTIME NOTE: You are running with your own built-in tools (Read, Grep, "
+    "Glob, and — when this task involves saving work — Write and Edit), with the "
+    "run's assigned folder as your current working directory. Any tool names "
+    "referenced above (search_vault, read_note, list_notes, list_folder, "
+    "write_note, create_project) are conceptual — accomplish the equivalent with "
+    "your own tools: search with Grep/Glob, open files with Read, and save work "
+    "with Write/Edit, matching the folder's existing formats and naming. Finish "
+    "with a short plain-text summary."
+)
+
+
+def _claude_runtime_note(scope: AccessScope) -> str:
+    """The tool-translation note for the claude CLI tier, per scope kind."""
+    return (_CLAUDE_EXTERNAL_AGENT_RULES if scope.kind == "external"
+            else _CLAUDE_AGENT_RULES)
+
 # The email tools ride to the claude tier over MCP (mail_mcp.py) — the CLI can't
 # call our in-process Python tools, but it can call the same functions through the
 # mailbox MCP server, granted per-tool as mcp__mailbox__<name>.
@@ -894,7 +996,7 @@ def _run_agent_claude(spec, task, emit, scope: AccessScope) -> dict:
         # Bare Read/Edit rules would approve access system-wide. Relative glob
         # rules make the selected cwd the actual boundary (including symlinks).
         allowed += ["Read(./**)"] + (["Edit(./**)"] if writes else [])
-        system += _CLAUDE_AGENT_RULES + _scope_note(scope)
+        system += _workflow_rules(scope) + _claude_runtime_note(scope) + _scope_note(scope)
     if email_tools:
         mcp_config = _mailbox_mcp_config()
         allowed += [f"mcp__mailbox__{t}" for t in email_tools]
@@ -998,7 +1100,12 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
         return _run_agent_claude(spec, task, _emit, scope)
 
     tools = [TOOL_SCHEMAS[name] for name in spec["tools"] if name in TOOL_SCHEMAS]
-    system = spec["system"] + (_scope_note(scope) if supports_folder(agent_id) else "")
+    # Workflow rules are chosen per-run from the scope (vault conventions vs. the
+    # external folder's own detected conventions) — vault-tool agents only, so
+    # email-only agents like inbox_triage never get vault rules injected.
+    system = spec["system"]
+    if supports_folder(agent_id):
+        system += _workflow_rules(scope) + _scope_note(scope)
     messages = [{"role": "user", "content": [{"type": "text", "text": task}]}]
 
     _emit({"type": "start", "agent": agent_id, "tier": tier, "task": task})

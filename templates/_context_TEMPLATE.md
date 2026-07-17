@@ -1,6 +1,6 @@
 ---
 date: YYYY-MM-DD
-tags: [area/internship, type/reference]
+tags: [area/projects, type/reference]
 status: active
 topic: ""
 deadline: YYYY-MM-DD

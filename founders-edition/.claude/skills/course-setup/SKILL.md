@@ -3,7 +3,7 @@ name: course-setup
 description: >-
   Scaffold and maintain a college/university course inside this Obsidian vault, and generate study
   materials from its syllabus and lecture notes. Use this whenever the user starts, adds, or sets up a
-  class or course ("set up Math 1C", "new class at Foothill", "make a project for this course"), uploads a
+  class or course ("set up Math 1C", "new class at State University", "make a project for this course"), uploads a
   syllabus or lecture PDF for a class, asks for a problem set / study guide / practice quiz / practice exam
   built from course material, or wants course deadlines (exams, assignments, learning checks) on their calendar —
   even if they don't say the word "skill" or spell out every step. It follows the vault's own conventions
@@ -33,7 +33,7 @@ Why: the value of this vault is its consistency. A course that ignores the schem
 
 ## 1. Scaffold the course folder (the spine)
 - **Location:** active coursework lives under `schoolwork/<slug>/` (never `archive/`, which is finished/reference-only). Confirm only if genuinely ambiguous.
-- **Slug:** lowercase, department+number smashed together, matching existing slugs (e.g. `math1c`, `ecse2610`). The tag is `course/<slug>`.
+- **Slug:** lowercase, department+number smashed together, matching existing slugs (e.g. `math1a`, `phys2a`). The tag is `course/<slug>`.
 - **Subfolders:** default `notes/`, `problem-sets/`, `exams/`, `research/` for a class (adapt — e.g. `code/` for CS). Keep empty folders in git with a `.gitkeep`.
 - **Context file:** copy the template to `schoolwork/<slug>/_context_<slug>.md`. Fill what you know; mark the rest `_TBD (syllabus)_`. Use the required frontmatter (`date`, `tags: [course/<slug>, type/reference, status/active]`, `status`, `topic`, `deadline`, `related`).
 - **Register it:** add a `[[wikilink]]` from `Home.md` under an active/schoolwork section, per the vault's new-project convention.
@@ -59,5 +59,5 @@ A single "set up my class" request usually means: scaffold (above) → syllabus 
 - **Don't invent** APIs, dates, citations, or course facts; say when unsure and offer to check.
 
 ## Example
-Input: "set up my new class, ECON 1A at De Anza — here's the syllabus" (PDF attached)
+Input: "set up my new class, ECON 1A at State College — here's the syllabus" (PDF attached)
 Action: load vault `CLAUDE.md` + template → scaffold `schoolwork/econ1a/` with subfolders + `_context_econ1a.md` (tag `course/econ1a`) → link from `Home.md` → read `references/syllabus-intake.md` and fill the context file → offer study materials (`references/study-materials.md`) and calendar dates (`references/calendar.md`).

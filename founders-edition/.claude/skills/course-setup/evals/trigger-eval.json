@@ -1,6 +1,6 @@
 [
-  {"query": "just enrolled in PHYS 4A at Foothill for fall — can you set it up in my vault? syllabus is attached", "should_trigger": true},
-  {"query": "new class, econ 1a de anza. here's the green sheet pdf", "should_trigger": true},
+  {"query": "just enrolled in PHYS 4A at State University for fall — can you set it up in my vault? syllabus is attached", "should_trigger": true},
+  {"query": "new class, econ 1a state college. here's the green sheet pdf", "should_trigger": true},
   {"query": "i dropped the CHEM 1A lecture slides into the folder, make me a practice quiz for the first week", "should_trigger": true},
   {"query": "can you add my math 1c midterm and final to my calendar? theyre on the syllabus", "should_trigger": true},
   {"query": "make a study guide for the integration-techniques unit in my calc class, with practice problems and full solutions", "should_trigger": true},
