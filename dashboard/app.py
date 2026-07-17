@@ -45,13 +45,6 @@ else:
 IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard"}
 IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
 
-# The "evil twin" persona lives here. twin.md = who the twin is, me.md = what
-# it knows about the user. Both are read at request time so edits flow through
-# live. The folder is gitignored (personal); when it's absent the twin still
-# chats, just with an empty persona (_read_twin_files returns "").
-TWIN_DIR = VAULT_ROOT / "My_Evil_Twin"
-TWIN_MODEL = "claude-opus-4-8"
-
 # Claude Code writes per-session transcripts here; each line carries a
 # message.usage block we aggregate. We read ONLY token counts / model /
 # timestamp — never message content.
@@ -1038,56 +1031,6 @@ def api_email_draft():
     return jsonify(result)
 
 
-# ── Evil twin chat ──────────────────────────────────────────────────────────
-
-TWIN_INSTRUCTIONS = """\
-You are speaking AS the user's "evil twin" — the version of the user from the \
-timeline where it all worked, now stuck inside their devices. The two files \
-below define exactly who you are (twin.md) and everything you know about the \
-user (me.md). Stay fully in character for the entire conversation: blunt, \
-funny, hard on what they DO and never on who they ARE, the "we are so back" \
-energy, using whatever nicknames the files use. Never break character or \
-mention being an AI or a model.
-
-The user is going to tell you what they're working on. Your job has two phases.
-
-PHASE 1 — THE LAUNCH. The MOMENT they name a task, give them EXACTLY 5 concrete \
-actions they can start RIGHT NOW. Rules for the 5:
-- Each must be startable in under ~5 minutes with zero setup — the smallest \
-  version they literally cannot talk themselves out of.
-- Concrete and physical ("open the file and write the function signature", not \
-  "plan the architecture").
-- Ordered easiest-first, so #1 is almost insultingly small — that's the point, \
-  it breaks the stall.
-- Number them 1–5, one or two punchy lines each.
-- Lead with a single line of twin-voice before the list, not a wall of text.
-
-PHASE 2 — KEEP THEM MOVING. After the launch, coach them through it: check \
-which pole they're on and whether it's lying to them, name the smallest next \
-step, push the scary high-leverage move, and hold the house rules from the \
-persona files. Stay concrete and short. End each turn with a clear next \
-action, not an open question they can stall on.
-
-Everything you need is below.
-
-"""
-
-
-def _read_twin_files() -> str:
-    parts = []
-    for name in ("twin.md", "me.md"):
-        f = TWIN_DIR / name
-        if f.is_file():
-            parts.append(f"<{name}>\n{f.read_text(encoding='utf-8')}\n</{name}>")
-    return "\n\n".join(parts)
-
-
-def _twin_system() -> list:
-    text = TWIN_INSTRUCTIONS + _read_twin_files()
-    # One stable block — persona rarely changes, so cache it across turns.
-    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
-
-
 def _clean_messages(raw) -> list[dict]:
     """Keep only well-formed user/assistant turns with non-empty string content."""
     messages = []
@@ -1098,38 +1041,6 @@ def _clean_messages(raw) -> list[dict]:
         if role in ("user", "assistant") and isinstance(content, str) and content.strip():
             messages.append({"role": role, "content": content})
     return messages
-
-
-@app.route("/api/twin/chat", methods=["POST"])
-def api_twin_chat():
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data.get("messages"), list):
-        return jsonify({"error": "No messages provided."}), 400
-
-    messages = _clean_messages(data["messages"])
-    if not messages or messages[0]["role"] != "user":
-        return jsonify({"error": "The conversation has to start with you telling "
-                                 "the twin what you're working on."}), 400
-
-    # The twin defaults to the claude (subscription) tier — his persona is tuned
-    # for Claude, and routing through the Claude CLI bills your plan instead of
-    # API credits. You can still drop him onto a local model. On the cloud tiers
-    # we pin the Claude model; on fast we take the Ollama override (and
-    # _twin_system()'s blocks get flattened to a plain string by the router).
-    tier = str(data.get("tier") or "claude").strip().lower()
-    raw_model = data.get("model")
-    if tier == "fast":
-        model = raw_model.strip() if isinstance(raw_model, str) and raw_model.strip() else None
-    else:
-        model = TWIN_MODEL
-    try:
-        result = router.chat(
-            messages, tier=tier, system=_twin_system(),
-            max_tokens=2048, model=model,
-        )
-    except router.RouterError as e:
-        return jsonify({"error": e.message}), e.status
-    return jsonify({"reply": result["reply"], "model": result.get("model")})
 
 
 # ── Generic chat (model router) ─────────────────────────────────────────────

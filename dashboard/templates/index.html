@@ -401,49 +401,12 @@
   /* ── Empty / loading ── */
   .empty { text-align: center; padding: 56px 0; color: var(--faint); font-size: 13px; }
 
-  /* ── Evil twin chat (sidebar view; reuses the chat-box shell) ── */
-  .twin-msg { font-size: 13px; line-height: 1.55; max-width: 88%; }
-  .twin-msg.user {
-    align-self: flex-end;
-    background: var(--accent); color: var(--accent-fg);
-    padding: 8px 12px; border-radius: 12px 12px 3px 12px;
-    white-space: pre-wrap; word-wrap: break-word;
-  }
-  .twin-msg.twin {
-    align-self: flex-start;
-    background: var(--surface); color: var(--text);
-    border: 1px solid var(--border);
-    padding: 10px 13px; border-radius: 12px 12px 12px 3px;
-  }
-  .twin-msg.twin .md { font-size: 13px; }
-  .twin-msg.twin .md p { margin: 4px 0; }
-  .twin-msg.twin .md ol, .twin-msg.twin .md ul { margin: 4px 0 4px; padding-left: 20px; }
-  .twin-msg.twin .md li { margin: 3px 0; }
-  .twin-msg.err {
-    align-self: stretch; max-width: 100%;
-    background: var(--err-bg); color: var(--red);
-    border: 1px solid var(--err-border);
-    padding: 8px 12px; border-radius: 8px; font-size: 12px;
-  }
-  .twin-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
-
-  .twin-input {
-    display: flex; gap: 8px; padding: 12px;
-    border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
-  }
-  .twin-input textarea {
-    flex: 1; resize: none; border: 1px solid var(--border); border-radius: 8px;
-    padding: 8px 10px; font-size: 13px; font-family: inherit;
-    background: var(--bg); color: var(--text); outline: none;
-    max-height: 120px; line-height: 1.4;
-  }
-  .twin-input textarea:focus { border-color: var(--border-hover); }
-  .twin-send {
+  .send-btn {
     border: none; background: var(--accent); color: var(--accent-fg);
     border-radius: 8px; padding: 0 14px; cursor: pointer;
     font-size: 13px; font-weight: 600; flex-shrink: 0;
   }
-  .twin-send:disabled { opacity: 0.45; cursor: default; }
+  .send-btn:disabled { opacity: 0.45; cursor: default; }
 
   /* ── Workspace shell (sidebar + views) ── */
   .app { display: flex; align-items: flex-start; position: relative; z-index: 1; }
@@ -1002,7 +965,6 @@
     <button class="nav"    data-view="projects" onclick="setView('projects')">📁 Projects</button>
     <button class="nav"    data-view="browse"   onclick="setView('browse')">🗂️ Browse</button>
     <button class="nav"    data-view="chat"     onclick="setView('chat')">💬 Chat</button>
-    <button class="nav"    data-view="twin"     onclick="setView('twin')">😈 Twin</button>
     <button class="nav"    data-view="inbox"    onclick="setView('inbox')">📨 Inbox</button>
     <button class="nav"    data-view="agents"   onclick="setView('agents')">🤖 Agents</button>
     <button class="nav"    data-view="settings" onclick="setView('settings')">⚙️ Settings</button>
@@ -1105,35 +1067,9 @@
                     onclick="document.getElementById('chat-file').click()">📎</button>
             <textarea id="chat-text" rows="1" placeholder="Message the model…"
                       oninput="chatAutogrow()" onkeydown="chatKey(event)"></textarea>
-            <button class="twin-send" id="chat-send" onclick="chatSend()">Send</button>
+            <button class="send-btn" id="chat-send" onclick="chatSend()">Send</button>
           </div>
         </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="view" data-view="twin" hidden>
-      <div class="view-head">
-        <h2>😈 Evil Twin</h2>
-        <p>The version of you that actually did it. Tell him what you're working on — he hands you 5 things to start in the next 5 minutes, then keeps you moving.</p>
-      </div>
-      <div class="panel-wrap">
-        <div class="tier-bar">
-          <div class="filter-group">
-            <button class="pill on" id="twin-tier-claude" onclick="setTwinTier('claude')">✨ Claude · plan</button>
-            <button class="pill"    id="twin-tier-fast"   onclick="setTwinTier('fast')">⚡ Fast · local</button>
-          </div>
-          <select class="model-select" id="twin-model-select" onchange="setTwinModel(this.value)" style="display:none;" title="Local model"></select>
-          <span class="tier-status" id="twin-tier-status"></span>
-          <button class="chat-clear" onclick="clearTwin()" title="Reset conversation">Reset</button>
-        </div>
-        <div class="chat-box">
-          <div class="chat-log" id="twin-log"></div>
-          <div class="chat-input">
-            <textarea id="twin-text" rows="1" placeholder="What are you working on?"
-                      oninput="twinAutogrow()" onkeydown="twinKey(event)"></textarea>
-            <button class="twin-send" id="twin-send" onclick="twinSend()">Send</button>
-          </div>
         </div>
       </div>
     </section>
@@ -1253,87 +1189,8 @@
 </div>
 
 <script>
-  /* ── Evil twin chat (sidebar view) ── */
-  let twinMsgs = [];          // full history sent to the API
-  let twinBusy = false;
-  let twinStarted = false;
-  let twinTier = 'claude';    // defaults to Claude on your subscription; can drop to a local model
-  let twinModel = null;       // local model override on the fast tier
-
-  // First time the Twin view opens: seed the intro, wire status + model picker.
-  function initTwin() {
-    if (!twinStarted) {
-      twinStarted = true;
-      addTwinBubble('twin',
-        "You finally opened this. Took you long enough, bum.\n\n" +
-        "Tell me what you're working on and I'll hand you 5 things you can start " +
-        "in the next 5 minutes — the smallest versions you can't talk yourself out of. " +
-        "Then I'll keep you moving.");
-    }
-    loadRouterStatus();
-    loadTwinModels();
-    document.getElementById('twin-text').focus();
-  }
-
-  function loadTwinModels() {
-    const sel = document.getElementById('twin-model-select');
-    fetch('/api/ollama/models').then(r => r.json()).then(d => {
-      const models = d.models || [];
-      if (!models.length) {
-        sel.innerHTML = '<option>no local models</option>';
-        sel.disabled = true; twinModel = null;
-      } else {
-        sel.disabled = false;
-        sel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
-        const def = models.includes(d.default) ? d.default
-                  : (models.find(m => m.startsWith(d.default + ':')) || models[0]);
-        sel.value = def; twinModel = def;
-      }
-      sel.style.display = twinTier === 'fast' ? '' : 'none';
-      renderTwinTierStatus();
-    }).catch(() => {});
-  }
-
-  function setTwinModel(m) { twinModel = m; renderTwinTierStatus(); }
-
-  function renderTwinTierStatus() {
-    if (!routerStatus) return;
-    const t = routerStatus[twinTier];
-    if (!t) { document.getElementById('twin-tier-status').textContent = ''; return; }
-    const cls = t.available ? 'up' : 'down';
-    const state = t.available ? 'ready'
-      : (twinTier === 'fast' ? 'Ollama offline' : twinTier === 'claude' ? 'Claude CLI not found' : 'no API key');
-    const model = (twinTier === 'fast' && twinModel) ? twinModel : t.model;
-    document.getElementById('twin-tier-status').innerHTML =
-      `<span class="dot-sm ${cls}"></span>${esc(model)} · ${state}`;
-  }
-
-  function setTwinTier(tier) {
-    twinTier = tier;
-    document.getElementById('twin-tier-claude').classList.toggle('on', tier === 'claude');
-    document.getElementById('twin-tier-fast').classList.toggle('on', tier === 'fast');
-    document.getElementById('twin-model-select').style.display = tier === 'fast' ? '' : 'none';
-    renderTwinTierStatus();
-  }
-
-  function clearTwin() {
-    twinMsgs = [];
-    document.getElementById('twin-log').innerHTML = '';
-    addTwinBubble('twin', "Wiped it. So — what are you working on now, bum?");
-  }
-
-  function twinAutogrow() {
-    const t = document.getElementById('twin-text');
-    t.style.height = 'auto';
-    t.style.height = Math.min(t.scrollHeight, 120) + 'px';
-  }
-
-  function twinKey(e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); twinSend(); }
-  }
-
-  function twinMd(src) {
-    // Render twin replies: paragraphs, **bold**, and numbered/bulleted lists.
+  function renderMd(src) {
+    // Render lightweight model replies: paragraphs, **bold**, and simple lists.
     let html = '', list = null;  // list = 'ol' | 'ul' | null
     const close = () => { if (list) { html += `</${list}>`; list = null; } };
     const inline = s => esc(s)
@@ -1355,62 +1212,6 @@
     }
     close();
     return html;
-  }
-
-  function addTwinBubble(kind, text) {
-    const log = document.getElementById('twin-log');
-    const div = document.createElement('div');
-    div.className = 'twin-msg ' + kind;
-    if (kind === 'twin') div.innerHTML = '<div class="md">' + twinMd(text) + '</div>';
-    else div.textContent = text;
-    log.appendChild(div);
-    log.scrollTop = log.scrollHeight;
-    return div;
-  }
-
-  function twinSend() {
-    if (twinBusy) return;
-    const t = document.getElementById('twin-text');
-    const text = t.value.trim();
-    if (!text) return;
-
-    addTwinBubble('user', text);
-    twinMsgs.push({ role: 'user', content: text });
-    t.value = ''; twinAutogrow();
-
-    twinBusy = true;
-    document.getElementById('twin-send').disabled = true;
-    const log = document.getElementById('twin-log');
-    const typing = document.createElement('div');
-    typing.className = 'twin-typing';
-    typing.textContent = (twinTier === 'fast' ? (twinModel || 'local model') : 'the twin') + ' is typing…';
-    log.appendChild(typing);
-    log.scrollTop = log.scrollHeight;
-
-    fetch('/api/twin/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: twinMsgs, tier: twinTier, model: twinTier === 'fast' ? twinModel : null }),
-    })
-      .then(r => r.json().then(d => ({ ok: r.ok, d })))
-      .then(({ ok, d }) => {
-        typing.remove();
-        if (!ok || d.error) {
-          addTwinBubble('err', d.error || 'Something went wrong reaching the twin.');
-          return;
-        }
-        addTwinBubble('twin', d.reply);
-        twinMsgs.push({ role: 'assistant', content: d.reply });
-      })
-      .catch(() => {
-        typing.remove();
-        addTwinBubble('err', "Couldn't reach the twin — is the dashboard server running?");
-      })
-      .finally(() => {
-        twinBusy = false;
-        document.getElementById('twin-send').disabled = false;
-        document.getElementById('twin-text').focus();
-      });
   }
 </script>
 
@@ -1788,7 +1589,7 @@
 
 <script>
   /* ── Workspace shell: view switching + projects + agents ── */
-  const loaded = { projects: false, agents: false, chat: false, twin: false, inbox: false, settings: false };
+  const loaded = { projects: false, agents: false, chat: false, inbox: false, settings: false };
 
   function setView(v) {
     document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.view === v));
@@ -1797,7 +1598,6 @@
     if (v === 'agents'   && !loaded.agents)   { loaded.agents = true;   loadAgents(); }
     if (v === 'inbox'    && !loaded.inbox)    { loaded.inbox = true;     loadInboxes(); }
     if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); initChats(); }
-    if (v === 'twin'     && !loaded.twin)     { loaded.twin = true;      initTwin(); }
     if (v === 'settings' && !loaded.settings) { loaded.settings = true;  stgLoad(); }
   }
 
@@ -2425,7 +2225,7 @@
   }
 
   function loadRouterStatus() {
-    fetch('/api/router/status').then(r => r.json()).then(s => { routerStatus = s; renderTierStatus(); renderTwinTierStatus(); })
+    fetch('/api/router/status').then(r => r.json()).then(s => { routerStatus = s; renderTierStatus(); })
       .catch(() => {});
   }
 
@@ -2578,7 +2378,7 @@
     const div = document.createElement('div');
     div.className = 'chat-msg ' + kind;
     if (kind === 'bot') {
-      div.innerHTML = (who ? `<div class="who">${esc(who)}</div>` : '') + '<div class="md">' + twinMd(text) + '</div>';
+      div.innerHTML = (who ? `<div class="who">${esc(who)}</div>` : '') + '<div class="md">' + renderMd(text) + '</div>';
     } else {
       if (text) div.textContent = text;
       if (attachments && attachments.length) {
@@ -2821,7 +2621,7 @@
 
     let final = '';
     if (run.status === 'done' && run.result && run.result.reply) {
-      final = `<div class="run-final"><div class="md">${twinMd(run.result.reply)}</div></div>`;
+      final = `<div class="run-final"><div class="md">${renderMd(run.result.reply)}</div></div>`;
     } else if (run.status === 'error' && run.error) {
       final = `<div class="step error"><span class="ic">⚠️</span><span class="sx">${esc(run.error)}</span></div>`;
     }
