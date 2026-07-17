@@ -315,7 +315,7 @@ TOOL_SCHEMAS = {
     },
     "list_notes": {
         "name": "list_notes",
-        "description": "List notes that have frontmatter, optionally filtered by area (internship/projects/research), status (active/complete/archived), or type (daily-log/standup/meeting/...). Newest first.",
+        "description": "List notes that have frontmatter, optionally filtered by area tag (the part after area/ in a note's tags), status (active/complete/archived), or type (daily-log/standup/meeting/...). Newest first.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -353,7 +353,7 @@ TOOL_SCHEMAS = {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "area": {"type": "string", "description": "projects | internship | research"},
+                "area": {"type": "string", "description": "Top-level vault folder to file the project under (created if missing). Check existing top-level folders with list_folder first and reuse one that fits; default 'projects'."},
                 "topic": {"type": "string"},
                 "deadline": {"type": "string", "description": "YYYY-MM-DD, optional."},
             },
@@ -455,9 +455,11 @@ AGENTS = {
         "default_task": "",
         "system": (
             "You are the Project Scaffolder. Turn the user's one-line brief into exactly "
-            "one project: infer a clear name, pick the area (projects/internship/research), "
-            "write a one-line topic, and call create_project once. If the brief is too "
-            "vague to name a project, ask for the missing detail instead of guessing. " + _VAULT_RULES
+            "one project: infer a clear name, pick the area (check the vault's top-level "
+            "folders with list_folder and reuse one that fits, else choose a short new "
+            "name — default 'projects'), write a one-line topic, and call create_project "
+            "once. If the brief is too vague to name a project, ask for the missing "
+            "detail instead of guessing. " + _VAULT_RULES
         ),
     },
     "researcher": {
@@ -628,8 +630,10 @@ _CLAUDE_AGENT_RULES = (
     "are conceptual — accomplish the equivalent with your own tools: search with "
     "Grep/Glob, open notes with Read, and save notes by writing .md files (with "
     "correct YAML frontmatter) via Write/Edit. To scaffold a project, create its "
-    "folder with code/data/notes/research subfolders and a _context_<name>.md, then "
-    "add a [[wikilink]] to it in Home.md. Finish with a short plain-text summary."
+    "folder (under a fitting existing top-level folder, or a sensible new one — "
+    "default 'projects') with code/data/notes/research subfolders and a "
+    "_context_<name>.md, then add a [[wikilink]] to it in Home.md. Finish with a "
+    "short plain-text summary."
 )
 
 # The email tools ride to the claude tier over MCP (mail_mcp.py) — the CLI can't

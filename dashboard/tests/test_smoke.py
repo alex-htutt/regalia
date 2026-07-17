@@ -811,5 +811,81 @@ class ChatGptAccountTierTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 400)
 
 
+class ProjectScaffoldTests(unittest.TestCase):
+    """v1.26: project areas are dynamic — any top-level vault folder, created on
+    demand, validated before any filesystem write. Runs against a temp vault so
+    the real one is never touched."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        self._orig_root = dashboard_app.VAULT_ROOT
+        self._tmp = tempfile.TemporaryDirectory()
+        dashboard_app.VAULT_ROOT = Path(self._tmp.name)
+
+    def tearDown(self):
+        dashboard_app.VAULT_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def _context_text(self, rel_context):
+        return (Path(self._tmp.name) / rel_context).read_text(encoding="utf-8")
+
+    def test_create_in_empty_vault(self):
+        res = dashboard_app.create_project_core("My App", "projects")
+        self.assertEqual(set(res), {"ok", "path", "context_file", "subdirs", "home_linked"})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["path"], "projects/my_app")
+        for sub in dashboard_app.PROJECT_SUBDIRS:
+            self.assertTrue((Path(self._tmp.name) / "projects" / "my_app" / sub).is_dir())
+        self.assertIn("area/projects", self._context_text(res["context_file"]))
+
+    def test_custom_area_created_with_slug_tag(self):
+        res = dashboard_app.create_project_core("Thing", "My Stuff")
+        self.assertEqual(res["path"], "My Stuff/thing")
+        self.assertIn("area/my-stuff", self._context_text(res["context_file"]))
+
+    def test_legacy_internship_alias(self):
+        res = dashboard_app.create_project_core("Intern Work", "internship")
+        self.assertEqual(res["path"], "Internship-Projects/intern_work")
+        # Tag continuity: existing notes tag area/internship, not the folder slug.
+        self.assertIn("area/internship", self._context_text(res["context_file"]))
+
+    def test_existing_folder_reused_case_insensitively(self):
+        (Path(self._tmp.name) / "Projects").mkdir()
+        res = dashboard_app.create_project_core("App", "projects")
+        self.assertEqual(res["path"], "Projects/app")
+
+    def test_bad_areas_rejected_before_any_write(self):
+        for bad in ("../x", "..\\x", "a/b", ".obsidian", "dashboard", "templates", ""):
+            with self.assertRaises(ValueError, msg=f"area {bad!r} should be rejected"):
+                dashboard_app.create_project_core("App", bad)
+        self.assertEqual(list(Path(self._tmp.name).iterdir()), [])
+
+    def test_duplicate_is_conflict(self):
+        dashboard_app.create_project_core("App", "projects")
+        with self.assertRaises(ValueError) as ctx:
+            dashboard_app.create_project_core("App", "projects")
+        self.assertIn("already exists", str(ctx.exception))
+        r = self.client.post("/api/project", json={"name": "App", "area": "projects"})
+        self.assertEqual(r.status_code, 409)
+
+    def test_route_shapes(self):
+        r = self.client.post("/api/project", json={"name": "Web App", "area": "projects"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["ok"])
+        r = self.client.post("/api/project", json={"name": "X", "area": "../evil"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("error", r.get_json())
+
+    def test_browse_root_lists_new_area(self):
+        dashboard_app.create_project_core("App", "Side Quests")
+        names = [f["name"] for f in self.client.get("/api/browse").get_json()["folders"]]
+        self.assertIn("Side Quests", names)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

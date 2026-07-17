@@ -606,14 +606,45 @@ def api_news():
 
 # ── Projects & agents ───────────────────────────────────────────────────────
 
-# Short UI area names -> real top-level vault folders. Keeps the frontend from
-# hardcoding vault paths and keeps new projects landing where they belong.
-AREA_DIRS = {
-    "projects": "projects",
-    "internship": "Internship-Projects",
-    "research": "research",
-}
+# Areas are the vault's real top-level folders — discovered, not hardcoded.
+# One legacy short name survives so old agent prompts/API callers keep working.
+AREA_ALIASES = {"internship": "Internship-Projects"}
+# Folder-name → area-tag continuity: existing notes tag area/internship, not
+# area/internship-projects, so new projects under that folder must match.
+AREA_TAG_OVERRIDES = {"internship-projects": "internship"}
+_AREA_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
 PROJECT_SUBDIRS = ("code", "data", "notes", "research")
+
+
+def _area_tag(folder: str) -> str:
+    """Frontmatter tag value (`area/<tag>`) for a top-level area folder."""
+    tag = re.sub(r"[^a-z0-9]+", "-", folder.lower()).strip("-")
+    return AREA_TAG_OVERRIDES.get(tag, tag)
+
+
+def _safe_area(area: str) -> str:
+    """Validate an area name and canonicalize it to a real top-level folder.
+
+    Accepts any sane folder name (created on demand); reuses an existing
+    top-level folder case-insensitively so `projects` and `Projects` never
+    end up side by side on a case-sensitive filesystem. Raises ValueError
+    on anything empty, ignored, or path-shaped."""
+    area = str(area or "").strip()
+    area = AREA_ALIASES.get(area.lower(), area)
+    if not _AREA_NAME_RE.match(area):
+        raise ValueError(
+            "Area must be a plain folder name (letters, numbers, spaces, - or _)."
+        )
+    if area.lower() in {d.lower() for d in IGNORE_DIRS}:
+        raise ValueError(f"'{area}' is reserved and can't hold projects.")
+    root = VAULT_ROOT.resolve()
+    for existing in _subdirs(root):
+        if existing.name.lower() == area.lower():
+            area = existing.name
+            break
+    if (root / area).resolve().parent != root:
+        raise ValueError("Resolved path escapes the vault.")
+    return area
 
 
 def _slugify(name: str) -> str:
@@ -675,20 +706,18 @@ def create_project_core(name: str, area: str, topic: str = "", deadline: str = "
     returns the same dict the route hands back to the UI.
     """
     name = str(name or "").strip()
-    area = str(area or "").strip().lower()
     topic = str(topic or "").strip()
     deadline = str(deadline or "").strip()
 
     if not name:
         raise ValueError("Project needs a name.")
-    if area not in AREA_DIRS:
-        raise ValueError(f"Unknown area '{area}'. Use one of: {', '.join(AREA_DIRS)}.")
+    area = _safe_area(area)
     slug = _slugify(name)
     if not slug:
         raise ValueError("Name has no usable letters or numbers.")
 
     root = VAULT_ROOT.resolve()
-    target = (root / AREA_DIRS[area] / slug).resolve()
+    target = (root / area / slug).resolve()
     if root not in target.parents:
         raise ValueError("Resolved path escapes the vault.")
     if target.exists():
@@ -699,7 +728,7 @@ def create_project_core(name: str, area: str, topic: str = "", deadline: str = "
             (target / sub).mkdir(parents=True, exist_ok=True)
         context_name = f"_context_{slug}.md"
         (target / context_name).write_text(
-            _context_md(name, area, topic, deadline), encoding="utf-8"
+            _context_md(name, _area_tag(area), topic, deadline), encoding="utf-8"
         )
     except OSError as e:
         raise ValueError(f"Couldn't create the project: {e}")

@@ -391,10 +391,12 @@
     font-size: 11px; padding: 2px 7px; border-radius: 4px;
     background: var(--gray-bg); color: var(--gray-fg); font-weight: 500;
   }
-  .tag.internship { background: var(--blue-bg); color: var(--blue-fg); }
-  .tag.projects    { background: var(--green-bg); color: var(--green-fg); }
-  .tag.research    { background: var(--purple-bg); color: var(--purple-fg); }
-  .tag.course      { background: var(--amber-bg); color: var(--amber-fg); }
+  /* Area tags are dynamic (any vault folder) — colored from a small palette
+     picked by a stable hash of the area name, not per-area class names. */
+  .tag.a0 { background: var(--blue-bg); color: var(--blue-fg); }
+  .tag.a1 { background: var(--green-bg); color: var(--green-fg); }
+  .tag.a2 { background: var(--purple-bg); color: var(--purple-fg); }
+  .tag.course { background: var(--amber-bg); color: var(--amber-fg); }
 
   .dl { font-size: 11px; color: var(--muted); }
   .dl.overdue { color: var(--red); font-weight: 600; }
@@ -476,6 +478,11 @@
     color: var(--muted); font-weight: 600; margin: 22px 0 10px;
   }
   .empty-sm { color: var(--faint); font-size: 12.5px; }
+  .proj-group-head {
+    grid-column: 1 / -1; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin-top: 10px;
+  }
+  .proj-group-head:first-child { margin-top: 0; }
 
   .settings-card { margin-top: 16px; }
   .backend-grid {
@@ -1033,12 +1040,9 @@
           <button class="pill"     data-k="status" data-v="complete" onclick="setFilter('status','complete')">Complete</button>
           <button class="pill"     data-k="status" data-v="archived" onclick="setFilter('status','archived')">Archived</button>
         </div>
-        <div class="sep"></div>
-        <div class="filter-group" id="fg-area">
-          <button class="pill on"  data-k="area" data-v="all"        onclick="setFilter('area','all')">All areas</button>
-          <button class="pill"     data-k="area" data-v="internship" onclick="setFilter('area','internship')">Internship</button>
-          <button class="pill"     data-k="area" data-v="projects"   onclick="setFilter('area','projects')">Projects</button>
-          <button class="pill"     data-k="area" data-v="research"   onclick="setFilter('area','research')">Research</button>
+        <div id="area-wrap" style="display: none;">
+          <div class="sep"></div>
+          <div class="filter-group" id="fg-area"></div>
         </div>
         <div id="course-wrap" style="display: none;">
           <div class="sep"></div>
@@ -1057,11 +1061,8 @@
         <form class="np-form" id="np-form" onsubmit="createProject(event)">
           <div class="np-row">
             <label>Name<input id="np-name" type="text" placeholder="Self-Hosted Workspace" autocomplete="off"></label>
-            <label>Area<select id="np-area">
-              <option value="projects">Projects</option>
-              <option value="internship">Internship</option>
-              <option value="research">Research</option>
-            </select></label>
+            <label>Area<select id="np-area" onchange="npAreaChanged()"></select></label>
+            <label id="np-area-new-wrap" style="display: none;">New area name<input id="np-area-new" type="text" placeholder="e.g. projects" autocomplete="off"></label>
           </div>
           <label>Topic<input id="np-topic" type="text" placeholder="One-line description (optional)" autocomplete="off"></label>
           <div class="np-row">
@@ -1283,6 +1284,16 @@
     return '';
   }
 
+  function areaClass(a) {
+    let h = 0;
+    for (const c of a) h += c.charCodeAt(0);
+    return 'a' + (h % 3);
+  }
+
+  function areaLabel(a) {
+    return a.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase());
+  }
+
   function types(tags) {
     return (tags || []).filter(t => t.startsWith('type/')).map(t => t.slice(5));
   }
@@ -1349,7 +1360,7 @@
           <div class="task-title">${esc(t.title)}</div>
           ${t.topic ? `<div class="task-topic">${esc(t.topic)}</div>` : ''}
           <div class="meta">
-            ${a  ? `<span class="tag ${a}">${a}</span>` : ''}
+            ${a  ? `<span class="tag ${areaClass(a)}">${esc(a)}</span>` : ''}
             ${t.course ? `<span class="tag course">${esc(t.course)}</span>` : ''}
             ${ts.map(tp => `<span class="tag">${esc(tp)}</span>`).join('')}
             ${t.deadline ? `<span class="dl ${ds||''}">${dlLabel(t.deadline)}</span>` : ''}
@@ -1477,6 +1488,19 @@
     closeList();
     if (inCode) html += '</code></pre>';
     return html;
+  }
+
+  function buildAreaPills() {
+    const areas = [...new Set(all.map(t => area(t.tags)).filter(Boolean))].sort();
+    const wrap = document.getElementById('area-wrap');
+    if (!areas.length) { wrap.style.display = 'none'; filters.area = 'all'; return; }
+    wrap.style.display = 'contents';
+    if (filters.area !== 'all' && !areas.includes(filters.area)) filters.area = 'all';
+    document.getElementById('fg-area').innerHTML =
+      `<button class="pill ${filters.area === 'all' ? 'on' : ''}" data-k="area" data-v="all" onclick="setFilter('area','all')">All areas</button>` +
+      areas.map(a =>
+        `<button class="pill ${filters.area === a ? 'on' : ''}" data-k="area" data-v="${esc(a)}" onclick="setFilter('area','${esc(a)}')">${esc(areaLabel(a))}</button>`
+      ).join('');
   }
 
   function buildCoursePills() {
@@ -1631,7 +1655,7 @@
     fetch('/api/news?refresh=1').then(r => r.json()).then(renderNews).catch(() => {});
   }
 
-  fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildCoursePills(); render(); });
+  fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildAreaPills(); buildCoursePills(); render(); });
   fetch('/api/browse').then(r => r.json()).then(d => renderGallery(d.folders));
   fetch('/api/recent-folders').then(r => r.json()).then(renderRecentFolders).catch(() => {});
   fetch('/api/usage').then(r => r.json()).then(renderUsage).catch(() => {});
@@ -2582,16 +2606,36 @@
   }
 
   /* -- New project -- */
+  function npAreaChanged() {
+    const isNew = document.getElementById('np-area').value === '__new__';
+    document.getElementById('np-area-new-wrap').style.display = isNew ? '' : 'none';
+  }
+
+  function populateAreaSelect(folders) {
+    const sel = document.getElementById('np-area');
+    sel.innerHTML =
+      (folders || []).map(f => `<option value="${esc(f.name)}">${esc(f.name)}</option>`).join('') +
+      '<option value="__new__">New area…</option>';
+    if (!folders || !folders.length) {
+      sel.value = '__new__';
+      const input = document.getElementById('np-area-new');
+      if (!input.value.trim()) input.value = 'projects';
+    }
+    npAreaChanged();
+  }
+
   function createProject(e) {
     e.preventDefault();
     const msg = document.getElementById('np-msg');
+    const sel = document.getElementById('np-area');
     const body = {
       name: document.getElementById('np-name').value.trim(),
-      area: document.getElementById('np-area').value,
+      area: sel.value === '__new__' ? document.getElementById('np-area-new').value.trim() : sel.value,
       topic: document.getElementById('np-topic').value.trim(),
       deadline: document.getElementById('np-deadline').value,
     };
     if (!body.name) { msg.className = 'np-msg err'; msg.textContent = 'Give it a name first.'; return; }
+    if (!body.area) { msg.className = 'np-msg err'; msg.textContent = 'Pick or name an area.'; return; }
     msg.className = 'np-msg'; msg.textContent = 'Creating…';
     fetch('/api/project', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2605,30 +2649,41 @@
         document.getElementById('np-form').reset();
         loadProjects();
         // pull the new context file into the task list + gallery
-        fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildCoursePills(); render(); });
+        fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildAreaPills(); buildCoursePills(); render(); });
         fetch('/api/browse').then(r => r.json()).then(d2 => renderGallery(d2.folders));
       })
       .catch(() => { msg.className = 'np-msg err'; msg.textContent = "Couldn't reach the server."; });
   }
 
   function loadProjects() {
-    const areas = ['projects', 'Internship-Projects', 'research'];
+    // Areas are whatever top-level folders the vault actually has — nothing hardcoded.
     const el = document.getElementById('proj-list');
-    Promise.all(areas.map(a =>
-      fetch('/api/browse?path=' + encodeURIComponent(a)).then(r => r.json()).catch(() => ({ folders: [] }))
-    )).then(results => {
-      const cards = [];
-      results.forEach((d, i) => {
-        (d && d.folders ? d.folders : []).forEach(f => {
-          const p = areas[i] + '/' + f.name;
-          cards.push(`<div class="g-card" onclick="openFolder('${esc(p)}')">
-            <div class="g-name">${FOLDER_ICON}<span>${esc(f.name)}</span></div>
-            ${f.excerpt ? `<div class="g-excerpt">${esc(f.excerpt)}</div>` : ''}
-            <div class="g-meta">${esc(areas[i])} · ${f.notes} note${f.notes === 1 ? '' : 's'}</div>
-          </div>`);
+    fetch('/api/browse').then(r => r.json()).then(d => {
+      const areas = (d && d.folders ? d.folders : []).map(f => f.name);
+      populateAreaSelect(d && d.folders ? d.folders : []);
+      if (!areas.length) {
+        el.innerHTML = '<div class="empty-sm">Your vault is empty — create your first project above. The area folder is created for you.</div>';
+        return;
+      }
+      Promise.all(areas.map(a =>
+        fetch('/api/browse?path=' + encodeURIComponent(a)).then(r => r.json()).catch(() => ({ folders: [] }))
+      )).then(results => {
+        const groups = [];
+        results.forEach((sub, i) => {
+          const folders = sub && sub.folders ? sub.folders : [];
+          if (!folders.length) return;   // loose-note folders aren't project groups
+          const cards = folders.map(f => {
+            const p = areas[i] + '/' + f.name;
+            return `<div class="g-card" onclick="openFolder('${esc(p)}')">
+              <div class="g-name">${FOLDER_ICON}<span>${esc(f.name)}</span></div>
+              ${f.excerpt ? `<div class="g-excerpt">${esc(f.excerpt)}</div>` : ''}
+              <div class="g-meta">${esc(areas[i])} · ${f.notes} note${f.notes === 1 ? '' : 's'}</div>
+            </div>`;
+          });
+          groups.push(`<div class="proj-group-head">${esc(areas[i])}</div>` + cards.join(''));
         });
+        el.innerHTML = groups.length ? groups.join('') : '<div class="empty-sm">No project folders yet — create one above.</div>';
       });
-      el.innerHTML = cards.length ? cards.join('') : '<div class="empty-sm">No project folders yet.</div>';
     });
   }
 
