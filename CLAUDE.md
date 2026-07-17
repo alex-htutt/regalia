@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-An Obsidian knowledge vault and active workspace for a summer internship and personal side projects. Most files are Markdown notes. Each project has its own `CLAUDE.md` with project-specific details.
+**Regalia** — a self-hosted, agentic workspace app (`dashboard/`, Flask) built on an Obsidian knowledge vault, plus the vault skeleton it runs on. The app is the primary project; the vault (Markdown notes + YAML frontmatter) is its data substrate and a working example. Private vault areas (internships, coursework, personal projects) are gitignored — only the skeleton is public. Each project folder has its own `CLAUDE.md` with project-specific details.
 
 ## Vault conventions
 

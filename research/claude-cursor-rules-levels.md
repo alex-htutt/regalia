@@ -100,7 +100,7 @@ A scan of widely-used Claude Code / Cursor rule collections and best-practice gu
 - **Lead with the exact commands (test / build / lint / run) before any prose rules** — highest-ROI section. *Where:* `dashboard/CLAUDE.md` should open with the precise run/test invocations; the vault root has none because it's notes-only, which is correct. (Anthropic best-practices; maketocreate.)
 - **Only include what the agent can't infer from the code/README; never restate a linter/formatter.** LLMs are slow and unreliable at deterministic style jobs. *Where:* trim any style guidance from folder rules that a formatter already enforces (the dashboard's Python). (maketocreate; DEV Community.)
 - **Attach a *reason* to every rule.** "Server components by default — we hit 8s LCP from over-clienting" generalizes; a bare rule gets dropped when context shifts. *Where:* the privacy rule in [[_context_internship_projects]] and the citation rules in `research/CLAUDE.md` already do this; apply the same to the taxonomy rules in root [[CLAUDE]]. (maketocreate; Anthropic.)
-- **Enforce critical/irreversible rules with hooks, not prose** ("don't push to main," "don't touch production/patient data"). 70% prose compliance = an eventual incident; a hook makes the bad action structurally impossible. *Where:* directly confirms this note's existing top open question — a `PreToolUse` hook + `deny` rule for Ambusun/Essex claim-data paths. (maketocreate; Anthropic.)
+- **Enforce critical/irreversible rules with hooks, not prose** ("don't push to main," "don't touch production/patient data"). 70% prose compliance = an eventual incident; a hook makes the bad action structurally impossible. *Where:* directly confirms this note's existing top open question — a `PreToolUse` hook + `deny` rule for internship claim-data paths. (maketocreate; Anthropic.)
 - **Always pair a change with a verification (test, script, screenshot); "if you can't verify it, don't ship it."** *Where:* fits the `research/` "Basic execution" tier and any `dashboard/` change — add a "verify with" line to those folder rules. (maketocreate; Anthropic best-practices.)
 - **Maintain a dogfooded, copyable `.claude/` setup (settings, hooks, agents) checked into the repo.** *Where:* reinforces this note's gap — promote conventions from `settings.local.json` into a committed `.claude/settings.json`. (shanraisshan/claude-code-best-practice; MuhammadUsmanGM/claude-code-best-practices.)
 
@@ -113,7 +113,7 @@ A scan of widely-used Claude Code / Cursor rule collections and best-practice gu
 - **Filetype-globbed rules (e.g. `globs: **/*.py`) for language conventions rather than folder-shaped globs.** *Where:* directly answers this note's existing question about centralizing the "backend-first Python" convention across folders. (awesome-cursorrules frontmatter conventions.)
 
 ### Net new for this vault (highest value first)
-1. **Privacy hook** — `PreToolUse` deny on Ambusun/Essex claim-data paths (already this note's #1 open question; community consensus confirms hooks > prose).
+1. **Privacy hook** — `PreToolUse` deny on internship claim-data paths (already this note's #1 open question; community consensus confirms hooks > prose).
 2. **Vault-wide honesty rule** — generalize `research/`'s no-hallucination stance to root [[CLAUDE]] (cheap, broad win).
 3. **Trim + front-load `dashboard/CLAUDE.md`** — commands first, move the v1–v1.18 changelog to a linked note.
 4. **Filetype `*.py` Cursor rule** — DRY the Python convention.
@@ -122,7 +122,7 @@ A scan of widely-used Claude Code / Cursor rule collections and best-practice gu
 ---
 
 ## Open questions
-- Should the privacy guarantee for Ambusun/Essex data become an enforced `PreToolUse` hook + `deny` permission rather than prose in [[_context_internship_projects]]? (Highest-value upgrade.)
+- Should the privacy guarantee for internship data become an enforced `PreToolUse` hook + `deny` permission rather than prose in [[_context_internship_projects]]? (Highest-value upgrade.)
 - Are any conventions in `settings.local.json` worth promoting to a committed `.claude/settings.json` so they're shared and version-controlled?
 - Is a filetype-scoped Cursor rule (`globs: **/*.py`) cleaner than repeating "backend-first Python" across folder rules?
 - Worth a user-level `~/.claude/CLAUDE.md` for cross-project habits (since the [[_context_dashboard]] work and the workspace direction span beyond this vault)?

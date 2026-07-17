@@ -15,13 +15,13 @@ Quick reference for running this vault day-to-day. See [[Home]] for the map and 
 4. End of day: update `Internship-Projects/_context_internship_projects.md` (active task, blockers, next deadline).
 
 ## Creating a note
-Use Obsidian's **Templates** core plugin (or Templater): Settings → Templates → set folder to `templates/`. Then `Cmd/Ctrl+P → Insert template`. Every template carries the frontmatter schema and a footer `Part of [[_context_<project>]] · [[Home]]` — replace `<project>` with the folder's context name (e.g. `[[_context_pull_healthcare_card]]`) so the note links into the graph. `[[Home]]` always resolves.
+Use Obsidian's **Templates** core plugin (or Templater): Settings → Templates → set folder to `templates/`. Then `Cmd/Ctrl+P → Insert template`. Every template carries the frontmatter schema and a footer `Part of [[_context_<project>]] · [[Home]]` — replace `<project>` with the folder's context name (e.g. `[[_context_payments_api]]`) so the note links into the graph. `[[Home]]` always resolves.
 
 Pick the template by purpose: `daily-log`, `standup-note`, `meeting-note`, `project-note`, `lab-note`, `lecture-note`, `problem-set`.
 
 ## Starting a new internship project
 1. Make a subfolder under `Internship-Projects/` (e.g. `Internship-Projects/payments-api/`).
-2. Copy `templates/_context_TEMPLATE.md` into it, rename it to `_context_<folder>.md` (e.g. `_context_pull_healthcare_card.md`), and fill in current state, deliverable, deadline.
+2. Copy `templates/_context_TEMPLATE.md` into it, rename it to `_context_<folder>.md` (e.g. `_context_payments_api.md`), and fill in current state, deliverable, deadline.
 3. Add a link to it from the Active section of [[Home]].
 4. Drop project notes alongside it using `project-note.md`.
 
@@ -63,7 +63,7 @@ Run `cd dashboard && python app.py` (or double-click `dashboard/start.bat`) → 
 `_context_*.md` and `README*.md` files are excluded from the task list — they are reference docs, not tasks.
 
 ## Bases (live tables)
-`Internship-Projects/internship.base` (Obsidian 1.9+) shows every `area/internship` note as a sortable table with two views: all notes, and active-only sorted by deadline. Data comes from note frontmatter — just keep tags/status accurate and notes appear automatically.
+Obsidian 1.9+ `.base` files show notes as sortable tables driven by frontmatter (e.g. an area's notes with two views: all, and active-only sorted by deadline). Keep tags/status accurate and notes appear automatically.
 
 ## Archive
 Finished courses live in `archive/courses/` (`status: archived`). Searchable for reference; their Cursor rules are marked inactive so they don't bleed into current work.

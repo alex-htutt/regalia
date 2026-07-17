@@ -31,7 +31,7 @@ LEVER_BOARDS = []  # e.g. "ramp", "brex" — value is the lever.co/<slug> token
 # can't be pulled here without a custom adapter. The scorer still lights up the
 # "Quant" tag whenever a matching role appears from any board above.
 
-# ── Profile-tailored opportunity matching (sourced from My_Evil_Twin/me_technical.md)
+# ── Profile-tailored opportunity matching — EDIT THESE TO MATCH YOUR PROFILE.
 # The /api/news jobs section ranks live postings against this profile: roles
 # matching an interest bucket score points, internships / new-grad roles get a
 # big boost, senior roles are pushed down, and clearly-irrelevant roles drop out.
@@ -60,20 +60,21 @@ INTEREST_KEYWORDS = {
 }
 
 # Substring-matched (lenient: "intern" catches internship/interns). A hit here
-# is the strongest positive signal — Alex is an undergrad (grad May 2028).
+# is the strongest positive signal — tune for your career stage (these defaults
+# assume an early-career/student profile).
 EARLY_CAREER_SIGNALS = [
     "intern", "new grad", "new-grad", "newgrad", "early career",
     "early-career", "university", "campus", "co-op", "graduate",
     "apprentice", "student", "2026", "2027", "2028",
 ]
 
-# Substring-matched roles to push down (Alex isn't eligible / not the target).
+# Substring-matched roles to push down (not the target for this profile).
 SENIOR_SIGNALS = [
     "senior", "staff", "principal", "lead", "manager", "director",
     "head of", "executive", "sr.", "vp ", "vice president",
 ]
 
-# Soft location bonus — Troy NY now, wants NY/Bay Area/CA (or remote).
+# Soft location bonus — set to the regions you'd actually take a role in.
 PREFERRED_LOCATIONS = [
     "new york", "ny", "remote", "san francisco", "bay area",
     "california", "ca", "boston", "seattle",

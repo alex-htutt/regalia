@@ -54,8 +54,19 @@ dashboard/tools/tailwindcss*
 dashboard/tools/*.exe
 
 # --- Private content: only the skeleton (dashboard + vault framework) is pushed ---
-# Classes, internships, personal projects, and persona files stay local only.
+# Classes, internships, personal projects, persona files, and the resume stay local only.
 Internship-Projects/
 schoolwork/
 Roblox_Dev/
 My_Evil_Twin/
+Resume/
+
+# --- Vendored third-party reading material (own license; fetch upstream instead) ---
+research/RAG-pipelines/resources/ai-system-design-guide-main/
+
+# --- Regalia settings store (may hold API keys; per-machine) ---
+dashboard/.config.json
+
+# --- PyInstaller build outputs (regalia.spec stays tracked) ---
+dashboard/build/
+dashboard/dist/

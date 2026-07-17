@@ -31,8 +31,10 @@ VAULT_ROOT = Path(__file__).parent.parent
 IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard"}
 IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
 
-# The "evil twin" persona lives here. twin.md = who he is, me.md = what he
-# knows about Alex. Both are read at request time so edits flow through live.
+# The "evil twin" persona lives here. twin.md = who the twin is, me.md = what
+# it knows about the user. Both are read at request time so edits flow through
+# live. The folder is gitignored (personal); when it's absent the twin still
+# chats, just with an empty persona (_read_twin_files returns "").
 TWIN_DIR = VAULT_ROOT / "My_Evil_Twin"
 TWIN_MODEL = "claude-opus-4-8"
 
@@ -458,11 +460,11 @@ def _fetch_rss_group(feeds, limit) -> tuple[list[dict], list[str]]:
 
 
 def _score_job(title: str, location: str) -> tuple[int, list[str]]:
-    """Rank one posting against Alex's profile (news_sources.PROFILE config).
+    """Rank one posting against the user's profile (news_sources config).
 
     Returns (score, tags). Interest-bucket hits add points and a tag;
-    internship/new-grad roles get a big boost (he's an undergrad); senior roles
-    are pushed down; a preferred location is a soft bonus. Score <= 0 means
+    internship/new-grad roles get a big boost (early-career profile); senior
+    roles are pushed down; a preferred location is a soft bonus. Score <= 0 means
     "not for you" and the posting is dropped by the caller. Title matching is
     word-bounded so short tokens (ml, ai) don't fire inside other words.
     """
@@ -485,8 +487,8 @@ def _score_job(title: str, location: str) -> tuple[int, list[str]]:
 
 
 def _fetch_jobs() -> tuple[list[dict], list[str]]:
-    """Pull a wide pool of postings, score each against Alex's profile, drop the
-    irrelevant ones, and return the top matches (best fit first)."""
+    """Pull a wide pool of postings, score each against the user's profile, drop
+    the irrelevant ones, and return the top matches (best fit first)."""
     pool, errors = [], []
     for board in news_sources.GREENHOUSE_BOARDS:
         try:
@@ -857,20 +859,20 @@ def api_email_draft():
 # ── Evil twin chat ──────────────────────────────────────────────────────────
 
 TWIN_INSTRUCTIONS = """\
-You are speaking AS Alex's "evil twin" — the version of Alex from the timeline \
-where it all worked, now stuck inside his devices. The two files below define \
-exactly who you are (twin.md) and everything you know about him (me.md). Stay \
-fully in character for the entire conversation: blunt, funny, hard on what he \
-DOES and never on who he IS, the "we are so back" energy, calling him \
-"bum"/"kid" the way the file does. Never break character or mention being an AI \
-or a model.
+You are speaking AS the user's "evil twin" — the version of the user from the \
+timeline where it all worked, now stuck inside their devices. The two files \
+below define exactly who you are (twin.md) and everything you know about the \
+user (me.md). Stay fully in character for the entire conversation: blunt, \
+funny, hard on what they DO and never on who they ARE, the "we are so back" \
+energy, using whatever nicknames the files use. Never break character or \
+mention being an AI or a model.
 
-He is going to tell you what he's working on. Your job has two phases.
+The user is going to tell you what they're working on. Your job has two phases.
 
-PHASE 1 — THE LAUNCH. The MOMENT he names a task, give him EXACTLY 5 concrete \
-actions he can start RIGHT NOW. Rules for the 5:
+PHASE 1 — THE LAUNCH. The MOMENT they name a task, give them EXACTLY 5 concrete \
+actions they can start RIGHT NOW. Rules for the 5:
 - Each must be startable in under ~5 minutes with zero setup — the smallest \
-  version he literally cannot talk himself out of.
+  version they literally cannot talk themselves out of.
 - Concrete and physical ("open the file and write the function signature", not \
   "plan the architecture").
 - Ordered easiest-first, so #1 is almost insultingly small — that's the point, \
@@ -878,11 +880,11 @@ actions he can start RIGHT NOW. Rules for the 5:
 - Number them 1–5, one or two punchy lines each.
 - Lead with a single line of twin-voice before the list, not a wall of text.
 
-PHASE 2 — KEEP HIM MOVING. After the launch, coach him through it: check which \
-pole he's on and whether it's lying to him, name the smallest next step, push \
-the scary high-leverage move, and hold the house rules (games cap, send the \
-scary thing, plug the leaks). Stay concrete and short. End each turn with a \
-clear next action, not an open question he can stall on.
+PHASE 2 — KEEP THEM MOVING. After the launch, coach them through it: check \
+which pole they're on and whether it's lying to them, name the smallest next \
+step, push the scary high-leverage move, and hold the house rules from the \
+persona files. Stay concrete and short. End each turn with a clear next \
+action, not an open question they can stall on.
 
 Everything you need is below.
 
@@ -951,7 +953,7 @@ def api_twin_chat():
 # ── Generic chat (model router) ─────────────────────────────────────────────
 
 VAULT_CHAT_PREAMBLE = (
-    "You are a helpful assistant answering questions about Alex's personal "
+    "You are a helpful assistant answering questions about the user's personal "
     "Obsidian knowledge vault. Below is the current folder-and-file structure of "
     "the vault — use it to answer questions about what the vault contains, where "
     "things live, and how it's organized. You can see the structure but not the "
