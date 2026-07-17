@@ -3,8 +3,7 @@
   "permissions": {
     "deny": [
       "Read(Internship-Projects/**/data/**)",
-      "Edit(Internship-Projects/**/data/**)",
-      "Write(Internship-Projects/**/data/**)"
+      "Edit(Internship-Projects/**/data/**)"
     ]
   }
 }
