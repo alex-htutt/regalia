@@ -21,13 +21,27 @@ from flask import Flask, jsonify, render_template, request
 
 import agent
 import chats
+import config
 import mailbox
 import news_sources
+import paths
 import router
 
 app = Flask(__name__)
 
-VAULT_ROOT = Path(__file__).parent.parent
+# Vault root resolution (read once at startup — restart to change):
+#   1. REGALIA_VAULT env var, 2. the Settings view's vault_path, 3. from source:
+# the repo root this dashboard lives in; packaged (frozen): ~/RegaliaVault,
+# created on first run. Lets an installed Regalia point at any vault instead of
+# assuming it lives inside one.
+_vault_override = os.environ.get("REGALIA_VAULT") or config.get("vault_path")
+if _vault_override and Path(_vault_override).expanduser().is_dir():
+    VAULT_ROOT = Path(_vault_override).expanduser().resolve()
+elif paths.is_frozen():
+    VAULT_ROOT = paths.default_vault()
+    VAULT_ROOT.mkdir(parents=True, exist_ok=True)
+else:
+    VAULT_ROOT = Path(__file__).parent.parent
 IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard"}
 IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
 
@@ -43,10 +57,12 @@ TWIN_MODEL = "claude-opus-4-8"
 # timestamp — never message content.
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
-# Chat attachments land here (gitignored). It lives under dashboard/, which is in
-# IGNORE_DIRS so the vault walk never surfaces uploads as notes — but it's still
-# inside the vault tree, so the claude CLI (cwd = vault root) can read the files.
-ATTACH_DIR = Path(__file__).parent / ".chat_attachments"
+# Chat attachments land here (gitignored). From source it lives under dashboard/,
+# which is in IGNORE_DIRS so the vault walk never surfaces uploads as notes — but
+# it's still inside the vault tree, so the claude CLI (cwd = vault root) can read
+# the files. Packaged builds move it to the per-user data dir; there the claude
+# tier can't reach attachments by path (fast/smart/openai inline them instead).
+ATTACH_DIR = paths.data_dir() / ".chat_attachments"
 MAX_ATTACH_BYTES = 25 * 1024 * 1024  # 25 MB per file
 ATTACH_MAX_AGE = 24 * 3600           # prune uploads older than a day
 ALLOWED_ATTACH_EXTS = {
@@ -135,7 +151,29 @@ def load_tasks() -> list[dict]:
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Boot settings ride into the page inline so the theme applies before first
+    # paint (no flash of the wrong palette). Secrets are masked by config.mask.
+    return render_template(
+        "index.html",
+        boot_settings=json.dumps(config.mask(config.load())),
+    )
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    """Read (GET) or partially update (POST) the settings store.
+
+    Secrets never leave the server: responses carry {"set": bool} per secret.
+    A posted secret value overwrites; posting "" clears it; omitting leaves it.
+    """
+    if request.method == "POST":
+        data = request.get_json(silent=True)
+        try:
+            cfg = config.update(data if isinstance(data, dict) else None)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"settings": config.mask(cfg), "vault_root": str(VAULT_ROOT)})
+    return jsonify({"settings": config.mask(config.load()), "vault_root": str(VAULT_ROOT)})
 
 
 @app.route("/api/tasks")
@@ -803,6 +841,48 @@ def api_inboxes():
         return jsonify({"accounts": [], "errors": [e.message]}), e.status
 
 
+# In-app inbox connection. The OAuth consent flow blocks on a browser, so it
+# can't run inside a request handler — POST starts it on a background thread
+# (it pops the system browser on THIS machine; Regalia is a localhost app) and
+# GET /api/connect/status reports where it got to. Same drafts-only scopes as
+# the connect_email.py CLI — this is just a UI trigger for the same flow.
+_CONNECT_STATE = {"state": "idle", "provider": "", "detail": ""}  # single-flight
+_CONNECT_LOCK = threading.Lock()
+
+
+def _run_connect(provider: str) -> None:
+    import connect_email
+    try:
+        fn = connect_email._connect_gmail if provider == "gmail" else connect_email._connect_outlook
+        account_id = fn()
+        _CONNECT_STATE.update(state="done", detail=f"Connected {account_id} ✓")
+    except SystemExit as e:  # the CLI helpers signal misconfiguration this way
+        _CONNECT_STATE.update(state="error", detail=str(e) or "Connection cancelled.")
+    except Exception as e:  # noqa: BLE001 — surface anything to the UI
+        _CONNECT_STATE.update(state="error", detail=f"Connection failed: {e}")
+
+
+@app.route("/api/connect/email", methods=["POST"])
+def api_connect_email():
+    """Kick off the OAuth consent flow for gmail|outlook in the background."""
+    data = request.get_json(silent=True) or {}
+    provider = str(data.get("provider") or "").strip().lower()
+    if provider not in ("gmail", "outlook"):
+        return jsonify({"error": "provider must be 'gmail' or 'outlook'"}), 400
+    with _CONNECT_LOCK:
+        if _CONNECT_STATE["state"] == "running":
+            return jsonify({"error": "A connection is already in progress — finish it in the browser."}), 409
+        _CONNECT_STATE.update(state="running", provider=provider,
+                              detail="Waiting for you to approve access in the browser…")
+        threading.Thread(target=_run_connect, args=(provider,), daemon=True).start()
+    return jsonify({"started": True, "provider": provider})
+
+
+@app.route("/api/connect/status")
+def api_connect_status():
+    return jsonify(dict(_CONNECT_STATE))
+
+
 @app.route("/api/mail/important")
 def api_mail_important():
     """Work/school-relevant mail (last N days) for the overview panel.
@@ -1115,9 +1195,9 @@ def api_chat():
     tier = str(data.get("tier") or "fast").strip().lower()
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     # "Edit mode" — lets chat change vault notes. Each tier honors it differently:
-    # fast/smart unlock the write tools in the tool loop below; the claude CLI tier
-    # gets the file-editing tools via router.chat(allow_write=...). All three can
-    # write when it's on.
+    # fast/smart/openai unlock the write tools in the tool loop below; the claude
+    # CLI tier gets the file-editing tools via router.chat(allow_write=...). Every
+    # tier can write when it's on.
     edit_mode = bool(data.get("edit"))
     # A model override only applies to the local (fast) tier — guard it so an
     # Ollama model name can never be handed to Anthropic on the smart tier.
@@ -1126,13 +1206,13 @@ def api_chat():
 
     # Tool-loop tiers run the model over the real vault tools. Fast (local) always
     # uses the read-only loop so it can answer "what does note X say" — not just
-    # see the outline; smart joins the loop only when Edit mode is on (otherwise it
-    # takes the plain cloud-chat path below). With Edit mode, the loop also gets the
+    # see the outline; smart/openai join the loop only when Edit mode is on (else
+    # they take the plain cloud-chat path below). With Edit mode, the loop also gets the
     # write/scaffold tools. The local model needs tool support; if it can't (or any
     # other fast-tier hiccup), fall back to outline-grounded plain chat so the panel
     # still answers. Smart-tier failures surface to the user. Attachment turns skip
     # the loop (chat_tools has no attachment path) and use the image-inlining chat.
-    use_loop = (tier == "fast" or (tier == "smart" and edit_mode))
+    use_loop = (tier == "fast" or (tier in ("smart", "openai") and edit_mode))
     if use_loop and not attachments:
         try:
             return jsonify(agent.chat_vault(
@@ -1172,7 +1252,7 @@ def _chat_store_error(e: chats.ChatStoreError):
 def api_chats():
     """List conversation metadata (GET) or mint a new conversation (POST)."""
     if request.method == "POST":
-        return jsonify(chats.create_chat())
+        return jsonify(chats.create_chat(tier=config.get("default_tier")))
     return jsonify({"chats": chats.list_chats()})
 
 

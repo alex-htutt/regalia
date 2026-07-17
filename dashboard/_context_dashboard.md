@@ -39,6 +39,7 @@ Grow the Flask `dashboard/` from a read-only vault viewer into a **self-hosted, 
 
 - **v1.22 (2026-07-10) — MCP mailbox bridge:** Inbox Triage now defaults to the **`claude`** tier (subscription-billed, no API key) — the CLI reaches `mailbox.py` through the new `mail_mcp.py` stdio MCP server (only `mcp__mailbox__*` granted; email-only agents get no filesystem tools). Still drafts-only on every path.
 - **v1.23 (2026-07-10) — Important-mail panel:** the overview briefing's "Social & blogs" column became **Important mail** — last-2-days messages from all connected inboxes, scored by a deterministic work/school keyword/domain heuristic (config in `email_sources.py`; `mailbox.important_messages()`; `GET /api/mail/important`). Bluesky/blog fetching retired.
+- **v1.24 (2026-07-17) — public release:** ⚙️ **Settings view** (`config.py` JSON store + `GET/POST /api/settings`, secrets masked): dark/**light** theme, accent color, default chat tier, landing on/off, **configurable vault root** (`REGALIA_VAULT`/Settings). Fourth router tier **`openai`** (ChatGPT via REST/urllib, default `gpt-5.6-terra`); API keys settable in-app (`config.secret()` — env wins). **In-app inbox connect** (`POST /api/connect/email` runs the OAuth flow; still drafts-only). **Installer**: PyInstaller `regalia.spec` + `paths.py` (frozen state → OS data dir), GitHub Actions `tests.yml` + `release.yml` (tag → Win/macOS binaries). Repo went public-ready: root README/LICENSE/.env.example/RELEASE.md, PII scrub. 61 smoke tests.
 
 ## Architecture (where things live)
 

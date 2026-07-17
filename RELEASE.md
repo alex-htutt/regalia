@@ -65,5 +65,18 @@ git log --all --format=%s | grep -iE "$PII"
 
 ## Cutting a version release
 
-(Installer/CI release steps land with the packaging work — this section will document
-tagging `v*`, the GitHub Actions build matrix, and attaching binaries.)
+1. Make sure the smoke suite is green (`cd dashboard && python -m unittest discover -s tests`)
+   — the tests workflow also runs it on every push.
+2. Tag and push: `git tag v1.24 && git push origin v1.24`.
+3. The `release` workflow (`.github/workflows/release.yml`) builds the standalone desktop
+   app on Windows + macOS with PyInstaller (`dashboard/regalia.spec`) and attaches
+   `Regalia-windows.zip` / `Regalia-macos.zip` to the GitHub Release for the tag.
+   (It can also be run manually via workflow_dispatch to test the build.)
+4. Local build for testing: `dashboard/build.bat` (Windows) or `dashboard/build.sh`
+   (macOS/Linux) → `dashboard/dist/Regalia/`.
+
+Packaged-build behavior worth knowing: per-user state (settings, chats, email tokens,
+uploads) moves to the OS user-data dir (`dashboard/paths.py`); the vault defaults to
+`~/RegaliaVault` until changed in Settings; chat attachments can't be read by the
+`claude` CLI tier when packaged (they live outside the vault tree — the other tiers
+inline them).

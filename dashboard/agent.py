@@ -771,7 +771,7 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
     if not task:
         raise AgentError(f"{spec['name']} needs a task — tell it what to do.")
     tier = (tier or spec["tier"]).lower()
-    if tier not in ("fast", "smart", "claude"):
+    if tier not in router.TIERS:
         tier = spec["tier"]
 
     def _emit(ev):

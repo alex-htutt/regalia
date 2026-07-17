@@ -541,5 +541,110 @@ class ChatStoreTests(unittest.TestCase):
         self.assertEqual(len(self.client.get(f"/api/chats/{cid}").get_json()["messages"]), 1)
 
 
+class SettingsTests(unittest.TestCase):
+    """The settings store round-trips, rejects junk, and never leaks secrets."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        # Isolate every test from the real (gitignored) store.
+        import tempfile
+        import config
+        self._config = config
+        self._orig_path = config.CONFIG_PATH
+        self._tmp = tempfile.TemporaryDirectory()
+        config.CONFIG_PATH = Path(self._tmp.name) / ".config.json"
+
+    def tearDown(self):
+        self._config.CONFIG_PATH = self._orig_path
+        self._tmp.cleanup()
+
+    def test_get_returns_defaults_and_vault_root(self):
+        r = self.client.get("/api/settings")
+        self.assertEqual(r.status_code, 200)
+        d = r.get_json()
+        self.assertEqual(d["settings"]["theme"], "dark")
+        self.assertTrue(d["vault_root"])
+
+    def test_post_round_trips(self):
+        r = self.client.post("/api/settings", json={"theme": "light", "accent": "#a06a24",
+                                                    "default_tier": "claude",
+                                                    "landing_enabled": False})
+        self.assertEqual(r.status_code, 200)
+        d = self.client.get("/api/settings").get_json()["settings"]
+        self.assertEqual(d["theme"], "light")
+        self.assertEqual(d["accent"], "#a06a24")
+        self.assertEqual(d["default_tier"], "claude")
+        self.assertFalse(d["landing_enabled"])
+
+    def test_unknown_key_rejected(self):
+        r = self.client.post("/api/settings", json={"evil": 1})
+        self.assertEqual(r.status_code, 400)
+
+    def test_bad_values_rejected(self):
+        self.assertEqual(
+            self.client.post("/api/settings", json={"theme": "solarized"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/settings", json={"accent": "red"}).status_code, 400)
+
+    def test_secrets_are_never_returned(self):
+        self.client.post("/api/settings", json={"anthropic_api_key": "sk-ant-secret123"})
+        raw = self.client.get("/api/settings").get_data(as_text=True)
+        self.assertNotIn("secret123", raw)
+        d = json.loads(raw)["settings"]
+        self.assertEqual(d["anthropic_api_key"], {"set": True})
+        # ...but the store itself resolves it (env, then file)
+        self.assertEqual(
+            self._config.secret("anthropic_api_key", "NO_SUCH_ENV_VAR__"), "sk-ant-secret123")
+
+    def test_secret_clears_with_empty_string(self):
+        self.client.post("/api/settings", json={"openai_api_key": "sk-x"})
+        self.client.post("/api/settings", json={"openai_api_key": ""})
+        d = self.client.get("/api/settings").get_json()["settings"]
+        self.assertEqual(d["openai_api_key"], {"set": False})
+
+    def test_router_status_includes_openai(self):
+        d = self.client.get("/api/router/status").get_json()
+        self.assertIn("openai", d)
+        self.assertEqual(d["openai"]["backend"], "openai")
+        self.assertIn("available", d["openai"])
+
+    def test_openai_key_from_store_flips_availability(self):
+        import os
+        if os.environ.get("OPENAI_API_KEY"):
+            self.skipTest("environment already carries an OpenAI key")
+        self.assertFalse(self.client.get("/api/router/status").get_json()["openai"]["available"])
+        self.client.post("/api/settings", json={"openai_api_key": "sk-test"})
+        self.assertTrue(self.client.get("/api/router/status").get_json()["openai"]["available"])
+
+    def test_connect_email_validates_provider(self):
+        r = self.client.post("/api/connect/email", json={"provider": "carrier-pigeon"})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.get("/api/connect/status")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(r.get_json()["state"], ("idle", "running", "done", "error"))
+
+    def test_openai_chat_requires_key(self):
+        import os
+        if os.environ.get("OPENAI_API_KEY"):
+            self.skipTest("environment already carries an OpenAI key")
+        with self.assertRaises(router.RouterError) as ctx:
+            router.chat([{"role": "user", "content": "hi"}], tier="openai")
+        self.assertEqual(ctx.exception.status, 401)
+
+    def test_new_chat_uses_default_tier(self):
+        self.client.post("/api/settings", json={"default_tier": "claude"})
+        cid = None
+        try:
+            d = self.client.post("/api/chats").get_json()
+            cid = d["id"]
+            self.assertEqual(d["tier"], "claude")
+        finally:
+            if cid:
+                self.client.delete(f"/api/chats/{cid}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

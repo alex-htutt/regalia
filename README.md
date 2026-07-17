@@ -16,14 +16,19 @@ Regalia is a single-user cockpit for a Markdown knowledge vault. It reads YAML f
 - **Overview dashboard** — every note with frontmatter becomes a task: stat cards (active / overdue / complete), filters by status · area · course, live search, deadline highlighting.
 - **Landing page** — an ASCII-dither WebGL hero with pinned scrollytelling that lands you in your recently-worked folders.
 - **Chat, grounded in your vault** — multi-conversation chat that can search, open, and quote your actual notes; an opt-in ✏️ Edit mode lets it write them.
-- **Three model tiers, one router** — `fast` (local Ollama, private and free), `smart` (Anthropic API), `claude` (Claude Code CLI, billed to your Claude subscription instead of API credits). Pick per conversation, per agent.
+- **Four model tiers, one router** — `fast` (local Ollama, private and free), `smart` (Anthropic API), `openai` (ChatGPT models via the OpenAI API), `claude` (Claude Code CLI, billed to your Claude subscription instead of API credits). Pick per conversation, per agent.
+- **Settings & connections** — theme (dark/light), accent color, default tier, and vault folder from a Settings view; connect Gmail/Outlook and add API keys in-app, no terminal required.
 - **Agents** — a real tool-use loop with streamed steps: Daily Summarizer, Project Scaffolder, Research Agent, and Inbox Triage. Vault-confined, traversal-safe tools.
 - **Inbox (drafts-only, by construction)** — connect Gmail and Outlook, read mail, and save drafts. There is deliberately **no send path anywhere in the codebase** — you review and send from your mail client.
 - **Daily briefing** — tech-news RSS, a profile-ranked job board scan, and an important-mail panel on the home page.
 - **Claude usage panel** — your Claude Code token usage (today / all-time / per-model, 14-day chart) read from local JSONL metadata. Message content is never read.
 - **Desktop or browser** — `python app.py` for the browser, `python desktop.py` for a native window (pywebview).
 
-## Quick start (from source)
+## Install
+
+**Download** (no Python required): grab the latest `Regalia-windows.zip` or `Regalia-macos.zip` from [Releases](../../releases), unzip, and run `Regalia`. On first run it creates `~/RegaliaVault` — point it at your own vault folder from **Settings**.
+
+**Or run from source:**
 
 ```bash
 git clone https://github.com/alex-htutt/work-vault.git regalia
@@ -33,16 +38,15 @@ python app.py          # → http://localhost:5000
 # or: python desktop.py  → native desktop window
 ```
 
-The dashboard indexes the vault it lives inside (the repo root). Point Obsidian at the repo root to edit the same notes, or just start dropping `.md` files with the frontmatter schema (see [USAGE.md](USAGE.md)).
-
-Downloadable installers (no Python required) are planned via GitHub Releases — see [RELEASE.md](RELEASE.md).
+From source, the dashboard indexes the vault it lives inside (the repo root) unless `REGALIA_VAULT` or the Settings vault field says otherwise. Point Obsidian at the same folder to edit the same notes, or just start dropping `.md` files with the frontmatter schema (see [USAGE.md](USAGE.md)).
 
 ## Model tiers
 
 | Tier | Backend | Needs | Billing |
 |---|---|---|---|
 | `fast` | Ollama (local) | `ollama pull llama3.2` | Free / private |
-| `smart` | Anthropic API | `ANTHROPIC_API_KEY` | API credits |
+| `smart` | Anthropic API | API key (env or Settings) | API credits |
+| `openai` | OpenAI API | API key (env or Settings) | API credits |
 | `claude` | Claude Code CLI | `claude` CLI signed in to a Claude subscription | Your subscription |
 
 Every model call goes through `dashboard/router.py`; adding a backend is one more branch there.

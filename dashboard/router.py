@@ -1,17 +1,20 @@
-"""Model router — one chat() over three backends.
+"""Model router — one chat() over four backends.
 
 This is the core primitive of the self-hosted workspace: every model call in the
 app goes through chat(), which picks a backend by tier.
 
     tier="fast"   -> Ollama, local HTTP on :11434  (no API cost, needs Ollama)
-    tier="smart"  -> Anthropic, cloud              (needs ANTHROPIC_API_KEY)
+    tier="smart"  -> Anthropic, cloud              (needs an Anthropic API key)
+    tier="openai" -> OpenAI, cloud                 (needs an OpenAI API key)
     tier="claude" -> Claude Code CLI, subprocess   (bills your Claude subscription,
                                                     not API credits; needs `claude`
                                                     installed and signed in)
 
-chat() returns {"reply", "model", "tier"} on success, or raises RouterError with
-a user-facing message + HTTP status the Flask layer can hand straight to the UI.
-Adding a third backend later means one more branch here and nothing elsewhere.
+API keys come from the environment OR the Settings store (config.secret — env
+wins). chat() returns {"reply", "model", "tier"} on success, or raises
+RouterError with a user-facing message + HTTP status the Flask layer can hand
+straight to the UI. Adding a backend means one more branch here and nothing
+elsewhere.
 """
 
 from __future__ import annotations
@@ -34,6 +37,13 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 # Cloud runtime. Smart tier defaults to the same model the twin uses.
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 
+# OpenAI runtime (ChatGPT models) — plain REST over stdlib urllib, mirroring the
+# Ollama branch; no SDK dep. Default model = the current balanced/cost tier
+# (verify at platform.openai.com/docs/models if it 404s; override via env or
+# Settings). Key comes from OPENAI_API_KEY or the Settings store.
+OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com/v1").rstrip("/")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-terra")
+
 # Subscription runtime. The `claude` tier shells out to the Claude Code CLI, which
 # bills your logged-in Claude subscription (Pro/Max) instead of API credits — the
 # same auth you use in Claude Code. CLAUDE_CLI_MODEL="" lets the CLI pick the
@@ -43,12 +53,25 @@ CLAUDE_CLI_MODEL = os.environ.get("CLAUDE_CLI_MODEL", "")
 CLAUDE_CLI_TIMEOUT = int(os.environ.get("CLAUDE_CLI_TIMEOUT", "180"))
 
 # The CLI confines file access to its working directory tree. Run it from the
-# vault root (parent of this dashboard folder) so Chat/Twin can read the whole
-# vault, not just dashboard/. Override with CLAUDE_CLI_CWD if the vault moves.
-VAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# vault root so Chat/Twin can read the whole vault, not just dashboard/. Vault
+# root follows the same resolution as app.py (REGALIA_VAULT env → the Settings
+# view's vault_path → the repo root); CLAUDE_CLI_CWD still overrides everything.
+import config as _config  # stdlib-only module; no circular import
+
+import paths as _paths
+
+_vault_override = os.path.expanduser(
+    os.environ.get("REGALIA_VAULT") or _config.get("vault_path") or ""
+)
+if _vault_override and os.path.isdir(_vault_override):
+    VAULT_ROOT = os.path.abspath(_vault_override)
+elif _paths.is_frozen():
+    VAULT_ROOT = str(_paths.default_vault())
+else:
+    VAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
 
-TIERS = ("fast", "smart", "claude")
+TIERS = ("fast", "smart", "openai", "claude")
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────
@@ -90,6 +113,16 @@ class RouterError(Exception):
         self.status = status
 
 
+# ── API keys — environment wins, then the Settings store ────────────────────
+
+def _anthropic_key() -> str:
+    return _config.secret("anthropic_api_key", "ANTHROPIC_API_KEY")
+
+
+def _openai_key() -> str:
+    return _config.secret("openai_api_key", "OPENAI_API_KEY")
+
+
 def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attachments=None,
          allow_write=False) -> dict:
     """Run a chat completion on the chosen tier.
@@ -109,6 +142,8 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attach
     atts = _norm_attachments(attachments)
     if tier == "smart":
         return _anthropic_chat(messages, system, max_tokens, model, atts)
+    if tier == "openai":
+        return _openai_chat(messages, system, max_tokens, model, atts)
     if tier == "claude":
         return _claude_code_chat(messages, system, max_tokens, model, atts, allow_write)
     return _ollama_chat(messages, system, max_tokens, model, atts)
@@ -136,6 +171,8 @@ def chat_tools(messages, tools, tier="smart", system=None, max_tokens=2048, mode
         tier = "smart"
     if tier == "fast":
         return _ollama_chat_tools(messages, tools, system, max_tokens, model)
+    if tier == "openai":
+        return _openai_chat_tools(messages, tools, system, max_tokens, model)
     return _anthropic_chat_tools(messages, tools, system, max_tokens, model)
 
 
@@ -147,8 +184,13 @@ def status() -> dict:
             "backend": "anthropic",
             "model": ANTHROPIC_MODEL,
             "available": bool(
-                os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+                _anthropic_key() or os.environ.get("ANTHROPIC_AUTH_TOKEN")
             ),
+        },
+        "openai": {
+            "backend": "openai",
+            "model": OPENAI_MODEL,
+            "available": bool(_openai_key()),
         },
         "claude": {
             "backend": "claude-code",
@@ -171,13 +213,15 @@ def _require_anthropic(model):
             "`pip install -r requirements.txt` and restart.",
             503,
         )
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+    key = _anthropic_key()
+    if not (key or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         raise RouterError(
-            "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment, "
-            "then restart the dashboard.",
+            "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment "
+            "or add a key in Settings → Connections.",
             401,
         )
-    return anthropic, anthropic.Anthropic(), (model or ANTHROPIC_MODEL)
+    client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+    return anthropic, client, (model or ANTHROPIC_MODEL)
 
 
 def _attach_to_anthropic(messages, atts) -> list:
@@ -266,6 +310,166 @@ def _anthropic_chat_tools(messages, tools, system, max_tokens, model) -> dict:
         "stop_reason": resp.stop_reason,
         "model": mdl,
         "tier": "smart",
+    }
+
+
+# ── Cloud: OpenAI ────────────────────────────────────────────────────────────
+# Plain REST (POST {OPENAI_BASE}/chat/completions) over stdlib urllib — same
+# pattern as the Ollama branch, whose wire format OpenAI's mirrors. Canonical
+# (Anthropic-shaped) history translates per message; tool defs translate the
+# same way as _to_ollama_tools but arguments ride as JSON strings.
+
+def _openai_request(payload: dict) -> dict:
+    key = _openai_key()
+    if not key:
+        raise RouterError(
+            "No OpenAI API key found. Set OPENAI_API_KEY in your environment "
+            "or add a key in Settings → Connections.",
+            401,
+        )
+    req = urllib.request.Request(
+        OPENAI_BASE + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = (json.loads(e.read().decode("utf-8")).get("error") or {}).get("message", "")
+        except Exception:  # noqa: BLE001
+            pass
+        if e.code == 401:
+            raise RouterError("OpenAI rejected the API key. Check it in Settings → Connections.", 401)
+        if e.code == 404 and "model" in detail.lower():
+            raise RouterError(
+                f"OpenAI model '{payload.get('model')}' wasn't found. Set OPENAI_MODEL "
+                "to a model your account can use (see platform.openai.com/docs/models).",
+                503,
+            )
+        raise RouterError(f"OpenAI error: {detail or e}", 502)
+    except (urllib.error.URLError, OSError) as e:
+        raise RouterError(f"Couldn't reach OpenAI: {e}", 503)
+
+
+def _to_openai_messages(messages, atts=None) -> list:
+    """Translate canonical (Anthropic-shaped) history into OpenAI's chat format.
+
+    Same walk as _to_ollama_messages, with OpenAI's two quirks: tool_calls carry
+    an id + JSON-string arguments, and tool results are `role: "tool"` messages
+    tied back by tool_call_id. Image attachments become image_url data URIs on
+    the latest user turn (PDFs and other files are skipped — the app inlines
+    small text files itself before calling us).
+    """
+    out = []
+    for m in messages:
+        role, content = m.get("role"), m.get("content")
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        if role == "assistant":
+            texts, calls = [], []
+            for b in content or []:
+                if b.get("type") == "text":
+                    texts.append(b.get("text", ""))
+                elif b.get("type") == "tool_use":
+                    calls.append({
+                        "id": b.get("id") or f"call_{len(calls)}",
+                        "type": "function",
+                        "function": {
+                            "name": b.get("name"),
+                            "arguments": json.dumps(b.get("input") or {}),
+                        },
+                    })
+            msg = {"role": "assistant", "content": "\n".join(texts) or None}
+            if calls:
+                msg["tool_calls"] = calls
+            out.append(msg)
+        else:  # user turn: plain text and/or tool results
+            texts = []
+            for b in content or []:
+                if b.get("type") == "text":
+                    texts.append(b.get("text", ""))
+                elif b.get("type") == "tool_result":
+                    out.append({
+                        "role": "tool",
+                        "tool_call_id": b.get("tool_use_id") or "",
+                        "content": _result_to_str(b.get("content")),
+                    })
+            if texts:
+                out.append({"role": "user", "content": "\n".join(texts)})
+
+    # Vision: inline image attachments on the most recent user message.
+    images = [a for a in (atts or []) if a["mime"].startswith("image/")]
+    if images:
+        for i in range(len(out) - 1, -1, -1):
+            if out[i].get("role") == "user" and isinstance(out[i].get("content"), str):
+                parts = [{"type": "text", "text": out[i]["content"]}]
+                for a in images:
+                    b64 = _read_b64(a["path"])
+                    if b64:
+                        parts.append({"type": "image_url",
+                                      "image_url": {"url": f"data:{a['mime']};base64,{b64}"}})
+                out[i] = {"role": "user", "content": parts}
+                break
+    return out
+
+
+def _openai_chat(messages, system, max_tokens, model, attachments=None) -> dict:
+    mdl = model or OPENAI_MODEL
+    msgs = _to_openai_messages(messages, attachments)
+    sys_text = _flatten_system(system)
+    if sys_text:
+        msgs = [{"role": "system", "content": sys_text}] + msgs
+    data = _openai_request({
+        "model": mdl,
+        "messages": msgs,
+        "max_completion_tokens": max_tokens,
+    })
+    choice = (data.get("choices") or [{}])[0]
+    reply = ((choice.get("message") or {}).get("content") or "").strip()
+    return {"reply": reply or "…(the model went quiet — try again)",
+            "model": data.get("model") or mdl, "tier": "openai"}
+
+
+def _openai_chat_tools(messages, tools, system, max_tokens, model) -> dict:
+    mdl = model or OPENAI_MODEL
+    msgs = _to_openai_messages(messages)
+    sys_text = _flatten_system(system)
+    if sys_text:
+        msgs = [{"role": "system", "content": sys_text}] + msgs
+    data = _openai_request({
+        "model": mdl,
+        "messages": msgs,
+        "tools": _to_ollama_tools(tools),  # same {type:"function",...} shape
+        "max_completion_tokens": max_tokens,
+    })
+    choice = (data.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    text = (msg.get("content") or "").strip()
+    tool_calls = []
+    for i, tc in enumerate(msg.get("tool_calls") or []):
+        fn = tc.get("function") or {}
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+        tool_calls.append({
+            "id": tc.get("id") or f"call_{i}",
+            "name": fn.get("name"),
+            "input": args if isinstance(args, dict) else {},
+        })
+    stop = choice.get("finish_reason") or ""
+    return {
+        "text": text,
+        "tool_calls": tool_calls,
+        "stop_reason": "tool_use" if stop == "tool_calls" else (stop or "end_turn"),
+        "model": data.get("model") or mdl,
+        "tier": "openai",
     }
 
 
