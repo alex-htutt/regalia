@@ -27,6 +27,7 @@ import mailbox
 import news_sources
 import paths
 import router
+import updater
 
 app = Flask(__name__)
 
@@ -45,6 +46,12 @@ else:
     VAULT_ROOT = Path(__file__).parent.parent
 IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard", "founders-edition"}
 IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
+
+# Update check — runs ONCE here, at import (i.e. launch), on a background thread.
+# Offline-safe; the routes only read its cached result. If autoupdate is on and a
+# packaged build is out of date, the check applies it. Skipped when
+# REGALIA_UPDATE_CHECK=0 (the smoke suite sets this to stay network-free).
+updater.startup(autoupdate=bool(config.get("autoupdate")))
 
 # Claude Code writes per-session transcripts here; each line carries a
 # message.usage block we aggregate. We read ONLY token counts / model /
@@ -167,6 +174,30 @@ def api_settings():
             return jsonify({"error": str(e)}), 400
         return jsonify({"settings": config.mask(cfg), "vault_root": str(VAULT_ROOT)})
     return jsonify({"settings": config.mask(config.load()), "vault_root": str(VAULT_ROOT)})
+
+
+@app.route("/api/update")
+def api_update():
+    """Cached result of the launch-time release check (never hits the network).
+
+    Shape: {checked, current, latest, out_of_date, can_self_update, releases_url,
+    error, apply:{state, detail}}. The check runs once at startup — this route
+    only reports it, so polling here honors the "check only on launch" contract.
+    """
+    return jsonify(updater.snapshot())
+
+
+@app.route("/api/update/apply", methods=["POST"])
+def api_update_apply():
+    """Start a self-update (frozen builds swap the binary in place + relaunch).
+
+    From source this is a no-op that reports the `git pull` path. Poll
+    /api/update afterward — the `apply.state` field tracks progress. On a
+    successful frozen update the process exits mid-relaunch, so the caller may
+    simply see the connection drop."""
+    result = updater.apply()
+    status = 200 if result.get("started") or result.get("reason") == "already-running" else 409
+    return jsonify({**result, "update": updater.snapshot()}), status
 
 
 @app.route("/api/tasks")
@@ -817,6 +848,63 @@ def api_external_delete(name):
     return jsonify({"ok": True, "kept_context": True})
 
 
+# One Tk root at a time — tkinter isn't thread-safe, and the dev server serves
+# each request on its own thread. A single local user clicking Browse never
+# needs concurrency; the lock just makes an accidental double-click safe.
+_PICK_LOCK = threading.Lock()
+
+
+def _tk_pick_folder() -> str:
+    """Native folder picker via tkinter (stdlib). Browser/dev fallback path.
+
+    Created and destroyed inside the calling thread for a one-shot modal dialog;
+    askdirectory runs its own local event loop, so no mainloop is needed.
+    Returns '' if the user cancels."""
+    import tkinter
+    from tkinter import filedialog
+
+    with _PICK_LOCK:
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            path = filedialog.askdirectory(title="Choose a folder to connect")
+        finally:
+            root.destroy()
+    return path or ""
+
+
+@app.route("/api/pick-folder", methods=["POST"])
+def api_pick_folder():
+    """Open a native folder picker on this machine and return the chosen path.
+
+    Local-only convenience for the External-folders connect flow. Two backends:
+    the pywebview window's native dialog when running as the desktop app, else a
+    tkinter dialog in browser/dev mode. Returns {"path": ""} on cancel and
+    {"unavailable": true} when no picker is available (the UI then falls back to
+    manual entry). Never touches the registry — the returned path still goes
+    through externals.add()'s validation on Connect."""
+    # Desktop app: reuse the already-running native webview window. Its dialog
+    # is dispatched to the GUI thread internally, so calling it here is safe.
+    try:
+        import webview  # optional dep; present only with pywebview installed
+        have_window = bool(getattr(webview, "windows", None))
+    except Exception:
+        have_window = False
+    if have_window:
+        try:
+            result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+            return jsonify({"path": (result[0] if result else "")})
+        except Exception as e:  # pragma: no cover - GUI backend specific
+            return jsonify({"unavailable": True, "error": str(e)})
+
+    # Browser/dev: fall back to a tkinter dialog in-process.
+    try:
+        return jsonify({"path": _tk_pick_folder()})
+    except Exception as e:  # tkinter missing/headless
+        return jsonify({"unavailable": True, "error": str(e)})
+
+
 @app.route("/api/project", methods=["POST"])
 def api_create_project():
     data = request.get_json(silent=True)
@@ -1440,6 +1528,154 @@ def api_chat():
     except router.RouterError as e:
         return jsonify({"error": e.message}), e.status
     return jsonify(result)
+
+
+# ── Live Claude chat streams ─────────────────────────────────────────────────
+# The claude tier runs the CLI's own agentic loop, which can legitimately take a
+# while. Rather than block /api/chat for the whole run (and hide everything until
+# it finishes), the panel starts a stream, gets a run_id, then polls for the
+# thinking / tool / text events as they arrive. Mirrors the agent-run store: an
+# in-memory, single-user, capped dict. Only the claude tier uses this path — the
+# other tiers stay on the blocking /api/chat above.
+_CHAT_STREAMS: dict[str, dict] = {}
+_CHAT_STREAMS_LOCK = threading.Lock()
+_CHAT_STREAMS_MAX = 40
+
+
+def _trim_chat_streams_locked() -> None:
+    finished = sorted(
+        (v for v in _CHAT_STREAMS.values() if v["status"] != "running"),
+        key=lambda v: v["started"],
+    )
+    for old in finished[:-_CHAT_STREAMS_MAX]:
+        _CHAT_STREAMS.pop(old["id"], None)
+
+
+def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode):
+    """Consume the Claude CLI stream and map its events onto UI steps.
+
+    think = extended-thinking blocks; text = intermediate/answer text as it
+    streams; tool/tool_result = the CLI's file work. The authoritative final
+    reply comes from the trailing 'result' event."""
+    def append(ev):
+        with _CHAT_STREAMS_LOCK:
+            run = _CHAT_STREAMS.get(run_id)
+            if run is not None:
+                run["steps"].append(ev)
+
+    names: dict = {}
+    reply = ""
+    model_used = ""
+    try:
+        for ev in router.claude_code_chat_stream(
+                messages, system=system, model=model,
+                attachments=attachments, allow_write=edit_mode):
+            etype = ev.get("type")
+            if etype == "system" and ev.get("subtype") == "init":
+                model_used = ev.get("model") or model_used
+            elif etype == "assistant":
+                for b in (ev.get("message") or {}).get("content") or []:
+                    bt = b.get("type")
+                    if bt == "thinking" and (b.get("thinking") or "").strip():
+                        append({"type": "think", "text": b["thinking"]})
+                    elif bt == "text" and (b.get("text") or "").strip():
+                        append({"type": "text", "text": b["text"]})
+                    elif bt == "tool_use":
+                        names[b.get("id")] = b.get("name")
+                        append({"type": "tool", "tool": b.get("name")})
+            elif etype == "user":
+                for b in (ev.get("message") or {}).get("content") or []:
+                    if b.get("type") == "tool_result":
+                        append({"type": "tool_result",
+                                "tool": names.get(b.get("tool_use_id"), "tool")})
+            elif etype == "result":
+                if ev.get("is_error"):
+                    why = ev.get("result") or ev.get("subtype") or "unknown error"
+                    raise router.RouterError(
+                        f"The Claude CLI returned an error: {why}", 502)
+                reply = (ev.get("result") or "").strip()
+                model_used = next(iter(ev.get("modelUsage") or {}), None) or model_used
+        with _CHAT_STREAMS_LOCK:
+            run = _CHAT_STREAMS.get(run_id)
+            if run is not None:
+                run["status"] = "done"
+                run["reply"] = reply or "…(the model went quiet — try again)"
+                run["model"] = model_used or "claude (plan)"
+                _trim_chat_streams_locked()
+    except router.RouterError as e:
+        with _CHAT_STREAMS_LOCK:
+            run = _CHAT_STREAMS.get(run_id)
+            if run is not None:
+                run["status"] = "error"
+                run["error"] = e.message
+                _trim_chat_streams_locked()
+    except Exception as e:  # noqa: BLE001 — never leave a stream stuck "running"
+        with _CHAT_STREAMS_LOCK:
+            run = _CHAT_STREAMS.get(run_id)
+            if run is not None:
+                run["status"] = "error"
+                run["error"] = f"Unexpected error: {e}"
+                _trim_chat_streams_locked()
+
+
+@app.route("/api/chat/stream", methods=["POST"])
+def api_chat_stream():
+    """Start a live Claude chat run; returns a run_id to poll. Claude tier only."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Chat payload must be an object."}), 400
+    if not isinstance(data.get("messages"), list):
+        return jsonify({"error": "No messages provided."}), 400
+
+    messages = _clean_messages(data["messages"])
+    attachments = _resolve_attachments(data.get("attachments"))
+    if attachments and (not messages or messages[-1]["role"] != "user"):
+        messages.append({"role": "user", "content": "(see attached file(s))"})
+    if not messages or messages[0]["role"] != "user":
+        return jsonify({"error": "Say something to start the conversation."}), 400
+
+    user_system = data.get("system") if isinstance(data.get("system"), str) else None
+    edit_mode = bool(data.get("edit"))
+
+    run_id = uuid.uuid4().hex[:12]
+    with _CHAT_STREAMS_LOCK:
+        _CHAT_STREAMS[run_id] = {
+            "id": run_id,
+            "status": "running",
+            "steps": [],
+            "reply": "",
+            "model": "",
+            "error": None,
+            "started": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        _trim_chat_streams_locked()
+
+    threading.Thread(
+        target=_chat_stream_worker,
+        args=(run_id, messages, user_system, None, attachments, edit_mode),
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "run_id": run_id})
+
+
+@app.route("/api/chat/stream/<run_id>")
+def api_chat_stream_status(run_id):
+    """Poll a live Claude chat run. `since` is a step cursor to fetch only new
+    events; `total` in the response is the next cursor to pass."""
+    since = request.args.get("since", default=0, type=int) or 0
+    with _CHAT_STREAMS_LOCK:
+        run = _CHAT_STREAMS.get(run_id)
+        if run is None:
+            return jsonify({"error": "No such chat stream."}), 404
+        steps = run["steps"]
+        return jsonify({
+            "status": run["status"],
+            "steps": steps[since:] if since < len(steps) else [],
+            "total": len(steps),
+            "reply": run["reply"],
+            "model": run["model"],
+            "error": run["error"],
+        })
 
 
 # ── Chat conversation store (multi-chat, v1.20) ──────────────────────────────

@@ -449,19 +449,21 @@
     border-radius: 10px; padding: var(--panel-pad);
     display: flex; flex-direction: column; gap: 12px;
   }
-  .np-form label {
+  .np-form label, .bento-card label {
     display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0;
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
     color: var(--muted); font-weight: 600;
   }
-  .np-form input, .np-form select, .np-form textarea {
+  .np-form input, .np-form select, .np-form textarea,
+  .bento-card input, .bento-card select, .bento-card textarea {
     border: 1px solid var(--border); border-radius: 7px;
     padding: 8px 10px; font-size: 13px; font-family: inherit;
     background: var(--bg); color: var(--text); outline: none;
     text-transform: none; letter-spacing: 0; font-weight: 400;
   }
-  .np-form textarea { resize: vertical; flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; }
-  .np-form input:focus, .np-form select:focus, .np-form textarea:focus { border-color: var(--border-hover); }
+  .np-form textarea, .bento-card textarea { resize: vertical; flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; }
+  .np-form input:focus, .np-form select:focus, .np-form textarea:focus,
+  .bento-card input:focus, .bento-card select:focus, .bento-card textarea:focus { border-color: var(--border-hover); }
   .np-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; min-width: 0; }
   .np-row > label { flex: 1 1 min(280px, 100%); }
   .np-row .pill, .np-row .np-submit { flex: 0 0 auto; }
@@ -486,6 +488,54 @@
   .proj-group-head:first-child { margin-top: 0; }
 
   .settings-card { margin-top: 16px; }
+
+  /* ── Settings bento grid ──
+     Each major settings group is a card in a 3-col bento. The wrapping <form>s
+     use .stg-contents (display:contents) so a single form still submits while
+     its cards participate directly in the grid. */
+  .stg-contents { display: contents; }
+  .bento {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    align-items: start;
+  }
+  .bento-card {
+    grid-column: span 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: var(--panel-pad);
+    display: flex; flex-direction: column; gap: 14px;
+    min-width: 0;
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  }
+  .bento-card:hover { border-color: var(--border-hover); box-shadow: 0 8px 30px rgba(0,0,0,0.16); }
+  .bento-card:not(.bento-span-3):hover { transform: translateY(-2px); }
+  .bento-span-2 { grid-column: span 2; }
+  .bento-span-3 { grid-column: 1 / -1; }
+  .bento-head { display: flex; align-items: flex-start; gap: 11px; }
+  .bento-icon {
+    flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px;
+    display: grid; place-items: center; font-size: 16px; line-height: 1;
+    background: var(--glass-inset); border: 1px solid var(--glass-border);
+  }
+  .bento-heads { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .bento-title {
+    font-size: 14px; font-weight: 650; color: var(--text);
+    letter-spacing: -0.01em; transition: transform .18s ease;
+  }
+  .bento-card:hover .bento-title { transform: translateX(2px); }
+  .bento-sub { font-size: 12px; color: var(--muted); line-height: 1.42; }
+  .bento-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  @media (max-width: 900px) {
+    .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .bento-span-2, .bento-span-3 { grid-column: 1 / -1; }
+  }
+  @media (max-width: 620px) {
+    .bento { grid-template-columns: 1fr; }
+    .bento-card, .bento-span-2, .bento-span-3 { grid-column: 1 / -1; }
+  }
   .backend-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
@@ -601,6 +651,29 @@
     border: 1px solid var(--err-border); padding: 9px 13px; border-radius: 8px; font-size: 12.5px;
   }
   .chat-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
+  /* Live Claude thinking/tool stream — shown while busy, then replaced by the
+     final bot bubble. Deliberately quieter than a real message. */
+  .chat-thinking {
+    align-self: flex-start; max-width: min(80%, 760px);
+    background: var(--glass-inset); border: 1px solid var(--border);
+    border-left: 2px solid var(--accent); border-radius: 10px;
+    padding: 9px 13px; font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  }
+  .chat-thinking .ct-head {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--faint); font-weight: 600; margin-bottom: 6px;
+  }
+  .chat-thinking .ct-line { margin: 3px 0; }
+  .chat-thinking .ct-line.think { color: var(--muted); font-style: italic; }
+  .chat-thinking .ct-line.text { color: var(--text); font-style: normal; }
+  .chat-thinking .ct-line p { margin: 3px 0; }
+  .chat-thinking .ct-line ol, .chat-thinking .ct-line ul { margin: 3px 0; padding-left: 18px; }
+  .chat-thinking .ct-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .chat-thinking .ct-tool {
+    font-size: 10.5px; font-family: var(--font-mono); color: var(--muted);
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 6px;
+  }
   .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); min-width: 0; }
   .chat-input textarea {
     flex: 1 1 180px; min-width: 0; resize: none; border: 1px solid var(--border); border-radius: 8px;
@@ -957,6 +1030,19 @@
   .compose-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 2px; }
   .compose-note { font-size: 11.5px; color: var(--faint); }
   @media (max-width: 760px) { .inbox-split { grid-template-columns: 1fr; } }
+  /* Update banner — slim, amber, shown at the top of the shell when a newer
+     release exists (and autoupdate is off). Hidden by default. */
+  .update-banner { display: none; align-items: center; gap: 12px; margin: 12px 16px 0;
+    padding: 10px 14px; border: 1px solid var(--amber); border-radius: 10px;
+    background: var(--amber-bg); color: var(--text); font-size: 13px; }
+  .update-banner.show { display: flex; }
+  .update-banner .ub-text { flex: 1; min-width: 0; }
+  .update-banner .ub-text b { font-weight: 600; }
+  .update-banner .ub-ver { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .update-banner .ub-btn { flex-shrink: 0; }
+  .update-banner .ub-dismiss { flex-shrink: 0; background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; }
+  .update-banner .ub-dismiss:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -1060,6 +1146,13 @@
     <button class="nav"    data-view="settings" onclick="setView('settings')">⚙️ Settings</button>
   </nav>
   <main class="main">
+
+    <div class="update-banner" id="update-banner">
+      <span aria-hidden="true">✨</span>
+      <div class="ub-text" id="update-banner-text"></div>
+      <button class="pill ub-btn" id="update-banner-btn" onclick="updateApply(this)">Update now</button>
+      <button class="ub-dismiss" title="Dismiss until next launch" onclick="updateDismiss()">×</button>
+    </div>
 
     <section class="view" data-view="overview">
       <div id="stats" class="grid grid-cols-2 sm:grid-cols-4 gap-3 px-4 sm:px-6 pt-5"></div>
@@ -1208,60 +1301,104 @@
         <p>Everything configurable lives here — appearance, model backends, and connections. Changes save to a local, gitignored store and apply immediately (vault path needs a restart). Environment variables, if set, win over values saved here.</p>
       </div>
       <div class="panel-wrap">
-        <form class="np-form" onsubmit="stgSave(event)">
-          <div class="proj-list-head">Appearance</div>
-          <div class="np-row">
-            <label>Theme<select id="stg-theme">
-              <option value="dark">Dark — Hyperstudio midnight</option>
-              <option value="light">Light — Hyperstudio daylight</option>
-            </select></label>
-            <label>Accent color<span class="np-row" style="gap:8px">
-              <input id="stg-accent" type="color" value="#e7c59a" style="min-width:52px; height:34px; padding:2px;">
-              <button type="button" class="pill" onclick="stgClearAccent()" title="Back to the theme default">Reset</button>
-            </span></label>
-          </div>
-          <label class="np-row" style="align-items:center; gap:8px">
-            <input id="stg-landing" type="checkbox" style="width:auto"> Show the landing page (scrollytelling hero) on load
-          </label>
-          <div class="proj-list-head">Defaults</div>
-          <div class="np-row">
-            <label>New chats start on<select id="stg-tier">
-              <option value="fast">⚡ Fast · local Ollama</option>
-              <option value="smart">🧠 Smart · Anthropic API</option>
-              <option value="openai">🤖 GPT · OpenAI API</option>
-              <option value="chatgpt">● ChatGPT · account</option>
-              <option value="claude">✨ Claude · subscription</option>
-            </select></label>
-          </div>
-          <div class="proj-list-head">Advanced</div>
-          <div class="np-row">
-            <label>Vault folder<input id="stg-vault" type="text" placeholder="(this repo)" autocomplete="off"></label>
-            <label>Briefing cache (seconds)<input id="stg-news-ttl" type="text" inputmode="numeric" placeholder="1800" autocomplete="off"></label>
-          </div>
-          <div class="np-msg" id="stg-vault-now"></div>
-          <div class="np-row">
-            <button class="np-submit" type="submit">Save settings</button>
-          </div>
-          <div class="np-msg" id="stg-msg"></div>
-        </form>
-        <div id="stg-connections"></div>
-        <div class="proj-list-head">External folders</div>
-        <form class="np-form" onsubmit="extAdd(event)">
-          <div class="np-msg" style="margin-bottom:4px">
-            Connect a folder that lives outside the vault. Regalia keeps its notes about it
-            in the vault under <b>external/&lt;name&gt;/</b> and can read and edit the folder's
-            contents — but never adds vault scaffolding to the folder itself.
-          </div>
-          <div class="np-msg" id="ext-list">Loading…</div>
-          <div class="np-row">
-            <label>Name<input id="ext-name" type="text" placeholder="my-project" autocomplete="off"></label>
-            <label>Folder path<input id="ext-path" type="text" placeholder="C:\Users\me\code\my-project" autocomplete="off"></label>
-          </div>
-          <div class="np-row">
-            <button class="np-submit" id="ext-submit" type="submit">Connect folder</button>
-            <span class="np-msg" id="ext-msg"></span>
-          </div>
-        </form>
+        <div class="bento">
+          <form class="stg-contents" onsubmit="stgSave(event)">
+            <div class="bento-card bento-span-2">
+              <div class="bento-head">
+                <div class="bento-icon">🎨</div>
+                <div class="bento-heads">
+                  <div class="bento-title">Appearance</div>
+                  <div class="bento-sub">Theme, accent color, and the landing hero.</div>
+                </div>
+              </div>
+              <div class="bento-body">
+                <div class="np-row">
+                  <label>Theme<select id="stg-theme">
+                    <option value="dark">Dark — Hyperstudio midnight</option>
+                    <option value="light">Light — Hyperstudio daylight</option>
+                  </select></label>
+                  <label>Accent color<span class="np-row" style="gap:8px">
+                    <input id="stg-accent" type="color" value="#e7c59a" style="min-width:52px; height:34px; padding:2px;">
+                    <button type="button" class="pill" onclick="stgClearAccent()" title="Back to the theme default">Reset</button>
+                  </span></label>
+                </div>
+                <label class="np-row" style="flex-direction:row; align-items:center; gap:8px; text-transform:none; letter-spacing:0; font-weight:400; color:var(--text)">
+                  <input id="stg-landing" type="checkbox" style="width:auto"> Show the landing page (scrollytelling hero) on load
+                </label>
+              </div>
+            </div>
+
+            <div class="bento-card">
+              <div class="bento-head">
+                <div class="bento-icon">⚡</div>
+                <div class="bento-heads">
+                  <div class="bento-title">Defaults</div>
+                  <div class="bento-sub">Where new chats begin.</div>
+                </div>
+              </div>
+              <div class="bento-body">
+                <label>New chats start on<select id="stg-tier">
+                  <option value="fast">⚡ Fast · local Ollama</option>
+                  <option value="smart">🧠 Smart · Anthropic API</option>
+                  <option value="openai">🤖 GPT · OpenAI API</option>
+                  <option value="chatgpt">● ChatGPT · account</option>
+                  <option value="claude">✨ Claude · subscription</option>
+                </select></label>
+                <label class="np-row" style="flex-direction:row; align-items:center; gap:8px; text-transform:none; letter-spacing:0; font-weight:400; color:var(--text); margin-top:10px">
+                  <input id="stg-autoupdate" type="checkbox" style="width:auto"> Auto-update on launch (download &amp; relaunch when out of date)
+                </label>
+                <div class="np-msg" id="stg-update"></div>
+              </div>
+            </div>
+
+            <div class="bento-card">
+              <div class="bento-head">
+                <div class="bento-icon">🛠️</div>
+                <div class="bento-heads">
+                  <div class="bento-title">Advanced</div>
+                  <div class="bento-sub">Vault location and briefing cache. Saving here also applies Appearance and Defaults.</div>
+                </div>
+              </div>
+              <div class="bento-body">
+                <label>Vault folder<input id="stg-vault" type="text" placeholder="(this repo)" autocomplete="off"></label>
+                <label>Briefing cache (seconds)<input id="stg-news-ttl" type="text" inputmode="numeric" placeholder="1800" autocomplete="off"></label>
+                <div class="np-msg" id="stg-vault-now"></div>
+                <div class="np-row">
+                  <button class="np-submit" type="submit">Save settings</button>
+                </div>
+                <div class="np-msg" id="stg-msg"></div>
+              </div>
+            </div>
+          </form>
+
+          <form class="stg-contents" onsubmit="extAdd(event)">
+            <div class="bento-card bento-span-2">
+              <div class="bento-head">
+                <div class="bento-icon">📁</div>
+                <div class="bento-heads">
+                  <div class="bento-title">External folders</div>
+                  <div class="bento-sub">Connect a folder outside the vault. Regalia keeps its notes under <b>external/&lt;name&gt;/</b> and can read and edit the folder's contents — but never adds vault scaffolding to the folder itself.</div>
+                </div>
+              </div>
+              <div class="bento-body">
+                <div class="np-msg" id="ext-list">Loading…</div>
+                <div class="np-row">
+                  <label>Name<input id="ext-name" type="text" placeholder="my-project" autocomplete="off"></label>
+                  <label>Folder path<span class="np-row" style="gap:8px">
+                    <input id="ext-path" type="text" placeholder="Browse… or paste a path" autocomplete="off">
+                    <button type="button" class="pill" id="ext-browse" onclick="extPickFolder()" title="Open a folder picker">📂 Browse…</button>
+                  </span></label>
+                </div>
+                <div class="np-row">
+                  <button class="np-submit" id="ext-submit" type="submit">Connect folder</button>
+                  <span class="np-msg" id="ext-msg"></span>
+                </div>
+              </div>
+            </div>
+          </form>
+
+          <div id="stg-connections" class="stg-contents"></div>
+        </div>
       </div>
     </section>
 
@@ -1752,10 +1889,31 @@
     document.getElementById('stg-accent').value = s.accent || '#e7c59a';
     document.getElementById('stg-landing').checked = s.landing_enabled !== false;
     document.getElementById('stg-tier').value = s.default_tier || 'fast';
+    document.getElementById('stg-autoupdate').checked = s.autoupdate === true;
     document.getElementById('stg-vault').value = s.vault_path || '';
     document.getElementById('stg-news-ttl').value = s.news_ttl || '';
     document.getElementById('stg-vault-now').textContent =
       vaultRoot ? `Currently serving: ${vaultRoot} — changing the folder takes effect after a restart.` : '';
+    stgUpdateFill();
+  }
+
+  /* Version / update status line under the auto-update toggle. Reads the cached
+     launch-check result (updateState); the check itself only runs at launch. */
+  function stgUpdateFill() {
+    const el = document.getElementById('stg-update');
+    if (!el) return;
+    const s = updateState;
+    if (!s) { el.textContent = 'Regalia — checking for updates…'; return; }
+    if (s.out_of_date) {
+      el.innerHTML = `Regalia v${esc(s.current)} — <b>update available: v${esc(s.latest)}</b>. `
+        + `<a href="${esc(s.releases_url)}" target="_blank" rel="noopener">Release notes</a>`;
+    } else if (s.error) {
+      el.textContent = `Regalia v${esc(s.current)} — couldn't check for updates (${s.error}).`;
+    } else if (s.checked) {
+      el.textContent = `Regalia v${esc(s.current)} — up to date ✓`;
+    } else {
+      el.textContent = `Regalia v${esc(s.current)}`;
+    }
   }
 
   let stgAccentCleared = false;
@@ -1794,6 +1952,7 @@
       accent: stgAccentCleared ? '' : document.getElementById('stg-accent').value,
       landing_enabled: document.getElementById('stg-landing').checked,
       default_tier: document.getElementById('stg-tier').value,
+      autoupdate: document.getElementById('stg-autoupdate').checked,
       vault_path: document.getElementById('stg-vault').value.trim(),
       news_ttl: document.getElementById('stg-news-ttl').value.trim(),
     };
@@ -1807,6 +1966,7 @@
       stgAccentCleared = false;
       stgApplyLive(d.settings);
       stgFill(d.settings, d.vault_root);
+      if (typeof updateRenderBanner === 'function') updateRenderBanner();
       msg.textContent = 'Saved ✓';
       setTimeout(() => { if (msg.textContent === 'Saved ✓') msg.textContent = ''; }, 1600);
     }).catch(() => { msg.textContent = 'Could not save.'; });
@@ -1821,8 +1981,15 @@
     const keyPh = k => (s[k] && s[k].set ? 'saved ✓ — enter to replace' : '');
     const host = document.getElementById('stg-connections');
     host.innerHTML = `
-      <div class="proj-list-head">Models &amp; backends</div>
-      <form class="np-form" onsubmit="return false">
+      <form class="bento-card bento-span-3" onsubmit="return false">
+        <div class="bento-head">
+          <div class="bento-icon">🧠</div>
+          <div class="bento-heads">
+            <div class="bento-title">Models &amp; backends</div>
+            <div class="bento-sub">API keys and model choices for every tier. Env vars, if set, win over values saved here.</div>
+          </div>
+        </div>
+        <div class="bento-body">
         <div class="np-msg" id="con-backends">Checking backends…</div>
 
         <div class="np-msg"><b id="con-dot-fast"></b>Ollama — local, free, private. <a href="https://ollama.com" target="_blank" rel="noopener">Install it</a> if the dot is red, then pull a model below.</div>
@@ -1885,10 +2052,18 @@
         </div>
         <div class="np-msg" id="con-msg"></div>
         <div class="np-msg">Keys are stored in a local, gitignored file on this machine and never returned by the API. Leave a field empty to use the environment variable / built-in default. Changes apply to the next request — no restart.</div>
+        </div>
       </form>
 
-      <div class="proj-list-head">Email (read + drafts only — nothing can send)</div>
-      <form class="np-form" onsubmit="return false">
+      <form class="bento-card bento-span-3" onsubmit="return false">
+        <div class="bento-head">
+          <div class="bento-icon">✉️</div>
+          <div class="bento-heads">
+            <div class="bento-title">Email</div>
+            <div class="bento-sub">Read + drafts only — nothing here can send.</div>
+          </div>
+        </div>
+        <div class="bento-body">
         <div class="np-msg" id="con-inboxes">Loading…</div>
         <div class="np-row">
           <button type="button" class="pill" onclick="stgConnectEmail('gmail')">Connect Gmail</button>
@@ -1926,6 +2101,7 @@
             </span></label>
           </div>
         </details>
+        </div>
       </form>`;
     stgBackendDots();
     stgOllamaModels();
@@ -2274,9 +2450,11 @@
 
   function cancelChatGeneration(c) {
     if (!c) return;
-    c.generation += 1;
+    c.generation += 1;   // invalidates any in-flight stream poll (chatIsCurrent)
     if (c.requestController) c.requestController.abort();
     c.requestController = null;
+    if (c._streamTimer) { clearTimeout(c._streamTimer); c._streamTimer = null; }
+    c.stream = null; c.streamRun = null;
     c.busy = false;
   }
 
@@ -2474,10 +2652,25 @@
       });
     }
     if (c && c.busy) {
-      const typing = document.createElement('div');
-      typing.className = 'chat-typing';
-      typing.textContent = chatThinker(c) + ' is thinking…';
-      log.appendChild(typing);
+      if (c.stream && (c.stream.lines.length || c.stream.tools.length)) {
+        const box = document.createElement('div');
+        box.className = 'chat-thinking';
+        let html = `<div class="ct-head">✨ ${esc(chatThinker(c))} is working…</div>`;
+        for (const ln of c.stream.lines) {
+          html += `<div class="ct-line ${ln.kind === 'think' ? 'think' : 'text'}">${renderMd(ln.text)}</div>`;
+        }
+        if (c.stream.tools.length) {
+          html += '<div class="ct-tools">' +
+            c.stream.tools.map(t => `<span class="ct-tool">🔧 ${esc(t)}</span>`).join('') + '</div>';
+        }
+        box.innerHTML = html;
+        log.appendChild(box);
+      } else {
+        const typing = document.createElement('div');
+        typing.className = 'chat-typing';
+        typing.textContent = chatThinker(c) + ' is thinking…';
+        log.appendChild(typing);
+      }
     }
     log.scrollTop = log.scrollHeight;
   }
@@ -2753,10 +2946,16 @@
     const controller = new AbortController();
     c.requestController = controller;
     c.busy = true; c.done = false;
+    c.stream = null;        // any prior live-thinking view is stale now
     saveChat(cid);          // persist the user turn before the model answers
     renderChatLog(cid);     // paints the user bubble + typing indicator
     renderChatSidebar();
     updateSendDisabled();
+
+    // Claude runs the CLI's own agentic loop — stream it live (thinking + tool
+    // steps + text) instead of blocking on one response. Other tiers are quick,
+    // so they keep the simple blocking request below.
+    if (c.tier === 'claude') { chatStreamSend(cid, c, generation, atts); return; }
 
     fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2795,6 +2994,91 @@
         }
         renderChatSidebar();
       });
+  }
+
+  // Claude tier: start a live stream, then poll it. Thinking/tool/text events
+  // paint under the typing indicator as they arrive (transient — never saved);
+  // only the final reply lands in the transcript. Follows the same closure
+  // discipline as chatSend: `cid`/`generation` gate every DOM/state touch, so a
+  // background stream stays correct if the user switches or deletes the chat.
+  function chatStreamSend(cid, c, generation, atts) {
+    c.stream = { lines: [], tools: [] };
+    c._streamMisses = 0;
+    const controller = new AbortController();
+    c.requestController = controller;
+    const msgs = c.msgs.filter(m => m.role === 'user' || m.role === 'assistant')
+                       .map(m => ({ role: m.role, content: m.content }));
+    fetch('/api/chat/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ messages: msgs, attachments: atts, edit: c.edit }),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!chatIsCurrent(cid, c, generation)) return;
+        if (!ok || d.error || !d.run_id) throw new Error(d.error || 'Could not start Claude.');
+        c.streamRun = d.run_id;
+        pollChatStream(cid, c, generation, d.run_id, 0);
+      })
+      .catch(err => {
+        if (err.name === 'AbortError' || !chatIsCurrent(cid, c, generation)) return;
+        finishChatStreamError(cid, c, generation, err.message || "Couldn't reach the server.");
+      });
+  }
+
+  function pollChatStream(cid, c, generation, runId, since) {
+    if (!chatIsCurrent(cid, c, generation)) return;
+    fetch('/api/chat/stream/' + encodeURIComponent(runId) + '?since=' + since)
+      .then(r => r.json())
+      .then(d => {
+        if (!chatIsCurrent(cid, c, generation)) return;
+        c._streamMisses = 0;
+        const steps = d.steps || [];
+        for (const s of steps) {
+          if (s.type === 'think' || s.type === 'text') c.stream.lines.push({ kind: s.type, text: s.text });
+          else if (s.type === 'tool') c.stream.tools.push(s.tool);
+        }
+        const nextSince = (typeof d.total === 'number') ? d.total : since + steps.length;
+        if (cid === activeChat && steps.length) renderChatLog(cid);
+        if (d.status === 'running') {
+          c._streamTimer = setTimeout(() => pollChatStream(cid, c, generation, runId, nextSince), 700);
+        } else if (d.status === 'done') {
+          c.msgs.push({ role: 'assistant', content: d.reply, model: d.model });
+          saveChat(cid);
+          finishChatStream(cid, c, generation);
+        } else {
+          finishChatStreamError(cid, c, generation, d.error || 'Claude stopped unexpectedly.');
+        }
+      })
+      .catch(() => {
+        if (!chatIsCurrent(cid, c, generation)) return;
+        // Tolerate a few transient poll failures on a long run before giving up.
+        if ((c._streamMisses = (c._streamMisses || 0) + 1) > 6) {
+          finishChatStreamError(cid, c, generation, 'Lost contact with the server.');
+          return;
+        }
+        c._streamTimer = setTimeout(() => pollChatStream(cid, c, generation, runId, since), 1500);
+      });
+  }
+
+  function finishChatStream(cid, c, generation) {
+    if (!chatIsCurrent(cid, c, generation)) return;
+    c.requestController = null; c.busy = false; c.stream = null; c.streamRun = null;
+    if (c._streamTimer) { clearTimeout(c._streamTimer); c._streamTimer = null; }
+    if (cid === activeChat) {
+      renderChatLog(cid);
+      updateSendDisabled();
+      document.getElementById('chat-text').focus();
+    } else {
+      c.done = true;   // background reply — flag it on the sidebar
+    }
+    renderChatSidebar();
+  }
+
+  function finishChatStreamError(cid, c, generation, msg) {
+    if (!chatIsCurrent(cid, c, generation)) return;
+    c.msgs.push({ role: 'err', content: msg });
+    finishChatStream(cid, c, generation);
   }
 
   /* -- New project -- */
@@ -2894,6 +3178,33 @@
         </div>`);
       el.innerHTML = rows.length ? rows.join('') : 'No external folders connected yet.';
     }).catch(() => {});
+  }
+
+  function extPickFolder() {
+    // Ask the backend to pop a native folder picker on this machine and drop
+    // the chosen path into the field. Degrades to manual entry if unavailable.
+    const msg = document.getElementById('ext-msg');
+    const btn = document.getElementById('ext-browse');
+    btn.disabled = true;
+    msg.className = 'np-msg'; msg.textContent = 'Opening folder picker…';
+    fetch('/api/pick-folder', { method: 'POST' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.unavailable) {
+          msg.className = 'np-msg'; msg.textContent = 'Folder picker unavailable here — type or paste the path instead.';
+          return;
+        }
+        if (!d.path) { msg.textContent = ''; return; }   // cancelled
+        document.getElementById('ext-path').value = d.path;
+        const nameEl = document.getElementById('ext-name');
+        if (!nameEl.value.trim()) {
+          const base = d.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
+          nameEl.value = base.replace(/[^A-Za-z0-9 _-]/g, '-').replace(/^[^A-Za-z0-9]+/, '').slice(0, 64);
+        }
+        msg.className = 'np-msg ok'; msg.textContent = 'Folder selected — review the name, then Connect.';
+      })
+      .catch(() => { msg.className = 'np-msg err'; msg.textContent = "Couldn't reach the server."; })
+      .finally(() => { btn.disabled = false; });
   }
 
   function extAdd(e) {
@@ -3202,6 +3513,96 @@
          <span class="run-state ${esc(run.status)}">${esc(run.status)}</span></div>
        ${steps}${final}`;
   }
+
+  /* ── Update check (result of the launch-time GitHub release check) ──
+     The server checks once at launch; this only reads the cached result and
+     renders the banner. Auto-update, when on, self-applies server-side — the
+     banner then just reports progress instead of offering a button. */
+  let updateState = null;
+  let updateDismissed = false;
+
+  function updateRenderBanner() {
+    const el = document.getElementById('update-banner');
+    const txt = document.getElementById('update-banner-text');
+    const btn = document.getElementById('update-banner-btn');
+    if (!el || !updateState) return;
+    const s = updateState;
+    const auto = (window.__settings || {}).autoupdate === true;
+    const ap = s.apply || {};
+
+    // An update in flight (manual or auto) always shows, dismiss or not.
+    if (ap.state === 'running') {
+      txt.innerHTML = `<b>Updating Regalia…</b> <span class="ub-ver">${esc(ap.detail || '')}</span>`;
+      btn.style.display = 'none';
+      el.classList.add('show');
+      return;
+    }
+    if (ap.state === 'error' && ap.detail) {
+      txt.innerHTML = `<b>Update failed.</b> <span class="ub-ver">${esc(ap.detail)}</span>`;
+      btn.textContent = 'Retry'; btn.disabled = false; btn.style.display = '';
+      el.classList.add('show');
+      return;
+    }
+    if (!s.out_of_date || updateDismissed) { el.classList.remove('show'); return; }
+
+    const vers = `<span class="ub-ver">v${esc(s.current)} → v${esc(s.latest)}</span>`;
+    if (auto) {
+      // Auto-update is on: it applies on launch. Just inform — no button.
+      txt.innerHTML = `<b>Regalia is out of date.</b> ${vers} — auto-update will install it.`;
+      btn.style.display = 'none';
+    } else if (s.can_self_update) {
+      txt.innerHTML = `<b>Regalia is out of date.</b> ${vers}`;
+      btn.textContent = 'Update now'; btn.disabled = false; btn.style.display = '';
+    } else {
+      // Running from source — no binary to swap; point at the releases page.
+      txt.innerHTML = `<b>Regalia is out of date.</b> ${vers} — running from source; `
+        + `<code>git pull</code> to update, or <a href="${esc(s.releases_url)}" target="_blank" rel="noopener">view releases</a>.`;
+      btn.style.display = 'none';
+    }
+    el.classList.add('show');
+  }
+
+  function updateCheck() {
+    fetch('/api/update').then(r => r.json()).then(d => {
+      updateState = d;
+      updateRenderBanner();
+      if (typeof stgUpdateFill === 'function') stgUpdateFill();
+    }).catch(() => {});
+  }
+
+  function updateApply(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+    fetch('/api/update/apply', { method: 'POST' })
+      .then(r => r.json()).then(d => {
+        if (d.update) updateState = d.update;
+        updateRenderBanner();
+        if (typeof stgUpdateFill === 'function') stgUpdateFill();
+        // A frozen self-update relaunches and drops the connection; keep polling
+        // so the "Updating…" progress shows until that happens.
+        updatePollApply();
+      })
+      .catch(() => { if (btn) { btn.disabled = false; btn.textContent = 'Retry'; } });
+  }
+
+  let updatePollTimer = null;
+  function updatePollApply() {
+    clearTimeout(updatePollTimer);
+    const tick = () => fetch('/api/update').then(r => r.json()).then(d => {
+      updateState = d;
+      updateRenderBanner();
+      if (typeof stgUpdateFill === 'function') stgUpdateFill();
+      const st = (d.apply || {}).state;
+      if (st === 'running') updatePollTimer = setTimeout(tick, 1200);
+    }).catch(() => {});
+    tick();
+  }
+
+  function updateDismiss() {
+    updateDismissed = true;
+    document.getElementById('update-banner').classList.remove('show');
+  }
+
+  updateCheck();
 </script>
 
 <!-- ASCII dither hero background (self-contained IIFE; mounts into [data-ascii-dither-bg]) -->

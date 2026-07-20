@@ -36,6 +36,7 @@ DEFAULTS: dict = {
     "accent": "",              # hex like "#e7c59a"; empty = theme default
     "default_tier": "fast",    # tier newly-created chats start on
     "landing_enabled": True,   # show the scrollytelling landing page
+    "autoupdate": False,       # self-replace + relaunch when out of date (frozen builds)
     "vault_path": "",          # vault root override; empty = repo root (restart to apply)
     "anthropic_api_key": "",   # secret — masked by the API
     "openai_api_key": "",      # secret — masked by the API
@@ -62,6 +63,10 @@ SECRET_KEYS = frozenset({"anthropic_api_key", "openai_api_key", "gmail_oauth_cli
 
 _VALID_THEMES = ("dark", "light")
 _VALID_TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
+
+# Store keys that are plain booleans (coerced from any truthy value, never
+# string-stripped like the rest).
+_BOOL_KEYS = ("landing_enabled", "autoupdate")
 
 # Store keys that must parse as a positive integer when non-empty.
 _INT_KEYS = ("codex_cli_timeout", "claude_cli_timeout", "news_ttl")
@@ -112,10 +117,11 @@ def update(changes: dict) -> dict:
         raise ValueError(f"theme must be one of {_VALID_THEMES}")
     if "default_tier" in changes and changes["default_tier"] not in _VALID_TIERS:
         raise ValueError(f"default_tier must be one of {_VALID_TIERS}")
-    if "landing_enabled" in changes:
-        changes["landing_enabled"] = bool(changes["landing_enabled"])
+    for bk in _BOOL_KEYS:
+        if bk in changes:
+            changes[bk] = bool(changes[bk])
     for k in changes:
-        if k == "landing_enabled":
+        if k in _BOOL_KEYS:
             continue
         if not isinstance(changes[k], str):
             raise ValueError(f"{k} must be a string")

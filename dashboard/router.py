@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -950,6 +951,65 @@ def _claude_code_chat_inner(messages, system, max_tokens, model, attachments=Non
     }
 
 
+def claude_code_chat_stream(messages, system=None, model=None, attachments=None,
+                            allow_write=False):
+    """Streaming counterpart of _claude_code_chat for the Chat panel's claude tier.
+
+    Builds the same prompt / tool grants / attachment staging as the blocking
+    path, but drives claude_code_stream so the caller can surface thinking, tool
+    steps, and text live instead of hiding everything until the CLI finishes.
+    Yields the same parsed CLI events; the trailing 'result' event carries the
+    final reply. Raises RouterError like claude_code_stream (including on the
+    idle timeout). System is *appended* to the CLI's own prompt (vs replaced in
+    the blocking path) — for a chat turn the caller's system is usually empty, so
+    this only ever adds context, never drops the CLI defaults.
+    """
+    atts = _norm_attachments(attachments)
+    if not atts:
+        yield from _claude_code_chat_stream_inner(messages, system, model, [], allow_write, None)
+        return
+    # The temp dir must outlive the whole stream, so hold it open while yielding.
+    with tempfile.TemporaryDirectory(prefix="regalia-claude-") as directory:
+        staged = _stage_cli_attachments(atts, directory)
+        yield from _claude_code_chat_stream_inner(
+            messages, system, model, staged, allow_write, directory)
+
+
+def _claude_code_chat_stream_inner(messages, system, model, attachments,
+                                   allow_write, attachment_dir):
+    """Compute prompt + tool grants (mirrors _claude_code_chat_inner) and stream."""
+    prompt = _flatten_conversation(messages)
+    if attachments:
+        listing = "\n".join(f"- {a['path']}" for a in attachments)
+        prompt = (
+            (prompt + "\n\n" if prompt.strip() else "")
+            + "The user attached the following file(s). Read them with your tools "
+            "to answer:\n" + listing
+        )
+    if not prompt.strip():
+        raise RouterError("Nothing to send to Claude.", 400)
+
+    if allow_write:
+        builtins = ["Read", "Edit", "Write", "Glob", "Grep"]
+        allowed = ["Read(./**)", "Edit(./**)"]
+        if attachment_dir:
+            allowed.append(_claude_absolute_rule("Read", attachment_dir))
+    elif attachments:
+        builtins = ["Read"]
+        allowed = ["Read(./**)"]
+    else:
+        builtins = []
+        allowed = []
+
+    cwd = attachment_dir if (attachment_dir and not allow_write) else CLAUDE_CLI_CWD
+    extra_dirs = [attachment_dir] if (attachment_dir and allow_write) else None
+
+    yield from claude_code_stream(
+        prompt, system=system, builtin_tools=builtins, allowed_tools=allowed,
+        model=model, cwd=cwd, extra_dirs=extra_dirs,
+    )
+
+
 def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=None,
                        model=None, cwd=None, timeout=None, mcp_config=None,
                        extra_dirs=None):
@@ -1044,22 +1104,32 @@ def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=No
     err_thread = threading.Thread(target=_drain_stderr, daemon=True)
     err_thread.start()
 
-    # Watchdog: kill the run if it blows the timeout. Popen streaming has no
-    # built-in timeout the way subprocess.run does.
+    # Idle watchdog: kill the run only after it goes *silent* for the timeout,
+    # not after a fixed wall-clock cap. A long-but-working task streams events
+    # (thinking, tool calls, text) the whole time, so it keeps resetting the
+    # clock and never trips; only a genuinely stalled CLI does. Popen streaming
+    # has no built-in timeout the way subprocess.run does, hence the manual one.
+    idle_limit = timeout or _claude_cli_timeout()
     timed_out = {"v": False}
+    last_event = {"t": time.monotonic()}
+    watch_done = threading.Event()
 
-    def _kill():
-        timed_out["v"] = True
-        try:
-            proc.kill()
-        except OSError:
-            pass
+    def _watchdog():
+        while not watch_done.wait(1.0):
+            if time.monotonic() - last_event["t"] > idle_limit:
+                timed_out["v"] = True
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                return
 
-    timer = threading.Timer(timeout or _claude_cli_timeout(), _kill)
-    timer.start()
+    watch_thread = threading.Thread(target=_watchdog, daemon=True)
+    watch_thread.start()
 
     try:
         for line in proc.stdout:
+            last_event["t"] = time.monotonic()  # any output resets the idle clock
             line = line.strip()
             if not line:
                 continue
@@ -1068,13 +1138,15 @@ def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=No
             except (json.JSONDecodeError, ValueError):
                 continue  # ignore any non-JSON noise on the stream
     finally:
-        timer.cancel()
+        watch_done.set()
         proc.wait()
         err_thread.join(timeout=1)
+        watch_thread.join(timeout=1)
 
     if timed_out["v"]:
         raise RouterError(
-            "The Claude CLI took too long to answer. Try again, or switch tiers.", 504
+            f"The Claude CLI went silent for over {idle_limit}s and was stopped. "
+            "It may have stalled — try again, or switch tiers.", 504
         )
     if proc.returncode:
         detail = "".join(stderr_chunks).strip()

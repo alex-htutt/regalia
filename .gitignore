@@ -72,6 +72,9 @@ dashboard/.external.json
 # --- PyInstaller build outputs (regalia.spec stays tracked) ---
 dashboard/build/
 dashboard/dist/
+# Packaged release archives (CI builds + attaches these to the GitHub Release).
+dashboard/Regalia-windows.zip
+dashboard/Regalia-macos-arm64.zip
 
 # --- Founder's Edition: the creator's personal workflow, kept LOCAL only. ---
 # Regalia ships workflow-agnostic; a de-identified, opt-in copy of the reusable

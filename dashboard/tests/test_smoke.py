@@ -17,9 +17,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+
+# Keep the launch-time update check off during tests — importing app runs it, and
+# it must never make a real network call from the smoke suite. (Set before the
+# app import below so updater.startup() sees it.)
+os.environ.setdefault("REGALIA_UPDATE_CHECK", "0")
 
 # Make app.py / agent.py importable no matter where the tests run from.
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent
@@ -32,6 +38,8 @@ import chats  # noqa: E402
 import email_sources  # noqa: E402
 import mailbox  # noqa: E402
 import router  # noqa: E402
+import updater  # noqa: E402
+import version  # noqa: E402
 
 
 class RouteSmokeTests(unittest.TestCase):
@@ -67,6 +75,52 @@ class RouteSmokeTests(unittest.TestCase):
 
     def test_api_router_status(self):
         self.assertEqual(self.client.get("/api/router/status").status_code, 200)
+
+    def test_api_update_shape(self):
+        r = self.client.get("/api/update")
+        self.assertEqual(r.status_code, 200)
+        d = r.get_json()
+        for key in ("checked", "current", "latest", "out_of_date",
+                    "can_self_update", "releases_url", "apply"):
+            self.assertIn(key, d)
+        self.assertEqual(d["current"], version.__version__)
+        self.assertIn(d["apply"].get("state"), ("idle", "running", "done", "error"))
+        # No 'asset_url' must leak out of the internal state into the API shape.
+        self.assertNotIn("asset_url", d)
+
+
+class VersionCompareTests(unittest.TestCase):
+    """The release comparison drives the whole 'out of date' decision."""
+
+    def test_newer_and_older(self):
+        self.assertTrue(version.is_newer("v1.30", "1.29"))
+        self.assertTrue(version.is_newer("1.29.1", "1.29"))
+        self.assertFalse(version.is_newer("v1.28", "1.29"))
+        self.assertFalse(version.is_newer("v1.29", "1.29"))     # equal, not newer
+        self.assertFalse(version.is_newer("1.29.0", "1.29"))    # zero-pads equal
+
+    def test_garbage_never_raises(self):
+        # A malformed tag must degrade to a comparison, never an exception.
+        self.assertFalse(version.is_newer("", "1.29"))
+        self.assertFalse(version.is_newer("not-a-version", "1.29"))
+
+
+class UpdateApplyFromSourceTests(unittest.TestCase):
+    """From source there is no binary to swap — apply() must be a safe no-op."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = dashboard_app.app.test_client()
+
+    def test_apply_from_source_is_noop(self):
+        # The test process is not frozen, so this must not try to touch any file.
+        self.assertFalse(updater.is_frozen())
+        r = self.client.post("/api/update/apply")
+        self.assertEqual(r.status_code, 409)          # nothing started
+        d = r.get_json()
+        self.assertFalse(d.get("started"))
+        self.assertEqual(d.get("reason"), "source")
+        self.assertEqual(d["update"]["apply"]["state"], "error")
 
 
 class BrowseTraversalTests(unittest.TestCase):
