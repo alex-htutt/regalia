@@ -1043,9 +1043,60 @@
   .update-banner .ub-dismiss { flex-shrink: 0; background: none; border: none; color: var(--muted);
     cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; }
   .update-banner .ub-dismiss:hover { color: var(--text); }
+  /* ── First-run onboarding wizard ──
+     Full-screen overlay shown once (config `onboarded` false). Reuses the glass
+     tokens; sits above everything including the landing hero. */
+  .wiz-overlay { display: none; position: fixed; inset: 0; z-index: 200;
+    background: rgba(8,8,8,0.78); backdrop-filter: blur(8px) saturate(120%);
+    align-items: center; justify-content: center; padding: 24px; }
+  .wiz-overlay.show { display: flex; }
+  .wiz-card { width: min(100%, 640px); max-height: calc(100vh - 48px); overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border-hover); border-radius: 16px;
+    padding: 28px 30px; display: flex; flex-direction: column; gap: 18px; }
+  .wiz-steps { display: flex; gap: 6px; }
+  .wiz-steps span { flex: 1; height: 3px; border-radius: 2px; background: var(--border); }
+  .wiz-steps span.on { background: var(--amber); }
+  .wiz-h { font-size: 22px; font-weight: 400; letter-spacing: -0.01em; color: var(--text); }
+  .wiz-p { font-size: 13.5px; line-height: 1.55; color: var(--muted); }
+  .wiz-body { display: flex; flex-direction: column; gap: 14px; }
+  .wiz-body label { display: flex; flex-direction: column; gap: 5px; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; }
+  .wiz-body input { border: 1px solid var(--border); border-radius: 7px; padding: 9px 11px;
+    font-size: 13px; font-family: inherit; background: var(--bg); color: var(--text);
+    outline: none; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .wiz-body input:focus { border-color: var(--border-hover); }
+  .wiz-tiers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .wiz-tier { text-align: left; cursor: pointer; border: 1px solid var(--border);
+    border-radius: 11px; padding: 11px 13px; background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; gap: 4px; transition: border-color .15s ease, background .15s ease; }
+  .wiz-tier:hover { border-color: var(--border-hover); }
+  .wiz-tier.sel { border-color: var(--amber); background: var(--amber-bg); }
+  .wiz-tier .wt-top { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }
+  .wiz-tier .wt-sub { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+  .wiz-tier .dot-sm { flex: 0 0 auto; }
+  .wiz-setup { border: 1px solid var(--border); border-radius: 10px; padding: 12px 13px;
+    background: var(--glass-inset); display: flex; flex-direction: column; gap: 9px; }
+  .wiz-setup .ws-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .wiz-setup input { flex: 1 1 200px; }
+  .wiz-msg { font-size: 12px; color: var(--muted); min-height: 16px; }
+  .wiz-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .wiz-foot .wiz-skip { background: none; border: none; color: var(--faint); cursor: pointer;
+    font-size: 12.5px; text-decoration: underline; padding: 4px; }
+  .wiz-foot .wiz-skip:hover { color: var(--muted); }
+  .wiz-foot-right { display: flex; gap: 8px; }
+  @media (max-width: 560px) { .wiz-tiers { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
+
+<!-- First-run onboarding wizard (shown once, when config `onboarded` is false).
+     Populated + driven by wiz* functions in the shell script below. -->
+<div class="wiz-overlay" id="wizard" role="dialog" aria-modal="true" aria-labelledby="wiz-title">
+  <div class="wiz-card">
+    <div class="wiz-steps" id="wiz-steps"><span class="on"></span><span></span><span></span></div>
+    <div id="wiz-content"></div>
+  </div>
+</div>
 
 <div class="beams" aria-hidden="true">
   <svg viewBox="0 0 1200 700" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
@@ -3602,7 +3653,246 @@
     document.getElementById('update-banner').classList.remove('show');
   }
 
+  /* ── First-run onboarding wizard ──
+     Shown once, when config `onboarded` is false. Three steps:
+       ① Connect an AI  — sign into at least one backend (gates step ②).
+       ② Choose a vault — adopt an existing folder, or create a fresh one.
+       ③ Done           — confirmation + restart guidance.
+     Keys save through /api/settings; the vault pins `vault_path` + `onboarded`
+     via /api/onboard/vault. A backend connection is required before the vault
+     step so a fresh install is never left with a vault but no way to work it. */
+  const wiz = { mode: 'existing', path: '', name: '', busy: false, status: {} };
+  const WIZ_TIERS = ['fast', 'smart', 'openai', 'chatgpt', 'claude'];
+
+  function wizMaybeShow() {
+    if ((window.__settings || {}).onboarded === true) return;
+    wizRenderAI();
+    document.getElementById('wizard').classList.add('show');
+  }
+
+  function wizSteps(active) {   // active: 0-based index of the lit step (of 3)
+    return [0, 1, 2].map(i => `<span class="${i <= active ? 'on' : ''}"></span>`).join('');
+  }
+
+  /* ── Step ① — Connect an AI ── */
+  function wizRenderAI() {
+    document.getElementById('wiz-steps').innerHTML = wizSteps(0);
+    document.getElementById('wiz-content').innerHTML = `
+      <div class="wiz-h" id="wiz-title">Connect an AI</div>
+      <p class="wiz-p">Regalia runs on an AI backend — connect at least one to continue.
+        Paste an API key below, or use a local / CLI backend you've already installed
+        (the installer can set these up). You can add or change these later in Settings.</p>
+      <div class="wiz-body">
+        <div class="wiz-setup">
+          <div class="ws-row" style="gap:7px"><span class="dot-sm down" id="wiz-dot-smart"></span>
+            <b style="color:var(--text)">Anthropic API</b><span class="wt-sub" style="margin:0">Claude — smart tier</span></div>
+          <div class="ws-row">
+            <input id="wiz-anthropic" type="password" autocomplete="off" placeholder="sk-ant-… paste API key">
+            <button type="button" class="pill" onclick="wizSaveKey('anthropic_api_key','wiz-anthropic')">Save</button>
+          </div>
+        </div>
+        <div class="wiz-setup">
+          <div class="ws-row" style="gap:7px"><span class="dot-sm down" id="wiz-dot-openai"></span>
+            <b style="color:var(--text)">OpenAI API</b><span class="wt-sub" style="margin:0">GPT — openai tier</span></div>
+          <div class="ws-row">
+            <input id="wiz-openai" type="password" autocomplete="off" placeholder="sk-… paste API key">
+            <button type="button" class="pill" onclick="wizSaveKey('openai_api_key','wiz-openai')">Save</button>
+          </div>
+        </div>
+        <div class="wiz-setup">
+          <div class="wiz-msg" style="margin:0">Installed a local or CLI backend? These light up when detected:</div>
+          <div class="ws-row" style="gap:14px; flex-wrap:wrap">
+            <span><span class="dot-sm down" id="wiz-dot-fast"></span> Ollama <span class="wt-sub" style="margin:0">local, free</span></span>
+            <span><span class="dot-sm down" id="wiz-dot-claude"></span> Claude CLI</span>
+            <span><span class="dot-sm down" id="wiz-dot-chatgpt"></span> ChatGPT (Codex)</span>
+            <button type="button" class="pill" onclick="wizAIStatus(true)">Recheck</button>
+          </div>
+        </div>
+        <div class="wiz-msg" id="wiz-msg"></div>
+      </div>
+      <div class="wiz-foot">
+        <button type="button" class="wiz-skip" onclick="wizSkip()">Skip for now</button>
+        <div class="wiz-foot-right">
+          <button type="button" class="np-submit" id="wiz-ai-next" onclick="wizGoVault()" disabled>Continue</button>
+        </div>
+      </div>`;
+    wizAIStatus(false);
+  }
+
+  function wizAIStatus(announce) {
+    // Codex readiness needs an auth-aware health probe; a plain status can report
+    // it "not authenticated" until then. Nudge it, then read the full status.
+    fetch('/api/router/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier: 'chatgpt' }),
+    }).catch(() => {}).finally(() => {
+      fetch('/api/router/status').then(r => r.json()).then(st => {
+        wiz.status = st || {};
+        for (const t of WIZ_TIERS) {
+          const el = document.getElementById('wiz-dot-' + t);
+          if (el) el.className = 'dot-sm ' + (st[t] && st[t].available ? 'up' : 'down');
+        }
+        const anyUp = WIZ_TIERS.some(t => st[t] && st[t].available);
+        const next = document.getElementById('wiz-ai-next');
+        if (next) next.disabled = !anyUp;
+        const msg = document.getElementById('wiz-msg');
+        if (msg && announce) msg.textContent = anyUp
+          ? 'AI connected ✓ — Continue to choose your vault.'
+          : 'No AI detected yet — paste a key or install a backend, then Recheck.';
+      }).catch(() => {});
+    });
+  }
+
+  function wizSaveKey(key, inputId) {
+    const v = (document.getElementById(inputId).value || '').trim();
+    const msg = document.getElementById('wiz-msg');
+    if (!v) { msg.textContent = 'Paste a key first.'; return; }
+    msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: v }),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) { msg.textContent = d.error || 'Could not save.'; return; }
+        window.__settings = d.settings;
+        document.getElementById(inputId).value = '';
+        msg.textContent = 'Saved ✓';
+        wizAIStatus(false);
+      })
+      .catch(() => { msg.textContent = 'Could not save.'; });
+  }
+
+  /* ── Step ② — Choose a vault ── */
+  function wizGoVault() { wizRenderChoice(); }
+
+  function wizRenderChoice() {
+    document.getElementById('wiz-steps').innerHTML = wizSteps(1);
+    const newMode = wiz.mode === 'new';
+    document.getElementById('wiz-content').innerHTML = `
+      <div class="wiz-h" id="wiz-title">Welcome to Regalia</div>
+      <p class="wiz-p">Regalia works inside a folder — your <b>vault</b>. Point it at a
+        folder you already keep notes in, or create a fresh one. Regalia reads what's
+        there and never restructures a folder you connect.</p>
+      <div class="wiz-body">
+        <div class="wiz-tiers">
+          <button type="button" class="wiz-tier ${!newMode ? 'sel' : ''}" onclick="wizSetMode('existing')">
+            <span class="wt-top">Use an existing folder</span>
+            <span class="wt-sub">Adopt a folder you already have as the vault. Nothing is moved, renamed, or restructured.</span>
+          </button>
+          <button type="button" class="wiz-tier ${newMode ? 'sel' : ''}" onclick="wizSetMode('new')">
+            <span class="wt-top">Create a new vault</span>
+            <span class="wt-sub">Pick a destination; Regalia makes a fresh vault folder there.</span>
+          </button>
+        </div>
+        <div class="wiz-setup">
+          <div class="ws-row">
+            <input id="wiz-path" type="text" autocomplete="off"
+              placeholder="${newMode ? 'Destination folder — Browse… or paste a path' : 'Vault folder — Browse… or paste a path'}"
+              value="${esc(wiz.path)}" oninput="wiz.path = this.value">
+            <button type="button" class="pill" onclick="wizPick()">📂 Browse…</button>
+          </div>
+          <div class="ws-row" id="wiz-name-row" ${newMode ? '' : 'hidden'}>
+            <input id="wiz-name" type="text" autocomplete="off" placeholder="RegaliaVault"
+              value="${esc(wiz.name)}" oninput="wiz.name = this.value">
+          </div>
+          <div class="wiz-msg" id="wiz-msg"></div>
+        </div>
+      </div>
+      <div class="wiz-foot">
+        <button type="button" class="wiz-skip" onclick="wizRenderAI()">← Back</button>
+        <div class="wiz-foot-right">
+          <button type="button" class="np-submit" onclick="wizConfirm(this)">Continue</button>
+        </div>
+      </div>`;
+  }
+
+  function wizSetMode(m) {
+    wiz.mode = m;
+    // Preserve whatever the user has typed across the re-render.
+    const p = document.getElementById('wiz-path');
+    if (p) wiz.path = p.value;
+    const n = document.getElementById('wiz-name');
+    if (n) wiz.name = n.value;
+    wizRenderChoice();
+  }
+
+  function wizPick() {
+    const msg = document.getElementById('wiz-msg');
+    msg.textContent = 'Opening folder picker…';
+    fetch('/api/pick-folder', { method: 'POST' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.unavailable) { msg.textContent = 'Folder picker unavailable here — type or paste the path instead.'; return; }
+        if (!d.path) { msg.textContent = ''; return; }   // cancelled
+        wiz.path = d.path;
+        document.getElementById('wiz-path').value = d.path;
+        // For a new vault, prefill a sensible name from the destination.
+        if (wiz.mode === 'new' && !wiz.name.trim()) {
+          wiz.name = 'RegaliaVault';
+          const n = document.getElementById('wiz-name'); if (n) n.value = wiz.name;
+        }
+        msg.textContent = wiz.mode === 'new'
+          ? 'Destination selected — name the vault, then Continue.'
+          : 'Folder selected — Continue to use it as your vault.';
+      })
+      .catch(() => { msg.textContent = "Couldn't reach the server."; });
+  }
+
+  function wizConfirm(btn) {
+    if (wiz.busy) return;
+    const msg = document.getElementById('wiz-msg');
+    const path = (document.getElementById('wiz-path').value || '').trim();
+    if (!path) { msg.textContent = wiz.mode === 'new' ? 'Choose a destination folder first.' : 'Choose a folder first.'; return; }
+    const nameEl = document.getElementById('wiz-name');
+    const body = { mode: wiz.mode, path, name: nameEl ? nameEl.value.trim() : '' };
+    wiz.busy = true; btn.disabled = true; btn.textContent = 'Setting up…';
+    fetch('/api/onboard/vault', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) { msg.textContent = d.error || 'Something went wrong.'; return; }
+        if (window.__settings) window.__settings.onboarded = true;
+        wizRenderDone(d.vault_path, d.restart_required);
+      })
+      .catch(() => { msg.textContent = "Couldn't reach the server."; })
+      .finally(() => { wiz.busy = false; btn.disabled = false; btn.textContent = 'Continue'; });
+  }
+
+  function wizRenderDone(vaultPath, restart) {
+    document.getElementById('wiz-steps').innerHTML = wizSteps(2);
+    document.getElementById('wiz-content').innerHTML = `
+      <div class="wiz-h">You're all set</div>
+      <p class="wiz-p">Regalia will work in:<br><b style="color:var(--text);word-break:break-all">${esc(vaultPath)}</b></p>
+      ${restart ? `<p class="wiz-p">Restart Regalia to open this vault — the folder is applied at launch.
+        You can change it anytime under <b>Settings → Vault folder</b>.</p>`
+                : `<p class="wiz-p">This is already the folder Regalia is serving. You can change it anytime
+        under <b>Settings → Vault folder</b>.</p>`}
+      <div class="wiz-foot">
+        <span></span>
+        <div class="wiz-foot-right">
+          <button type="button" class="np-submit" onclick="wizClose()">Get started</button>
+        </div>
+      </div>`;
+  }
+
+  function wizSkip() {
+    // Mark onboarded without touching the vault — keep the current default.
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ onboarded: true }),
+    }).catch(() => {});
+    if (window.__settings) window.__settings.onboarded = true;
+    wizClose();
+  }
+
+  function wizClose() {
+    document.getElementById('wizard').classList.remove('show');
+  }
+
   updateCheck();
+  wizMaybeShow();
 </script>
 
 <!-- ASCII dither hero background (self-contained IIFE; mounts into [data-ascii-dither-bg]) -->

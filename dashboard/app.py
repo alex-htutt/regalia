@@ -905,6 +905,64 @@ def api_pick_folder():
         return jsonify({"unavailable": True, "error": str(e)})
 
 
+@app.route("/api/onboard/vault", methods=["POST"])
+def api_onboard_vault():
+    """First-run vault setup: point Regalia at the user's work vault, then mark
+    onboarding complete. Two modes:
+
+      • existing — adopt a folder the user already keeps notes in as the vault
+        root. Regalia reads its organization as-is and adds NO scaffolding.
+      • new — create a fresh vault folder (default name "RegaliaVault") inside a
+        chosen destination and use that.
+
+    Both just pin `vault_path` (+ `onboarded`) in the settings store. VAULT_ROOT
+    is resolved once at startup, so the change only takes effect after a restart;
+    `restart_required` in the response says whether one is needed. Local,
+    single-user trust model — same as /api/pick-folder: the path is the user's
+    own absolute path on this machine.
+    """
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "").strip()
+    raw = (data.get("path") or "").strip()
+    if mode not in ("existing", "new"):
+        return jsonify({"error": "mode must be 'existing' or 'new'."}), 400
+    if not raw:
+        return jsonify({"error": "Choose a folder first."}), 400
+    try:
+        chosen = Path(raw).expanduser()
+    except (OSError, ValueError):
+        return jsonify({"error": "That path isn't valid."}), 400
+
+    if mode == "existing":
+        if not chosen.is_dir():
+            return jsonify({"error": "That folder doesn't exist."}), 400
+        vault = chosen.resolve()
+    else:  # new: chosen is the destination; make a vault folder inside it
+        if not chosen.is_dir():
+            return jsonify({"error": "That destination folder doesn't exist."}), 400
+        # Keep the name a single safe folder component (no separators / traversal).
+        name = re.sub(r"[^A-Za-z0-9 _-]", "-", (data.get("name") or "").strip()).strip(" .-")
+        name = name or "RegaliaVault"
+        vault = (chosen / name).resolve()
+        if chosen.resolve() not in vault.parents:
+            return jsonify({"error": "Invalid vault folder name."}), 400
+        try:
+            vault.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return jsonify({"error": f"Couldn't create the vault folder: {e}"}), 400
+
+    try:
+        config.update({"vault_path": str(vault), "onboarded": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify({
+        "ok": True,
+        "vault_path": str(vault),
+        "restart_required": str(vault) != str(VAULT_ROOT.resolve()),
+    })
+
+
 @app.route("/api/project", methods=["POST"])
 def api_create_project():
     data = request.get_json(silent=True)

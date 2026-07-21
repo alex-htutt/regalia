@@ -37,6 +37,7 @@ DEFAULTS: dict = {
     "default_tier": "fast",    # tier newly-created chats start on
     "landing_enabled": True,   # show the scrollytelling landing page
     "autoupdate": False,       # self-replace + relaunch when out of date (frozen builds)
+    "onboarded": False,        # has the first-run setup wizard been completed/skipped?
     "vault_path": "",          # vault root override; empty = repo root (restart to apply)
     "anthropic_api_key": "",   # secret — masked by the API
     "openai_api_key": "",      # secret — masked by the API
@@ -66,7 +67,7 @@ _VALID_TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
 
 # Store keys that are plain booleans (coerced from any truthy value, never
 # string-stripped like the rest).
-_BOOL_KEYS = ("landing_enabled", "autoupdate")
+_BOOL_KEYS = ("landing_enabled", "autoupdate", "onboarded")
 
 # Store keys that must parse as a positive integer when non-empty.
 _INT_KEYS = ("codex_cli_timeout", "claude_cli_timeout", "news_ttl")
