@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-__version__ = "1.31"
+__version__ = "1.32"
 
 # owner/repo the release check queries (github.com/<REPO>). The desktop builds
 # are published as Releases here; the updater hits its `releases/latest` API.
