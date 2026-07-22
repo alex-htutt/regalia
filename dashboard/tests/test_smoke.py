@@ -964,6 +964,7 @@ class MailboxMcpBridgeTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("mcp"), "mcp SDK not installed")
     def test_mail_mcp_imports_and_registers_no_send(self):
         import mail_mcp
+        self.assertTrue(hasattr(mail_mcp, "stage_email_draft"))
         self.assertFalse(hasattr(mail_mcp, "send_email"))
         self.assertFalse(hasattr(mail_mcp, "send"))
 

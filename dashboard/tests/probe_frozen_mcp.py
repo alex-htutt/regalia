@@ -63,7 +63,10 @@ def main() -> int:
         raise SystemExit("MCP initialize response was missing")
     tools = ((by_id.get(2, {}).get("result") or {}).get("tools") or [])
     names = {str(tool.get("name")) for tool in tools if isinstance(tool, dict)}
-    expected = {"list_inboxes", "read_inbox", "search_email", "read_email", "draft_email"}
+    expected = {
+        "list_inboxes", "read_inbox", "search_email", "read_email",
+        "draft_email", "stage_email_draft",
+    }
     if names != expected:
         raise SystemExit(f"unexpected packaged MCP tools: {sorted(names)}")
     if any("send" in name.lower() for name in names):
