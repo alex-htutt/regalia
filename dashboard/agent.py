@@ -19,10 +19,19 @@ lazily inside tools to avoid a circular import (app imports agent at top).
 
 from __future__ import annotations
 
+import html
+import ipaddress
 import json
 import os
+import re
+import shlex
+import socket
+import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +73,7 @@ class AccessScope:
     root: Path
     label: str = ""           # vault-relative folder or ext:<name>[/sub]
     explicit: bool = False
+    approved_checks: tuple[str, ...] = ()
 
 
 def resolve_scope(folder: str = "") -> AccessScope:
@@ -321,6 +331,210 @@ def _tool_create_project(name: str = "", area: str = "projects", topic: str = ""
     )
 
 
+# ── General scoped file + research tools for custom dispatch agents ──────────
+
+def _iter_scope_files(scope: AccessScope, pattern: str = "**/*"):
+    ignore = _ignore_dirs() if scope.kind == "vault" else set()
+    try:
+        candidates = scope.root.glob(pattern or "**/*")
+    except (ValueError, OSError):
+        candidates = scope.root.rglob("*")
+    for path in candidates:
+        try:
+            rel = path.relative_to(scope.root)
+        except ValueError:
+            continue
+        if any(part in ignore or part in (".git", ".dispatch_work") for part in rel.parts):
+            continue
+        if any(part.startswith(".") and part not in (".github",) for part in rel.parts):
+            continue
+        if path.is_file() and not path.is_symlink():
+            yield path, rel.as_posix()
+
+
+def _tool_list_files(pattern: str = "**/*", limit: int = 200,
+                     _scope: AccessScope | None = None, **_) -> str:
+    scope = _normalized_scope(_scope)
+    limit = max(1, min(int(limit or 200), 500))
+    rows = []
+    for path, rel in _iter_scope_files(scope, pattern):
+        try:
+            rows.append(f"{rel} ({path.stat().st_size} bytes)")
+        except OSError:
+            rows.append(rel)
+        if len(rows) >= limit:
+            break
+    return "\n".join(rows) if rows else "No files matched."
+
+
+def _tool_read_file(path: str = "", max_bytes: int = 200000,
+                    _scope: AccessScope | None = None, **_) -> str:
+    target = _safe_path(path, must_exist=True, scope=_scope)
+    if not target.is_file():
+        return f"Error: '{path}' is not a file."
+    max_bytes = max(1024, min(int(max_bytes or 200000), 1000000))
+    try:
+        raw = target.read_bytes()[:max_bytes + 1]
+    except OSError as e:
+        return f"Error reading '{path}': {e}"
+    if b"\x00" in raw[:4096]:
+        return f"Error: '{path}' appears to be binary."
+    clipped = len(raw) > max_bytes
+    text = raw[:max_bytes].decode("utf-8", errors="replace")
+    return text + (f"\n\n…(truncated at {max_bytes} bytes)" if clipped else "")
+
+
+def _tool_search_files(query: str = "", pattern: str = "**/*", limit: int = 50,
+                       _scope: AccessScope | None = None, **_) -> str:
+    query = str(query or "").strip()
+    if not query:
+        return "Error: query is required."
+    scope = _normalized_scope(_scope)
+    needle = query.lower()
+    hits = []
+    for path, rel in _iter_scope_files(scope, pattern):
+        try:
+            if path.stat().st_size > 1000000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if needle in line.lower():
+                hits.append(f"{rel}:{line_no}: {line.strip()[:240]}")
+                break
+        if len(hits) >= max(1, min(int(limit or 50), 200)):
+            break
+    return "\n".join(hits) if hits else f"No files matched '{query}'."
+
+
+def _tool_write_file(path: str = "", content: str = "",
+                     _scope: AccessScope | None = None, **_) -> str:
+    scope = _normalized_scope(_scope)
+    target = _safe_path(path, scope=scope)
+    if ".git" in target.relative_to(scope.root).parts:
+        return "Error: agent writes cannot target .git metadata."
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(content or ""), encoding="utf-8")
+    except OSError as e:
+        return f"Error writing '{path}': {e}"
+    return f"Wrote {_rel_label(target, scope)} ({len(str(content or ''))} characters)."
+
+
+def _tool_run_check(command: str = "", timeout: int = 120,
+                    _scope: AccessScope | None = None, **_) -> str:
+    scope = _normalized_scope(_scope)
+    command = str(command or "").strip()
+    if not command:
+        return "Error: command is required."
+    if not any(command == allowed or command.startswith(allowed + " ")
+               for allowed in scope.approved_checks):
+        return "Error: that command was not approved in the dispatch plan."
+    try:
+        argv = shlex.split(command, posix=(os.name != "nt"))
+    except ValueError as e:
+        return f"Error parsing command: {e}"
+    safe_env_keys = {
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME",
+        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "LANG",
+        "LC_ALL", "PYTHONPATH", "VIRTUAL_ENV",
+    }
+    env = {k: v for k, v in os.environ.items() if k.upper() in safe_env_keys}
+    try:
+        proc = subprocess.run(
+            argv, cwd=str(scope.root), env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=max(1, min(int(timeout or 120), 600)),
+        )
+    except subprocess.TimeoutExpired:
+        return "Error: approved check timed out."
+    except (OSError, ValueError) as e:
+        return f"Error starting approved check: {e}"
+    output = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+    return f"exit {proc.returncode}\n{output[:12000]}"
+
+
+def _public_http_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise AgentError("Only public http/https URLs are allowed.")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    except OSError as e:
+        raise AgentError(f"Could not resolve that URL: {e}")
+    for item in addresses:
+        try:
+            ip = ipaddress.ip_address(item[4][0])
+        except ValueError:
+            continue
+        if not ip.is_global:
+            raise AgentError("Private, local, and reserved network addresses are blocked.")
+    return parsed.geturl()
+
+
+def _http_text(url: str, max_bytes: int = 750000) -> tuple[str, str]:
+    safe = _public_http_url(url)
+    req = urllib.request.Request(safe, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; RegaliaResearch/1.0)",
+        "Accept": "text/html,text/plain,application/json;q=0.9,*/*;q=0.1",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            final_url = _public_http_url(response.geturl())
+            ctype = (response.headers.get_content_type() or "").lower()
+            if ctype not in ("text/html", "text/plain", "application/json", "application/xml", "text/xml"):
+                raise AgentError(f"Unsupported web content type: {ctype or 'unknown'}.")
+            raw = response.read(max_bytes + 1)
+    except AgentError:
+        raise
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise AgentError(f"Web request failed: {e}")
+    return raw[:max_bytes].decode("utf-8", errors="replace"), final_url
+
+
+def _tool_web_search(query: str = "", limit: int = 6, **_) -> str:
+    query = str(query or "").strip()
+    if not query:
+        return "Error: search query is required."
+    limit = max(1, min(int(limit or 6), 10))
+    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
+    try:
+        body, _ = _http_text(url)
+    except AgentError as e:
+        return f"Error: {e.message}"
+    links = re.findall(
+        r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        body, re.I | re.S,
+    )
+    snippets = re.findall(
+        r'<(?:a|div)[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div)>',
+        body, re.I | re.S,
+    )
+    rows = []
+    for i, (href, title) in enumerate(links[:limit]):
+        href = html.unescape(href)
+        parsed = urllib.parse.urlparse(href)
+        if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):
+            href = urllib.parse.parse_qs(parsed.query).get("uddg", [href])[0]
+        clean_title = html.unescape(re.sub(r"<[^>]+>", "", title)).strip()
+        snippet = html.unescape(re.sub(r"<[^>]+>", "", snippets[i] if i < len(snippets) else "")).strip()
+        rows.append(f"{i + 1}. {clean_title}\n   {href}\n   {snippet}".rstrip())
+    return "\n".join(rows) if rows else "No web results were returned."
+
+
+def _tool_fetch_url(url: str = "", **_) -> str:
+    try:
+        body, final_url = _http_text(url)
+    except AgentError as e:
+        return f"Error: {e.message}"
+    body = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", body, flags=re.I | re.S)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", body))
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    return f"Source: {final_url}\n\n{text[:60000]}"
+
+
 # ── Email tools (Gmail + Outlook, via mailbox.py) ────────────────────────────
 # Read-only tools (list/read/search) plus a single write tool, draft_email, which
 # creates a DRAFT only — there is deliberately no send tool. draft_email is gated
@@ -405,6 +619,21 @@ def _tool_draft_email(account_id: str = "", to: str = "", subject: str = "",
             "It was NOT sent — review and send it from your mail client.")
 
 
+def _tool_stage_email_draft(account_id: str = "", to: str = "", subject: str = "",
+                            body: str = "", reply_to: str = "", **_) -> str:
+    """Record a dispatch draft proposal without touching the mailbox."""
+    if not account_id.strip():
+        return "Error: account_id is required (see list_inboxes)."
+    if not body.strip():
+        return "Error: a draft body is required."
+    if not to.strip() and not reply_to.strip():
+        return "Error: provide either to or reply_to."
+    return (
+        f"Draft proposal staged for review in {account_id}. It has NOT been saved "
+        "to the mailbox; the user must apply the dispatch first."
+    )
+
+
 TOOL_FNS = {
     "search_vault": _tool_search_vault,
     "read_note": _tool_read_note,
@@ -412,11 +641,19 @@ TOOL_FNS = {
     "list_folder": _tool_list_folder,
     "write_note": _tool_write_note,
     "create_project": _tool_create_project,
+    "list_files": _tool_list_files,
+    "read_file": _tool_read_file,
+    "search_files": _tool_search_files,
+    "write_file": _tool_write_file,
+    "run_check": _tool_run_check,
+    "web_search": _tool_web_search,
+    "fetch_url": _tool_fetch_url,
     "list_inboxes": _tool_list_inboxes,
     "read_inbox": _tool_read_inbox,
     "search_email": _tool_search_email,
     "read_email": _tool_read_email,
     "draft_email": _tool_draft_email,
+    "stage_email_draft": _tool_stage_email_draft,
 }
 
 # Anthropic-style tool schemas. router.chat_tools translates these for Ollama.
@@ -489,6 +726,57 @@ TOOL_SCHEMAS = {
             "required": ["name"],
         },
     },
+    "list_files": {
+        "name": "list_files",
+        "description": "List files inside the assigned workspace scope. Hidden metadata and .git are excluded.",
+        "input_schema": {"type": "object", "properties": {
+            "pattern": {"type": "string", "description": "Glob such as '**/*.py'."},
+            "limit": {"type": "integer"},
+        }},
+    },
+    "read_file": {
+        "name": "read_file",
+        "description": "Read a UTF-8 text file inside the assigned workspace scope.",
+        "input_schema": {"type": "object", "properties": {
+            "path": {"type": "string"}, "max_bytes": {"type": "integer"},
+        }, "required": ["path"]},
+    },
+    "search_files": {
+        "name": "search_files",
+        "description": "Search text files inside the assigned workspace scope and return matching paths and lines.",
+        "input_schema": {"type": "object", "properties": {
+            "query": {"type": "string"}, "pattern": {"type": "string"},
+            "limit": {"type": "integer"},
+        }, "required": ["query"]},
+    },
+    "write_file": {
+        "name": "write_file",
+        "description": "Create or replace a UTF-8 text file inside the isolated assigned workspace.",
+        "input_schema": {"type": "object", "properties": {
+            "path": {"type": "string"}, "content": {"type": "string"},
+        }, "required": ["path", "content"]},
+    },
+    "run_check": {
+        "name": "run_check",
+        "description": "Run one command explicitly approved in the dispatch plan, inside the isolated workspace.",
+        "input_schema": {"type": "object", "properties": {
+            "command": {"type": "string"}, "timeout": {"type": "integer"},
+        }, "required": ["command"]},
+    },
+    "web_search": {
+        "name": "web_search",
+        "description": "Search the public web. Returns titles, URLs, and snippets; cite URLs in the final answer.",
+        "input_schema": {"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"},
+        }, "required": ["query"]},
+    },
+    "fetch_url": {
+        "name": "fetch_url",
+        "description": "Read a public web page as text. Private/local network addresses are blocked.",
+        "input_schema": {"type": "object", "properties": {
+            "url": {"type": "string"},
+        }, "required": ["url"]},
+    },
     "list_inboxes": {
         "name": "list_inboxes",
         "description": "List the connected email inboxes (Gmail/Outlook) with their account ids, addresses, and unread counts. Call this first to get the account_id the other email tools need.",
@@ -544,6 +832,21 @@ TOOL_SCHEMAS = {
                 "reply_to": {"type": "string", "description": "Message id to reply to (optional)."},
             },
             "required": ["account_id"],
+        },
+    },
+    "stage_email_draft": {
+        "name": "stage_email_draft",
+        "description": "Stage a DRAFT email proposal for dispatch review. It is not saved to the mailbox until the user explicitly applies the dispatch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string", "description": "From list_inboxes."},
+                "to": {"type": "string", "description": "Recipient(s), comma-separated. Omit for a reply."},
+                "subject": {"type": "string"},
+                "body": {"type": "string", "description": "Plain-text body."},
+                "reply_to": {"type": "string", "description": "Message id to reply to (optional)."},
+            },
+            "required": ["account_id", "body"],
         },
     },
 }
@@ -754,15 +1057,56 @@ AGENTS = {
 # Agent runs require tool-calling support. The ChatGPT-account backend is a
 # plain chat backend, so keep the agent-capable tiers explicit here rather than
 # inheriting every value accepted by router.chat().
-AGENT_TIERS = ("fast", "smart", "openai", "claude")
+AGENT_TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
 VAULT_TOOL_NAMES = frozenset({
     "search_vault", "read_note", "list_notes", "list_folder", "write_note", "create_project",
 })
+FILE_TOOL_NAMES = frozenset({"list_files", "read_file", "search_files", "write_file", "run_check"})
+CAPABILITY_TOOLS = {
+    "vault_read": ["search_vault", "read_note", "list_notes", "list_folder"],
+    "vault_write": ["write_note", "create_project"],
+    "code_read": ["list_files", "read_file", "search_files"],
+    "code_write": ["write_file"],
+    "run_checks": ["run_check"],
+    "web": ["web_search", "fetch_url"],
+    "inbox_read": ["list_inboxes", "read_inbox", "search_email", "read_email"],
+    "inbox_draft": ["stage_email_draft"],
+}
+
+
+def spec_from_definition(definition: dict, worker_id: str = "") -> dict:
+    """Turn a saved/ephemeral UI definition into run_agent's internal spec."""
+    capabilities = [str(x) for x in definition.get("capabilities") or []]
+    tools = []
+    for capability in capabilities:
+        for tool in CAPABILITY_TOOLS.get(capability, []):
+            if tool not in tools:
+                tools.append(tool)
+    name = str(definition.get("name") or definition.get("title") or "Dispatched agent").strip()
+    instructions = str(definition.get("instructions") or definition.get("objective") or "").strip()
+    return {
+        "id": worker_id or str(definition.get("id") or "dispatch_agent"),
+        "name": name,
+        "desc": str(definition.get("description") or "").strip(),
+        "tier": str(definition.get("tier") or "fast").strip().lower(),
+        "tools": tools,
+        "default_task": str(definition.get("objective") or "").strip(),
+        "presets": [],
+        "approved_checks": [str(x).strip() for x in definition.get("approved_checks") or [] if str(x).strip()],
+        "system": instructions or (
+            f"You are {name}. Complete the assigned task using only the capabilities "
+            "and workspace scope provided. Report evidence, changed files, and checks."
+        ),
+    }
+
+
+def _spec_supports_folder(spec: dict) -> bool:
+    return any(name in VAULT_TOOL_NAMES or name in FILE_TOOL_NAMES for name in spec.get("tools", []))
 
 
 def supports_folder(agent_id: str) -> bool:
     spec = AGENTS.get(agent_id) or {}
-    return any(name in VAULT_TOOL_NAMES for name in spec.get("tools", []))
+    return _spec_supports_folder(spec)
 
 
 def list_agents() -> list:
@@ -970,7 +1314,8 @@ def _tool_result_text(content) -> str:
     return str(content) if content is not None else ""
 
 
-def _run_agent_claude(spec, task, emit, scope: AccessScope) -> dict:
+def _run_agent_claude(spec, task, emit, scope: AccessScope, req_model: str = "",
+                      cancel_event=None) -> dict:
     """Run an agent on the subscription `claude` CLI tier, streaming its steps.
 
     Consumes router.claude_code_stream and maps the CLI's native events onto the
@@ -984,19 +1329,32 @@ def _run_agent_claude(spec, task, emit, scope: AccessScope) -> dict:
     mailbox MCP server (mail_mcp.py) and grant only mcp__mailbox__<tool> — so an
     email-only agent like inbox_triage gets NO filesystem tools at all.
     """
-    vault_tools = [t for t in spec["tools"] if t not in EMAIL_TOOL_NAMES]
-    email_tools = [t for t in spec["tools"] if t in EMAIL_TOOL_NAMES]
+    workspace_tools = [t for t in spec["tools"]
+                       if t in VAULT_TOOL_NAMES or t in FILE_TOOL_NAMES]
+    web_tools = [t for t in spec["tools"] if t in ("web_search", "fetch_url")]
+    email_tools = [t for t in spec["tools"]
+                   if t in EMAIL_TOOL_NAMES or t == "stage_email_draft"]
     builtins: list = []
     allowed: list = []
     system = spec["system"]
     mcp_config = ""
-    if vault_tools:
-        writes = any(t in ("write_note", "create_project") for t in vault_tools)
+    if workspace_tools:
+        writes = any(t in ("write_note", "create_project", "write_file") for t in workspace_tools)
         builtins += ["Read", "Grep", "Glob"] + (["Write", "Edit"] if writes else [])
         # Bare Read/Edit rules would approve access system-wide. Relative glob
         # rules make the selected cwd the actual boundary (including symlinks).
         allowed += ["Read(./**)"] + (["Edit(./**)"] if writes else [])
+        if "run_check" in workspace_tools and spec.get("approved_checks"):
+            builtins.append("Bash")
+            for command in spec["approved_checks"]:
+                allowed += [f"Bash({command})", f"Bash({command} *)"]
         system += _workflow_rules(scope) + _claude_runtime_note(scope) + _scope_note(scope)
+        if spec.get("approved_checks"):
+            system += "\nApproved checks (run no other shell commands): " + "; ".join(spec["approved_checks"])
+    if web_tools:
+        builtins += ["WebSearch", "WebFetch"]
+        allowed += ["WebSearch", "WebFetch"]
+        system += "\nUse live web research when useful and cite every source URL in the final answer."
     if email_tools:
         mcp_config = _mailbox_mcp_config()
         allowed += [f"mcp__mailbox__{t}" for t in email_tools]
@@ -1004,13 +1362,14 @@ def _run_agent_claude(spec, task, emit, scope: AccessScope) -> dict:
 
     emit({"type": "start", "agent": spec["id"], "tier": "claude", "task": task})
     steps: list = []
-    names: dict = {}   # tool_use_id -> tool name, to label results
+    names: dict = {}   # tool_use_id -> (tool name, input), to label results
     reply = ""
-    model = ""
+    model = ""   # the model that actually ran (from the CLI's init/result events)
     try:
         for ev in router.claude_code_stream(
                 task, system=system, builtin_tools=builtins, allowed_tools=allowed,
-                cwd=str(scope.root), mcp_config=mcp_config or None):
+                cwd=str(scope.root), mcp_config=mcp_config or None, model=req_model or None,
+                cancel_event=cancel_event):
             etype = ev.get("type")
             if etype == "system" and ev.get("subtype") == "init":
                 model = ev.get("model") or model
@@ -1020,15 +1379,16 @@ def _run_agent_claude(spec, task, emit, scope: AccessScope) -> dict:
                     if bt == "text" and (b.get("text") or "").strip():
                         emit({"type": "think", "text": b["text"]})
                     elif bt == "tool_use":
-                        names[b.get("id")] = b.get("name")
+                        names[b.get("id")] = (b.get("name"), b.get("input") or {})
                         emit({"type": "tool", "tool": b.get("name"),
                               "input": b.get("input") or {}})
             elif etype == "user":
                 for b in (ev.get("message") or {}).get("content") or []:
                     if b.get("type") == "tool_result":
-                        name = names.get(b.get("tool_use_id"), "tool")
+                        name, tool_input = names.get(b.get("tool_use_id"), ("tool", {}))
                         out = _tool_result_text(b.get("content"))
-                        steps.append({"tool": name, "input": {}, "output": out})
+                        recorded_input = tool_input if name.endswith("stage_email_draft") else {}
+                        steps.append({"tool": name, "input": recorded_input, "output": out})
                         emit({"type": "tool_result", "tool": name, "output": out[:600]})
             elif etype == "result":
                 if ev.get("is_error"):
@@ -1052,33 +1412,98 @@ def _run_agent_claude(spec, task, emit, scope: AccessScope) -> dict:
             "agent": spec["id"]}
 
 
+def _run_agent_codex(spec, task, emit, scope: AccessScope, req_model: str = "",
+                     cancel_event=None) -> dict:
+    """Run a custom worker through the ChatGPT-account Codex CLI."""
+    writes = any(t in ("write_note", "create_project", "write_file") for t in spec["tools"])
+    system = spec["system"] + _scope_note(scope)
+    if any(t in ("web_search", "fetch_url") for t in spec["tools"]):
+        seed = _tool_web_search(task, limit=6)
+        system += (
+            "\nWeb research is allowed. Here are live seed results from Regalia's "
+            "search service; follow relevant public URLs if your runtime permits and cite URLs.\n" + seed
+        )
+    if spec.get("approved_checks"):
+        system += "\nOnly these validation commands were approved: " + "; ".join(spec["approved_checks"])
+    emit({"type": "start", "agent": spec["id"], "tier": "chatgpt", "task": task})
+    steps = []
+    reply = ""
+    try:
+        for ev in router.codex_agent_stream(
+                task, system=system, model=req_model or None, cwd=str(scope.root),
+                allow_write=writes, cancel_event=cancel_event):
+            etype = ev.get("type")
+            item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+            itype = item.get("type")
+            if etype in ("item.started", "item.completed") and itype in (
+                    "command_execution", "file_change", "mcp_tool_call"):
+                name = item.get("command") or item.get("name") or itype
+                output = item.get("aggregated_output") or item.get("output") or ""
+                if etype == "item.started":
+                    tool_input = {"detail": str(name)[:500]}
+                    if itype == "file_change" and isinstance(item.get("changes"), list):
+                        tool_input["changes"] = [
+                            {"path": str(change.get("path") or change.get("file_path") or "")[:500]}
+                            for change in item["changes"] if isinstance(change, dict)
+                        ]
+                    emit({"type": "tool", "tool": itype, "input": tool_input})
+                else:
+                    if itype == "file_change" and isinstance(item.get("changes"), list):
+                        emit({"type": "tool", "tool": itype, "input": {
+                            "changes": [
+                                {"path": str(change.get("path") or change.get("file_path") or "")[:500]}
+                                for change in item["changes"] if isinstance(change, dict)
+                            ],
+                        }})
+                    steps.append({"tool": itype, "input": {"detail": str(name)}, "output": str(output)})
+                    emit({"type": "tool_result", "tool": itype, "output": str(output)[:600]})
+            if etype == "item.completed" and itype == "agent_message":
+                text = str(item.get("text") or "").strip()
+                if text:
+                    reply = text
+                    emit({"type": "think", "text": text})
+    except router.RouterError as e:
+        emit({"type": "error", "text": e.message})
+        raise AgentError(e.message)
+    emit({"type": "final", "text": reply})
+    return {"reply": reply or "(the agent finished without a summary)",
+            "steps": steps, "tier": "chatgpt", "model": req_model or "ChatGPT account",
+            "agent": spec["id"]}
+
+
 # ── The run loop ─────────────────────────────────────────────────────────────
 
 def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8,
-              folder: str = "") -> dict:
+              folder: str = "", model: str = "", spec_override: dict | None = None,
+              scope_override: AccessScope | None = None, cancel_event=None) -> dict:
     """Drive one agent to completion. Returns {reply, steps, tier, model, agent}.
 
     `emit(event)` (optional) is called as each step happens, for live streaming.
     Events: {"type": "start"|"think"|"tool"|"tool_result"|"final"|"limit", ...}.
     Raises AgentError on an unusable request or a backend failure.
     """
-    spec = AGENTS.get(agent_id)
+    spec = dict(spec_override) if isinstance(spec_override, dict) else AGENTS.get(agent_id)
     if not spec:
         raise AgentError(f"Unknown agent '{agent_id}'.")
     task = (task or "").strip() or spec.get("default_task", "")
     if not task:
         raise AgentError(f"{spec['name']} needs a task — tell it what to do.")
     folder = (folder or "").strip().strip("/")
-    scope = resolve_scope(folder)
-    if scope.explicit and not supports_folder(agent_id):
+    scope = scope_override or resolve_scope(folder)
+    if spec.get("approved_checks") and not scope.approved_checks:
+        scope = AccessScope(
+            scope.kind, scope.root, scope.label, scope.explicit,
+            tuple(spec.get("approved_checks") or ()),
+        )
+    if scope.explicit and not _spec_supports_folder(spec):
         raise AgentError(f"{spec['name']} has no filesystem tools and cannot take a folder scope.")
-    if scope.kind == "external":
+    if scope.kind == "external" and scope_override is None:
         name = scope.label[4:].split("/", 1)[0]
         task = (
             f"[Scope: only connected external folder '{name}'. Tool paths may be relative "
             f"to it or use '{scope.label}/…'. No vault or other external folder is accessible.]\n{task}"
         )
-    elif scope.explicit:
+    elif scope.explicit and scope_override is None:
         task = (
             f"[Scope: only vault folder '{scope.label}'. Tool paths may be relative to it; "
             f"no sibling or external folder is accessible.]\n{task}"
@@ -1096,30 +1521,42 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
 
     # The subscription tier doesn't drive our in-process tool loop — the external
     # CLI runs its own. Hand off to its runner and return its result.
+    req_model = (model or "").strip()
     if tier == "claude":
-        return _run_agent_claude(spec, task, _emit, scope)
+        return _run_agent_claude(
+            spec, task, _emit, scope, req_model=req_model, cancel_event=cancel_event,
+        )
+    if tier == "chatgpt":
+        return _run_agent_codex(
+            spec, task, _emit, scope, req_model=req_model, cancel_event=cancel_event,
+        )
 
     tools = [TOOL_SCHEMAS[name] for name in spec["tools"] if name in TOOL_SCHEMAS]
     # Workflow rules are chosen per-run from the scope (vault conventions vs. the
     # external folder's own detected conventions) — vault-tool agents only, so
     # email-only agents like inbox_triage never get vault rules injected.
     system = spec["system"]
-    if supports_folder(agent_id):
+    if _spec_supports_folder(spec):
         system += _workflow_rules(scope) + _scope_note(scope)
     messages = [{"role": "user", "content": [{"type": "text", "text": task}]}]
 
     _emit({"type": "start", "agent": agent_id, "tier": tier, "task": task})
     steps = []
-    model = ""
+    used_model = ""
 
     for _ in range(max_steps):
+        if cancel_event is not None and cancel_event.is_set():
+            raise AgentError("The agent was cancelled.")
         try:
-            res = router.chat_tools(messages, tools, tier=tier, system=system, max_tokens=3072)
+            res = router.chat_tools(
+                messages, tools, tier=tier, system=system, max_tokens=3072,
+                model=req_model or None,
+            )
         except router.RouterError as e:
             _emit({"type": "error", "text": e.message})
             raise AgentError(e.message)
 
-        model = res.get("model", model)
+        used_model = res.get("model", used_model)
         text, tool_calls = res.get("text", ""), res.get("tool_calls", [])
         if text:
             _emit({"type": "think", "text": text})
@@ -1127,7 +1564,7 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
         if not tool_calls:
             _emit({"type": "final", "text": text})
             return {"reply": text or "(the agent finished without a summary)",
-                    "steps": steps, "tier": tier, "model": model, "agent": agent_id}
+                    "steps": steps, "tier": tier, "model": used_model, "agent": spec["id"]}
 
         # Record the assistant turn (text + tool_use) so history stays coherent.
         assistant_content = ([{"type": "text", "text": text}] if text else []) + [
@@ -1158,4 +1595,4 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
 
     _emit({"type": "limit", "text": f"Stopped after {max_steps} steps."})
     return {"reply": f"Stopped after {max_steps} steps without a final answer.",
-            "steps": steps, "tier": tier, "model": model, "agent": agent_id}
+            "steps": steps, "tier": tier, "model": used_model, "agent": spec["id"]}

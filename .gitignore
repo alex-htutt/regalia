@@ -41,6 +41,10 @@ dashboard/.chat_attachments/
 # --- Chat transcripts (multi-chat store; personal, never committed) ---
 dashboard/.chats/
 
+# Agent dispatch database + isolated/staged worker folders (personal, never committed)
+dashboard/.dispatches.sqlite3*
+dashboard/.dispatch_work/
+
 # --- Email OAuth tokens + client secrets (per-account; never committed) ---
 dashboard/.email_tokens/
 dashboard/client_secret*.json

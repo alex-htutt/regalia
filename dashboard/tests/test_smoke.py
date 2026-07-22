@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 # Keep the launch-time update check off during tests — importing app runs it, and
@@ -52,6 +53,18 @@ class RouteSmokeTests(unittest.TestCase):
 
     def test_index_renders(self):
         self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_index_includes_vault_graph_shell_and_local_d3(self):
+        body = self.client.get("/").get_data(as_text=True)
+        for marker in ('id="vault-graph"', 'id="vault-tree"', 'id="vault-inspector"',
+                       '/static/d3.v7.9.0.min.js', '/static/icon-anthropic.svg',
+                       '/static/icon-openai.svg', "fetch('/api/vault-activity')",
+                       '.vault-graph-state[hidden]', 'vaultSetFolderExpanded', '📁'):
+            self.assertIn(marker, body)
+        for path in ("/static/d3.v7.9.0.min.js", "/static/icon-anthropic.svg", "/static/icon-openai.svg"):
+            asset = self.client.get(path)
+            self.assertEqual(asset.status_code, 200)
+            asset.close()
 
     def test_api_tasks_returns_list(self):
         r = self.client.get("/api/tasks")
@@ -137,6 +150,183 @@ class BrowseTraversalTests(unittest.TestCase):
         # backslashes are normalized to '/', then resolved — must still be caught.
         r = self.client.get("/api/browse?path=..\\..\\..\\Windows")
         self.assertIn(r.status_code, (400, 404))
+
+
+class VaultMapTests(unittest.TestCase):
+    """The visual browser maps every relevant type without escaping the vault."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        self._orig_root = dashboard_app.VAULT_ROOT
+        self._tmp = tempfile.TemporaryDirectory()
+        dashboard_app.VAULT_ROOT = Path(self._tmp.name)
+        root = Path(self._tmp.name)
+        (root / "Projects" / "App").mkdir(parents=True)
+        (root / "Notes").mkdir()
+        (root / ".hidden").mkdir()
+        (root / "dashboard").mkdir()
+        (root / "Home.md").write_text(
+            "# Home\n[[Projects/App/context|App]]\n", encoding="utf-8"
+        )
+        (root / "Projects" / "App" / "context.md").write_text(
+            "# App\n![Diagram](diagram.png)\n[[unique]]\n", encoding="utf-8"
+        )
+        (root / "Projects" / "App" / "diagram.png").write_bytes(b"\x89PNG\r\n")
+        (root / "Projects" / "App" / "data.json").write_text('{"ok": true}', encoding="utf-8")
+        (root / "Projects" / "App" / "manual.pdf").write_bytes(b"%PDF-1.4")
+        (root / "Notes" / "unique.md").write_text("# Unique", encoding="utf-8")
+        (root / "Notes" / "CLAUDE.md").write_text("ignored", encoding="utf-8")
+        (root / ".hidden" / "secret.txt").write_text("hidden", encoding="utf-8")
+        (root / "dashboard" / "app.py").write_text("ignored", encoding="utf-8")
+
+    def tearDown(self):
+        dashboard_app.VAULT_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def test_map_has_home_hierarchy_non_markdown_and_authored_links(self):
+        response = self.client.get("/api/vault-map")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["root"], "file:Home.md")
+        nodes = {node["path"]: node for node in data["nodes"]}
+        self.assertEqual(nodes["Home.md"]["kind"], "home")
+        self.assertEqual(nodes["Projects/App/diagram.png"]["preview_kind"], "image")
+        self.assertEqual(nodes["Projects/App/data.json"]["preview_kind"], "text")
+        self.assertIn("Projects/App/manual.pdf", nodes)
+        self.assertNotIn("Notes/CLAUDE.md", nodes)
+        self.assertNotIn(".hidden/secret.txt", nodes)
+        self.assertNotIn("dashboard/app.py", nodes)
+
+        edges = {(edge["source"], edge["target"], edge["kind"]) for edge in data["edges"]}
+        self.assertIn(("file:Home.md", "folder:Projects", "branch"), edges)
+        self.assertIn(("folder:Projects/App", "file:Projects/App/data.json", "contains"), edges)
+        self.assertIn(("file:Home.md", "file:Projects/App/context.md", "link"), edges)
+        self.assertIn(("file:Projects/App/context.md", "file:Projects/App/diagram.png", "link"), edges)
+        self.assertIn(("file:Projects/App/context.md", "file:Notes/unique.md", "link"), edges)
+
+    def test_ambiguous_bare_wikilink_is_omitted(self):
+        root = Path(self._tmp.name)
+        (root / "Projects" / "duplicate.md").write_text("# One", encoding="utf-8")
+        (root / "Notes" / "duplicate.md").write_text("# Two", encoding="utf-8")
+        (root / "Home.md").write_text("[[duplicate]]", encoding="utf-8")
+        links = [e for e in self.client.get("/api/vault-map").get_json()["edges"] if e["kind"] == "link"]
+        self.assertFalse(any(e["source"] == "file:Home.md" for e in links))
+
+    def test_preview_text_image_unsupported_and_traversal(self):
+        text = self.client.get("/api/vault-preview?path=Projects/App/data.json")
+        self.assertEqual(text.status_code, 200)
+        self.assertEqual(text.get_data(as_text=True), '{"ok": true}')
+        self.assertEqual(text.headers["X-Preview-Truncated"], "0")
+        image = self.client.get("/api/vault-preview?path=Projects/App/diagram.png")
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(image.mimetype, "image/png")
+        image.close()
+        self.assertEqual(self.client.get("/api/vault-preview?path=Projects/App/manual.pdf").status_code, 415)
+        self.assertEqual(self.client.get("/api/vault-preview?path=../../outside.txt").status_code, 400)
+        self.assertEqual(self.client.get("/api/vault-preview?path=.hidden/secret.txt").status_code, 404)
+
+    def test_text_preview_is_bounded(self):
+        big = Path(self._tmp.name) / "Projects" / "App" / "large.txt"
+        big.write_text("x" * (dashboard_app.BROWSER_PREVIEW_BYTES + 10), encoding="utf-8")
+        response = self.client.get("/api/vault-preview?path=Projects/App/large.txt")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), dashboard_app.BROWSER_PREVIEW_BYTES)
+        self.assertEqual(response.headers["X-Preview-Truncated"], "1")
+
+
+class VaultActivityTests(unittest.TestCase):
+    """Running agents expose only normalized active-vault folders and edits."""
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        self._orig_root = dashboard_app.VAULT_ROOT
+        self._orig_runs = dict(dashboard_app._RUNS)
+        self._tmp = tempfile.TemporaryDirectory()
+        dashboard_app.VAULT_ROOT = Path(self._tmp.name)
+        (dashboard_app.VAULT_ROOT / "Projects" / "App").mkdir(parents=True)
+        (dashboard_app.VAULT_ROOT / "Projects" / "App" / "main.py").write_text("pass", encoding="utf-8")
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS.clear()
+
+    def tearDown(self):
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS.clear()
+            dashboard_app._RUNS.update(self._orig_runs)
+        dashboard_app.VAULT_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def test_classic_run_reports_scope_provider_and_edited_file(self):
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS["r1"] = {
+                "id": "r1", "agent": "researcher", "name": "Research Agent",
+                "tier": "smart", "folder": "Projects/App", "status": "running",
+                "steps": [
+                    {"type": "tool", "tool": "write_file", "input": {"path": "main.py"}},
+                    {"type": "tool", "tool": "write_file", "input": {"path": "../../escape.py"}},
+                ],
+            }
+        with mock.patch.object(dashboard_app.dispatches, "list_dispatches", return_value=[]):
+            response = self.client.get("/api/vault-activity")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["poll_ms"], 1200)
+        self.assertEqual(len(data["activities"]), 1)
+        activity = data["activities"][0]
+        self.assertEqual(activity["provider"], "anthropic")
+        self.assertEqual(activity["scope"], "Projects/App")
+        self.assertEqual(activity["editing_paths"], ["Projects/App/main.py"])
+
+    def test_local_run_is_not_mislabeled_as_a_cloud_provider(self):
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS["r2"] = {
+                "id": "r2", "agent": "summarizer", "name": "Daily Summarizer",
+                "tier": "fast", "folder": "Projects", "status": "running", "steps": [],
+            }
+        with mock.patch.object(dashboard_app.dispatches, "list_dispatches", return_value=[]):
+            activity = self.client.get("/api/vault-activity").get_json()["activities"][0]
+        self.assertEqual(activity["provider"], "local")
+
+    def test_running_dispatch_worker_reports_openai_edit(self):
+        summary = [{"id": "d_test", "state": "running"}]
+        dispatch = {
+            "id": "d_test", "scope": "Projects/App", "workers": [{
+                "id": "build", "title": "Builder", "status": "running",
+                "tier": "chatgpt", "scope": "Projects/App", "capabilities": ["code_write"],
+            }],
+        }
+        events = {"events": [{
+            "type": "tool", "worker": "build", "tool": "file_change",
+            "input": {"changes": [{"path": "main.py"}]},
+        }]}
+        with mock.patch.object(dashboard_app.dispatches, "list_dispatches", return_value=summary), \
+             mock.patch.object(dashboard_app.dispatches, "get_dispatch", return_value=dispatch), \
+             mock.patch.object(dashboard_app.dispatches, "events", return_value=events):
+            activities = self.client.get("/api/vault-activity").get_json()["activities"]
+        self.assertEqual(len(activities), 1)
+        self.assertEqual(activities[0]["provider"], "openai")
+        self.assertEqual(activities[0]["editing_paths"], ["Projects/App/main.py"])
+
+    def test_external_and_non_filesystem_runs_are_omitted(self):
+        with dashboard_app._RUNS_LOCK:
+            dashboard_app._RUNS.update({
+                "r3": {"id": "r3", "agent": "researcher", "name": "External",
+                       "tier": "smart", "folder": "ext:client", "status": "running", "steps": []},
+                "r4": {"id": "r4", "agent": "inbox_triage", "name": "Inbox",
+                       "tier": "claude", "folder": "", "status": "running", "steps": []},
+            })
+        with mock.patch.object(dashboard_app.dispatches, "list_dispatches", return_value=[]):
+            activities = self.client.get("/api/vault-activity").get_json()["activities"]
+        self.assertEqual(activities, [])
 
 
 class AgentToolSafetyTests(unittest.TestCase):
@@ -668,6 +858,21 @@ class ClaudeAgentTierTests(unittest.TestCase):
         self.assertEqual(res["tier"], "claude")
         self.assertEqual(res["reply"], "done: 2 notes")
         self.assertEqual(res["model"], "claude-test")
+
+    def test_model_override_reaches_claude_cli(self):
+        seen = {}
+        original = router.claude_code_stream
+
+        def fake_stream(*args, **kwargs):
+            seen.update(kwargs)
+            return iter(self.FAKE_STREAM)
+
+        router.claude_code_stream = fake_stream
+        try:
+            agent.run_agent("summarizer", "count notes", tier="claude", model="sonnet")
+        finally:
+            router.claude_code_stream = original
+        self.assertEqual(seen["model"], "sonnet")
 
     def test_stream_maps_to_step_events(self):
         res, events = self._run()
@@ -1220,6 +1425,8 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("chatgpt", d)
         self.assertEqual(d["chatgpt"]["backend"], "codex-cli")
         self.assertIn("available", d["chatgpt"])
+        self.assertIn("auth_state", d["chatgpt"])
+        self.assertIn("auth_reason", d["chatgpt"])
 
     def test_openai_key_from_store_flips_availability(self):
         import os
@@ -1251,6 +1458,7 @@ class SettingsTests(unittest.TestCase):
             d = self.client.post("/api/chats").get_json()
             cid = d["id"]
             self.assertEqual(d["tier"], "chatgpt")
+            self.assertEqual(d["cliModel"], {})
         finally:
             if cid:
                 self.client.delete(f"/api/chats/{cid}")
@@ -1424,6 +1632,7 @@ class ChatGptAccountTierTests(unittest.TestCase):
                 res = router.chat(
                     [{"role": "user", "content": "hi"}], tier="chatgpt",
                     system="be terse",
+                    model="gpt-test",
                     attachments=[{"path": str(source), "name": source.name,
                                   "mime": "text/plain"}],
                 )
@@ -1447,6 +1656,7 @@ class ChatGptAccountTierTests(unittest.TestCase):
         self.assertIn("--ignore-user-config", seen["cmd"])
         self.assertIn("--ignore-rules", seen["cmd"])
         self.assertIn('forced_login_method="chatgpt"', seen["cmd"])
+        self.assertEqual(seen["cmd"][seen["cmd"].index("-m") + 1], "gpt-test")
         self.assertNotIn("--ask-for-approval", seen["cmd"])
         self.assertTrue(seen["input"].startswith("System instructions:"))
         for name in secret_names:
@@ -1485,7 +1695,57 @@ class ChatGptAccountTierTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("API key", reason)
         self.assertFalse(status["authenticated"])
+        self.assertEqual(status["auth_state"], "wrong_method")
         self.assertFalse(status["available"])
+
+    def _health_result(self, stdout, returncode=0, stderr=""):
+        import tempfile
+
+        original_path = router._codex_cli_path
+        original_run = router.subprocess.run
+        original_cwd = router.CODEX_CLI_CWD
+        original_health = dict(router._CODEX_HEALTH)
+
+        class FakeProc:
+            pass
+
+        FakeProc.returncode = returncode
+        FakeProc.stdout = stdout
+        FakeProc.stderr = stderr
+        with tempfile.TemporaryDirectory() as cwd:
+            router._codex_cli_path = lambda: "codex"
+            router.subprocess.run = lambda *args, **kwargs: FakeProc()
+            router.CODEX_CLI_CWD = cwd
+            try:
+                ok, reason = router.codex_cli_health()
+                status = router.status_for("chatgpt")
+            finally:
+                router._codex_cli_path = original_path
+                router.subprocess.run = original_run
+                router.CODEX_CLI_CWD = original_cwd
+                router._CODEX_HEALTH.clear()
+                router._CODEX_HEALTH.update(original_health)
+        return ok, reason, status
+
+    def test_health_confirms_explicit_chatgpt_login(self):
+        ok, reason, status = self._health_result("Logged in using ChatGPT")
+        self.assertTrue(ok)
+        self.assertIn("ChatGPT", reason)
+        self.assertTrue(status["authenticated"])
+        self.assertEqual(status["auth_state"], "chatgpt")
+        self.assertIsNotNone(status["auth_checked_at"])
+
+    def test_health_recognizes_signed_out_output(self):
+        ok, reason, status = self._health_result("Not logged in", returncode=1)
+        self.assertFalse(ok)
+        self.assertIn("not signed in", reason)
+        self.assertEqual(status["auth_state"], "signed_out")
+
+    def test_health_does_not_guess_on_unknown_success_output(self):
+        ok, reason, status = self._health_result("Login status available")
+        self.assertFalse(ok)
+        self.assertIn("could not confirm", reason)
+        self.assertEqual(status["auth_state"], "unknown")
 
     def test_chatgpt_tool_loop_rejected(self):
         with self.assertRaises(router.RouterError) as ctx:
@@ -1575,6 +1835,69 @@ class BackendRegressionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(body["tier"], "openai")
+
+    def test_chat_model_override_is_scoped_to_supported_tiers(self):
+        seen = []
+        original_chat = router.chat
+
+        def fake_chat(messages, **kwargs):
+            seen.append((kwargs["tier"], kwargs.get("model")))
+            return {"reply": "ok", "model": kwargs.get("model") or "default",
+                    "tier": kwargs["tier"]}
+
+        router.chat = fake_chat
+        try:
+            chatgpt = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "tier": "chatgpt", "model": "gpt-account-model",
+            })
+            smart = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "tier": "smart", "model": "must-not-cross-backends",
+            })
+        finally:
+            router.chat = original_chat
+
+        self.assertEqual(chatgpt.status_code, 200)
+        self.assertEqual(smart.status_code, 200)
+        self.assertEqual(seen, [("chatgpt", "gpt-account-model"), ("smart", None)])
+
+    def test_cli_model_overrides_reach_claude_workers(self):
+        original_thread = dashboard_app.threading.Thread
+        launched = []
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                launched.append(kwargs)
+
+            def start(self):
+                pass
+
+        dashboard_app.threading.Thread = FakeThread
+        agent_run_id = chat_run_id = None
+        try:
+            agent_response = self.client.post("/api/agent/run", json={
+                "agent": "summarizer", "task": "Summarize", "tier": "claude",
+                "model": "sonnet",
+            })
+            agent_run_id = agent_response.get_json().get("run_id")
+            chat_response = self.client.post("/api/chat/stream", json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": "opus",
+            })
+            chat_run_id = chat_response.get_json().get("run_id")
+        finally:
+            dashboard_app.threading.Thread = original_thread
+            if agent_run_id:
+                with dashboard_app._RUNS_LOCK:
+                    dashboard_app._RUNS.pop(agent_run_id, None)
+            if chat_run_id:
+                with dashboard_app._CHAT_STREAMS_LOCK:
+                    dashboard_app._CHAT_STREAMS.pop(chat_run_id, None)
+
+        by_target = {item["target"].__name__: item["args"] for item in launched}
+        self.assertEqual(by_target["_run_worker"][5], "sonnet")
+        self.assertEqual(by_target["_chat_stream_worker"][3], "opus")
 
     def test_unsupported_agent_tier_is_explicit_error(self):
         response = self.client.post(

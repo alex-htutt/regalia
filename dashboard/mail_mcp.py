@@ -74,5 +74,14 @@ def draft_email(account_id: str, to: str = "", subject: str = "",
                                    body=body, reply_to=reply_to)
 
 
+@mcp.tool()
+def stage_email_draft(account_id: str, to: str = "", subject: str = "",
+                      body: str = "", reply_to: str = "") -> str:
+    """Propose a draft for a dispatch review gate without saving it yet."""
+    return agent._tool_stage_email_draft(
+        account_id=account_id, to=to, subject=subject, body=body, reply_to=reply_to,
+    )
+
+
 if __name__ == "__main__":
     mcp.run()  # stdio transport (FastMCP default)

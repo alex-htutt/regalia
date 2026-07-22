@@ -279,6 +279,164 @@
   }
   .g-meta { font-size: 11px; color: var(--faint); margin-top: auto; padding-top: 2px; }
 
+  /* -- Vault graph browser -- */
+  .vault-browser {
+    height: max(560px, calc(100vh - 146px));
+    margin-top: 14px;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(290px, 28vw, 360px);
+    background: color-mix(in srgb, var(--bg) 91%, transparent);
+    overflow: hidden;
+  }
+  .vault-graph-pane { position: relative; min-width: 0; overflow: hidden; }
+  .vault-toolbar {
+    position: absolute; z-index: 6; top: 14px; left: 14px; right: 14px;
+    display: flex; align-items: center; gap: 7px; pointer-events: none;
+  }
+  .vault-toolbar > * { pointer-events: auto; }
+  .vault-search {
+    width: min(310px, 42vw); height: 34px; padding: 0 11px;
+    border: 1px solid var(--glass-border); border-radius: 8px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: var(--glass-blur); color: var(--text); outline: none;
+    font: 12px var(--font-sans);
+  }
+  .vault-search:focus { border-color: var(--border-hover); }
+  .vault-tool-btn, .vault-links-toggle {
+    height: 34px; min-width: 34px; padding: 0 10px;
+    border: 1px solid var(--glass-border); border-radius: 8px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: var(--glass-blur); color: var(--muted);
+    font: 11px var(--font-sans); cursor: pointer;
+  }
+  .vault-tool-btn:hover, .vault-links-toggle:hover { color: var(--text); border-color: var(--border-hover); }
+  .vault-links-toggle { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .vault-links-toggle input { accent-color: var(--amber); }
+  .vault-tool-group { display: flex; gap: 5px; margin-left: auto; }
+  .vault-tree-toggle { display: none; }
+  .vault-graph { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  .vault-graph:active { cursor: grabbing; }
+  .vault-edge { fill: none; vector-effect: non-scaling-stroke; transition: opacity .15s, stroke-width .15s; }
+  .vault-edge.hierarchy { stroke: color-mix(in srgb, var(--muted) 42%, transparent); stroke-width: 1.15; }
+  .vault-edge.authored { stroke: color-mix(in srgb, var(--amber) 38%, transparent); stroke-width: .8; opacity: .48; stroke-dasharray: 3 4; }
+  .vault-edge.dim { opacity: .07; }
+  .vault-edge.hot { opacity: 1; stroke-width: 1.8; }
+  .vault-node { cursor: pointer; outline: none; }
+  .vault-node rect { stroke-width: 1; transition: stroke .15s, fill .15s; }
+  .vault-node[data-kind="home"] rect { fill: var(--accent); stroke: var(--accent); }
+  .vault-node[data-kind="home"] text { fill: var(--accent-fg); font-weight: 650; }
+  .vault-node[data-kind="folder"] rect { fill: color-mix(in srgb, var(--surface) 94%, transparent); stroke: var(--border-hover); }
+  .vault-node[data-kind="file"] rect { fill: color-mix(in srgb, var(--bg) 92%, transparent); stroke: var(--border); }
+  .vault-node text { fill: var(--text); font: 11px var(--font-sans); pointer-events: none; }
+  .vault-node[data-kind="folder"] text { font-family: "Segoe UI Emoji", var(--font-sans); }
+  .vault-node .vault-node-mark { fill: var(--faint); font: 10px var(--font-mono); }
+  .vault-node[data-kind="folder"] .vault-node-mark { fill: var(--amber); }
+  .vault-node:hover rect, .vault-node.hot rect, .vault-node.selected rect { stroke: var(--amber); stroke-width: 1.6; }
+  .vault-node.agent-active rect {
+    fill: color-mix(in srgb, var(--amber) 12%, var(--surface));
+    stroke: var(--amber); stroke-width: 1.7;
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--amber) 54%, transparent));
+  }
+  .vault-node.agent-editing rect { stroke-width: 2.2; }
+  .vault-agent-layer { pointer-events: none; }
+  .vault-agent-badge .badge-shell { fill: #f5f5f3; stroke: var(--amber); stroke-width: 1.5; }
+  .vault-agent-badge .badge-logo { pointer-events: none; }
+  .vault-agent-badge.local .badge-shell { fill: var(--surface); }
+  .vault-agent-badge.local .badge-dot { fill: var(--amber); }
+  .vault-node.agent-editing .vault-agent-badge:first-child { animation: vault-agent-pulse 1.5s ease-in-out infinite; }
+  .vault-node.dim { opacity: .22; }
+  .vault-node:focus-visible rect { stroke: var(--amber); stroke-width: 2; }
+  .vault-graph-state {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--faint); font-size: 12px; pointer-events: none;
+  }
+  .vault-graph-state[hidden] { display: none; }
+  .vault-legend {
+    position: absolute; z-index: 4; left: 16px; bottom: 14px;
+    display: flex; gap: 13px; color: var(--faint); font-size: 10px;
+  }
+  .vault-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .vault-legend i { width: 14px; height: 2px; background: var(--muted); display: inline-block; }
+  .vault-legend i.link { background: var(--amber); opacity: .65; border-top: 1px dashed var(--bg); }
+  .vault-status { position: absolute; z-index: 4; right: 16px; bottom: 14px; color: var(--faint); font: 10px var(--font-mono); }
+  .vault-inspector {
+    position: absolute; z-index: 7; left: 14px; bottom: 38px;
+    width: min(430px, calc(100% - 28px)); max-height: min(48vh, 410px);
+    overflow: auto; padding: 15px;
+    border: 1px solid var(--glass-border); border-radius: 12px;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    backdrop-filter: var(--glass-blur);
+  }
+  .vault-inspector[hidden] { display: none; }
+  .vi-head { display: flex; align-items: flex-start; gap: 10px; }
+  .vi-kind { color: var(--amber); font: 10px var(--font-mono); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
+  .vi-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+  .vi-close { margin-left: auto; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 18px; }
+  .vi-path { margin-top: 7px; color: var(--faint); font: 10px/1.45 var(--font-mono); overflow-wrap: anywhere; }
+  .vi-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 9px; color: var(--muted); font-size: 11px; }
+  .vi-actions { display: flex; gap: 6px; margin-top: 11px; }
+  .vi-preview { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; }
+  .vi-preview pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font: 10.5px/1.55 var(--font-mono); }
+  .vi-preview img { display: block; max-width: 100%; max-height: 230px; border-radius: 7px; margin: 0 auto; }
+  .vi-preview .md { font-size: 12px; max-height: 240px; overflow: auto; }
+  .vi-loading { color: var(--faint); font-size: 11px; }
+  .vault-tree-panel { min-width: 0; border-left: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; }
+  .vault-tree-head { height: 48px; padding: 0 13px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .vault-tree-head strong { font-size: 11px; text-transform: uppercase; letter-spacing: .55px; }
+  .vault-tree-count { margin-left: auto; color: var(--faint); font: 10px var(--font-mono); }
+  .vault-tree-close { display: none; border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+  .vault-tree { flex: 1; overflow: auto; padding: 8px 6px 18px; }
+  .vault-tree-row { display: flex; align-items: center; min-width: 0; height: 27px; border-radius: 5px; }
+  .vault-tree-row:hover { background: var(--gray-bg); }
+  .vault-tree-row.selected { background: var(--amber-bg); }
+  .vault-tree-row.agent-active {
+    background: color-mix(in srgb, var(--amber) 11%, transparent);
+    box-shadow: inset 2px 0 var(--amber);
+  }
+  .vault-tree-row.agent-editing { background: color-mix(in srgb, var(--amber) 18%, transparent); }
+  .vault-tree-caret { width: 22px; height: 26px; flex: 0 0 22px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 10px; }
+  .vault-tree-caret.blank { visibility: hidden; }
+  .vault-tree-label { min-width: 0; flex: 1; height: 27px; border: 0; background: none; color: var(--muted); cursor: pointer; text-align: left; font: 11.5px var(--font-sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vault-tree-row.selected .vault-tree-label, .vault-tree-label:hover { color: var(--text); }
+  .vault-tree-icon { display: inline-block; width: 18px; color: var(--faint); font: 10px var(--font-mono); text-align: center; margin-right: 3px; }
+  .vault-tree-icon.folder { color: var(--amber); font-family: "Segoe UI Emoji", var(--font-sans); }
+  .vault-tree-agents { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; padding: 0 6px 0 3px; }
+  .vault-tree-agent {
+    position: relative; display: inline-grid; place-items: center; width: 17px; height: 17px;
+    border: 1px solid var(--amber); border-radius: 50%; background: #f5f5f3;
+  }
+  .vault-tree-agent img { display: block; width: 10px; height: 10px; }
+  .vault-tree-agent.local { background: var(--surface); }
+  .vault-tree-agent.local::after { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+  .vault-tree-row.agent-editing .vault-tree-agent:first-child { animation: vault-agent-pulse 1.5s ease-in-out infinite; }
+  @keyframes vault-agent-pulse {
+    0%, 100% { filter: drop-shadow(0 0 0 color-mix(in srgb, var(--amber) 0%, transparent)); }
+    50% { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--amber) 75%, transparent)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .vault-node.agent-editing .vault-agent-badge:first-child,
+    .vault-tree-row.agent-editing .vault-tree-agent:first-child { animation: none; }
+  }
+  .vault-tree-empty { padding: 18px 12px; color: var(--faint); font-size: 11px; }
+  @media (max-width: 900px) {
+    .vault-browser { grid-template-columns: 1fr; position: relative; }
+    .vault-tree-panel { position: absolute; z-index: 10; top: 0; right: 0; bottom: 0; width: min(360px, 88vw); transform: translateX(101%); transition: transform .18s ease; box-shadow: -20px 0 50px rgba(0,0,0,.25); }
+    .vault-browser.tree-open .vault-tree-panel { transform: translateX(0); }
+    .vault-tree-toggle, .vault-tree-close { display: inline-grid; place-items: center; }
+    .vault-links-toggle span { display: none; }
+  }
+  @media (max-width: 620px) {
+    .vault-browser { height: calc(100vh - 124px); min-height: 480px; }
+    .vault-toolbar { left: 9px; right: 9px; top: 9px; gap: 5px; }
+    .vault-search { width: min(220px, 48vw); }
+    .vault-tool-btn, .vault-links-toggle { padding: 0 8px; }
+    .vault-tool-group .zoom-extra { display: none; }
+    .vault-legend { display: none; }
+    .vault-status { right: 10px; bottom: 9px; }
+    .vault-inspector { left: 9px; bottom: 32px; width: calc(100% - 18px); }
+  }
+
   /* ── Context modal ── */
   .modal-backdrop {
     position: fixed; inset: 0;
@@ -328,7 +486,7 @@
   .md code { background: var(--gray-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace; }
   .md pre { background: var(--gray-bg); border-radius: 6px; padding: 10px 12px; margin: 6px 0; overflow-x: auto; }
   .md pre code { background: none; padding: 0; }
-  .md a { color: var(--blue-fg); }
+  .md a { color: var(--amber); }
   .md .wikilink { color: var(--purple-fg); background: var(--purple-bg); padding: 0 5px; border-radius: 4px; font-size: 12px; }
 
   /* ── Filters ── */
@@ -454,16 +612,16 @@
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
     color: var(--muted); font-weight: 600;
   }
-  .np-form input, .np-form select, .np-form textarea,
-  .bento-card input, .bento-card select, .bento-card textarea {
+  .np-form input, .np-form select, .np-form textarea, .np-form .acx-trigger,
+  .bento-card input, .bento-card select, .bento-card textarea, .bento-card .acx-trigger {
     border: 1px solid var(--border); border-radius: 7px;
     padding: 8px 10px; font-size: 13px; font-family: inherit;
     background: var(--bg); color: var(--text); outline: none;
     text-transform: none; letter-spacing: 0; font-weight: 400;
   }
   .np-form textarea, .bento-card textarea { resize: vertical; flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; }
-  .np-form input:focus, .np-form select:focus, .np-form textarea:focus,
-  .bento-card input:focus, .bento-card select:focus, .bento-card textarea:focus { border-color: var(--border-hover); }
+  .np-form input:focus, .np-form select:focus, .np-form textarea:focus, .np-form .acx-trigger:focus-visible,
+  .bento-card input:focus, .bento-card select:focus, .bento-card textarea:focus, .bento-card .acx-trigger:focus-visible { border-color: var(--border-hover); }
   .np-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; min-width: 0; }
   .np-row > label { flex: 1 1 min(280px, 100%); }
   .np-row .pill, .np-row .np-submit { flex: 0 0 auto; }
@@ -476,6 +634,7 @@
   .np-msg { font-size: 12.5px; min-height: 1px; }
   .np-msg.ok { color: var(--green-fg); }
   .np-msg.err { color: var(--red); }
+  .bento-card a { color: var(--amber); }
   .proj-list-head, .activity-head {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
     color: var(--muted); font-weight: 600; margin: 22px 0 10px;
@@ -762,6 +921,58 @@
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
   .agent-run button:disabled { opacity: 0.5; cursor: default; }
 
+  .dispatch-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .dispatch-actions button, .dispatch-primary, .dispatch-secondary, .dispatch-danger {
+    border:1px solid var(--border); border-radius:8px; padding:8px 12px;
+    font:600 12px inherit; cursor:pointer; color:var(--text); background:var(--surface);
+  }
+  .dispatch-actions button:first-child, .dispatch-primary { background:var(--accent); color:var(--accent-fg); border-color:transparent; }
+  .dispatch-danger { color:var(--red); }
+  .dispatch-studio { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .dispatch-studio[hidden] { display:none; }
+  .dispatch-title { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .dispatch-title h3 { margin:0; font-size:15px; flex:1; }
+  .dispatch-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .dispatch-form .full { grid-column:1/-1; }
+  .dispatch-form label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:11px; }
+  .dispatch-form input, .dispatch-form textarea, .dispatch-form select,
+  .dispatch-chat textarea, .worker-edit input, .worker-edit textarea, .worker-edit select {
+    width:100%; box-sizing:border-box; border:1px solid var(--border); border-radius:7px;
+    background:var(--bg); color:var(--text); padding:8px 9px; font:12px inherit; outline:none;
+  }
+  .dispatch-form textarea { min-height:90px; resize:vertical; }
+  .dispatch-form input:focus, .dispatch-form textarea:focus, .dispatch-form select:focus,
+  .dispatch-chat textarea:focus { border-color:var(--border-hover); }
+  .cap-grid { display:flex; flex-wrap:wrap; gap:7px 12px; padding:8px; border:1px solid var(--border); border-radius:8px; }
+  .cap-grid label { flex-direction:row; align-items:center; color:var(--text); }
+  .cap-grid input { width:auto; }
+  .dispatch-foot { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:12px; }
+  .dispatch-msg { color:var(--muted); font-size:12px; margin-right:auto; }
+  .dispatch-chat { display:flex; flex-direction:column; gap:8px; }
+  .dispatch-bubble { border:1px solid var(--border); border-radius:9px; padding:9px 11px; font-size:12.5px; line-height:1.5; }
+  .dispatch-bubble.user { background:var(--amber-bg); margin-left:10%; }
+  .dispatch-bubble.assistant { background:var(--bg); margin-right:10%; }
+  .dispatch-chat-send { display:flex; gap:8px; }
+  .dispatch-chat-send textarea { min-height:56px; resize:vertical; }
+  .dispatch-plan { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+  .worker-edit { border:1px solid var(--border); border-radius:9px; padding:10px; display:grid; grid-template-columns:1fr 120px 140px; gap:8px; }
+  .worker-edit textarea { grid-column:1/-1; min-height:58px; resize:vertical; }
+  .worker-meta { grid-column:1/-1; color:var(--muted); font-size:11px; }
+  .dispatch-status { border-top:1px solid var(--border); margin-top:12px; padding-top:12px; }
+  .worker-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:7px 0; border-bottom:1px solid var(--border); font-size:12px; }
+  .worker-row .state { color:var(--muted); }
+  .dispatch-result { margin-top:12px; border:1px solid var(--border); border-radius:9px; padding:12px; }
+  .artifact-preview { max-height:240px; overflow:auto; white-space:pre-wrap; font:11px/1.45 ui-monospace,monospace; background:var(--bg); padding:9px; border-radius:7px; }
+  .custom-agent-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr)); gap:10px; margin-bottom:16px; }
+  .custom-agent { border:1px solid var(--border); background:var(--surface); border-radius:10px; padding:12px; }
+  .custom-agent h4 { margin:0 0 5px; font-size:13px; }
+  .custom-agent p { margin:0 0 8px; color:var(--muted); font-size:11.5px; line-height:1.4; }
+  .dispatch-history-item { border:1px solid var(--border); border-radius:8px; padding:8px; margin-bottom:7px; cursor:pointer; }
+  .dispatch-history-item:hover { border-color:var(--border-hover); }
+  .dispatch-history-item b { display:block; font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .dispatch-history-item span { color:var(--muted); font-size:10.5px; }
+  @media (max-width:700px) { .dispatch-form { grid-template-columns:1fr; } .dispatch-form .full { grid-column:auto; } .worker-edit { grid-template-columns:1fr; } .worker-edit textarea,.worker-meta { grid-column:auto; } }
+
   .agents-layout { display: grid; grid-template-columns: minmax(0, 1fr) 224px; gap: 16px; align-items: start; }
   @media (max-width: 900px) { .agents-layout { grid-template-columns: 1fr; } .running-side { position: static; } }
   .running-side { position: sticky; top: 14px; }
@@ -978,13 +1189,13 @@
   /* ── Inbox view ── */
   .inbox-wrap { max-width: min(100%, 1040px); }
   .inbox-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-  .inbox-bar select, .inbox-bar input {
+  .inbox-bar select, .inbox-bar input, .inbox-bar .acx-trigger {
     border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px;
     font-size: 12.5px; font-family: inherit; background: var(--bg); color: var(--text); outline: none;
   }
-  .inbox-bar select { cursor: pointer; max-width: min(100%, 280px); }
+  .inbox-bar select, .inbox-bar .acx-trigger { cursor: pointer; max-width: min(100%, 280px); }
   .inbox-bar input { flex: 1; min-width: 140px; }
-  .inbox-bar select:focus, .inbox-bar input:focus { border-color: var(--border-hover); }
+  .inbox-bar select:focus, .inbox-bar input:focus, .inbox-bar .acx-trigger:focus-visible { border-color: var(--border-hover); }
   .inbox-btn {
     border: 1px solid var(--border); background: var(--surface); color: var(--text);
     border-radius: 6px; padding: 6px 12px; font-size: 12.5px; font-weight: 600;
@@ -1085,6 +1296,55 @@
   .wiz-foot .wiz-skip:hover { color: var(--muted); }
   .wiz-foot-right { display: flex; gap: 8px; }
   @media (max-width: 560px) { .wiz-tiers { grid-template-columns: 1fr; } }
+
+  /* ── Dropdowns — vanilla port of Aceternity's navbar-menu (like the Spotlight port).
+     Every native <select> is enhanced in place (see acxEnhance in the boot script):
+     the select stays in the DOM, hidden but fully functional, so all existing
+     .value reads/writes and inline onchange handlers keep working; a trigger
+     button + this floating glass panel replace only the *presentation*.
+     Panel look = rounded-2xl + hairline border + shadow-xl + backdrop-blur;
+     motion = spring pop (opacity 0 / scale .85 → 1) approximated with an
+     overshoot cubic-bezier standing in for svelte-motion's spring
+     (mass .5, damping 11.5, stiffness 100). ── */
+  select.acx-native {
+    position: absolute !important; width: 1px !important; height: 1px !important;
+    padding: 0 !important; border: 0 !important; margin: 0 !important;
+    opacity: 0 !important; pointer-events: none !important; overflow: hidden;
+  }
+  .acx-trigger { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; min-width: 0; user-select: none; }
+  .acx-trigger .acx-label {
+    flex: 1; min-width: 0; text-align: left;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .acx-trigger .acx-chev { flex: 0 0 auto; opacity: 0.55; transition: transform 0.25s ease; }
+  .acx-trigger.open .acx-chev { transform: rotate(180deg); }
+  .acx-trigger[disabled] { color: var(--faint); cursor: default; }
+  .acx-menu {
+    position: fixed; z-index: 500; min-width: 150px; max-width: min(92vw, 360px);
+    max-height: min(46vh, 340px); overflow-y: auto; overscroll-behavior: contain;
+    background: var(--glass-elev);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border); border-radius: 16px;
+    box-shadow: 0 18px 50px rgba(0,0,0,0.30);
+    padding: 7px;
+    opacity: 0; transform: scale(0.85) translateY(4px);
+    transition: opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+                transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .acx-menu.open { opacity: 1; transform: scale(1) translateY(0); }
+  .acx-item {
+    display: block; width: 100%; text-align: left; border: none; background: none;
+    font-family: inherit; font-size: 12.5px; color: var(--muted);
+    padding: 7px 10px; border-radius: 9px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+  .acx-item:hover, .acx-item:focus-visible { background: var(--glass-inset); color: var(--text); outline: none; }
+  .acx-item.sel { color: var(--amber); }
+  .acx-item[disabled] { color: var(--faint); cursor: default; background: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .acx-menu, .acx-trigger .acx-chev, .acx-item { transition: none; }
+  }
 </style>
 </head>
 <body>
@@ -1254,10 +1514,41 @@
 
     <section class="view" data-view="browse" hidden>
       <div class="view-head">
-        <h2>Browse</h2>
-        <p>Every top-level section of the vault. Click a card to read its context file.</p>
+        <h2>Vault map</h2>
+        <p>Follow the structure from Home, then trace the links your files make between branches.</p>
       </div>
-      <div class="browse"><div class="gallery" id="gallery"></div></div>
+      <div class="vault-browser" id="vault-browser">
+        <div class="vault-graph-pane" id="vault-graph-pane">
+          <div class="vault-toolbar">
+            <input class="vault-search" id="vault-search" type="search" placeholder="Find a folder or file..." aria-label="Find a folder or file">
+            <label class="vault-links-toggle" title="Show authored links">
+              <input id="vault-links" type="checkbox" checked><span>Links</span>
+            </label>
+            <div class="vault-tool-group">
+              <button class="vault-tool-btn zoom-extra" type="button" onclick="vaultZoomBy(1.25)" title="Zoom in" aria-label="Zoom in">+</button>
+              <button class="vault-tool-btn zoom-extra" type="button" onclick="vaultZoomBy(.8)" title="Zoom out" aria-label="Zoom out">−</button>
+              <button class="vault-tool-btn" type="button" onclick="vaultFit()" title="Fit visible graph">Fit</button>
+              <button class="vault-tool-btn" type="button" onclick="vaultReset()" title="Collapse back to Home">Home</button>
+              <button class="vault-tool-btn vault-tree-toggle" type="button" onclick="vaultToggleTree(true)" title="Show file tree" aria-label="Show file tree">Tree</button>
+            </div>
+          </div>
+          <svg class="vault-graph" id="vault-graph" role="img" aria-label="Interactive vault relationship graph"></svg>
+          <div class="vault-graph-state" id="vault-graph-state">Mapping the vault...</div>
+          <div class="vault-legend" aria-hidden="true">
+            <span><i></i>Folder structure</span><span><i class="link"></i>Authored link</span>
+          </div>
+          <div class="vault-status" id="vault-status"></div>
+          <aside class="vault-inspector" id="vault-inspector" hidden aria-live="polite"></aside>
+        </div>
+        <aside class="vault-tree-panel" aria-label="Vault file tree">
+          <div class="vault-tree-head">
+            <strong>Vault structure</strong>
+            <span class="vault-tree-count" id="vault-tree-count"></span>
+            <button class="vault-tree-close" type="button" onclick="vaultToggleTree(false)" aria-label="Close file tree">×</button>
+          </div>
+          <div class="vault-tree" id="vault-tree" role="tree"></div>
+        </aside>
+      </div>
     </section>
 
     <section class="view" data-view="chat" hidden>
@@ -1275,6 +1566,10 @@
             <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
           </div>
           <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
+          <input class="model-select" id="cli-model" list="cli-model-list" onchange="setCliModel(this.value)"
+                 oninput="setCliModel(this.value)" style="display:none;" autocomplete="off"
+                 placeholder="plan default" title="Model — leave blank for the plan/account default">
+          <datalist id="cli-model-list"></datalist>
           <span class="tier-status" id="tier-status"></span>
           <button class="pill" id="chat-edit" onclick="toggleEdit()" title="Edit mode — let chat change vault notes">✏️ Edit: off</button>
           <button class="chat-clear" onclick="clearChat()" title="Clear this conversation's messages">Clear</button>
@@ -1327,18 +1622,30 @@
     <section class="view" data-view="agents" hidden>
       <div class="view-head">
         <h2>Agents</h2>
-        <p>Launch an agent against a task. It drives real vault tools through the model router and streams each step below.</p>
+        <p>Create specialists, dispatch one-off work, or plan a larger job across a model-sized team. Every dispatch asks whether speed or depth matters first.</p>
       </div>
       <div class="panel-wrap">
         <div class="agents-layout">
           <div class="agents-main">
+            <div class="dispatch-actions">
+              <button onclick="openDispatchStudio('quick')">⚡ Quick dispatch</button>
+              <button onclick="openDispatchStudio('group')">◎ Group dispatch</button>
+              <button onclick="openDispatchStudio('agent')">＋ Create agent</button>
+            </div>
+            <div class="dispatch-studio" id="dispatch-studio" hidden></div>
+            <div id="dispatch-detail"></div>
+            <div class="activity-head">Your agents</div>
+            <div class="custom-agent-list" id="custom-agent-list"><div class="empty-sm">No custom agents yet.</div></div>
+            <div class="activity-head">Built-in agents</div>
             <div class="agent-grid" id="agent-grid"><div class="empty-sm">Loading…</div></div>
             <div class="activity">
-              <div class="activity-head">Activity</div>
+              <div class="activity-head">Legacy activity</div>
               <div class="activity-log" id="activity-log"><div class="empty-sm">No runs yet.</div></div>
             </div>
           </div>
           <aside class="running-side">
+            <div class="activity-head">Dispatch history</div>
+            <div id="dispatch-history"><div class="empty-sm">No dispatches yet.</div></div>
             <div class="activity-head">Running now</div>
             <div id="running-list"><div class="empty-sm">Nothing running.</div></div>
           </aside>
@@ -1514,6 +1821,7 @@
   }
 </script>
 
+<script src="/static/d3.v7.9.0.min.js"></script>
 <script>
   let all = [];
   const filters = { status: 'all', area: 'all', course: 'all' };
@@ -1543,18 +1851,19 @@
     return (tags || []).filter(t => t.startsWith('type/')).map(t => t.slice(5));
   }
 
-  function dlState(dl) {
+  function dlState(dl, status) {
     if (!dl) return null;
     const today = new Date(); today.setHours(0,0,0,0);
     const diff = Math.round((new Date(dl) - today) / 86400000);
-    return diff < 0 ? 'overdue' : diff <= 3 ? 'soon' : 'ok';
+    if (diff < 0) return status === 'complete' ? 'ok' : 'overdue';
+    return diff <= 3 ? 'soon' : 'ok';
   }
 
-  function dlLabel(dl) {
+  function dlLabel(dl, status) {
     if (!dl) return '';
     const today = new Date(); today.setHours(0,0,0,0);
     const diff = Math.round((new Date(dl) - today) / 86400000);
-    if (diff < 0)  return `Overdue ${-diff}d`;
+    if (diff < 0) return status === 'complete' ? `Completed` : `Overdue ${-diff}d`;
     if (diff === 0) return 'Due today';
     if (diff === 1) return 'Due tomorrow';
     return `Due ${new Date(dl).toLocaleDateString('en-US',{month:'short',day:'numeric'})}`;
@@ -1578,7 +1887,7 @@
 
     // Stats (always off full dataset)
     const active   = all.filter(t => t.status === 'active').length;
-    const overdue  = all.filter(t => t.deadline && dlState(t.deadline) === 'overdue').length;
+    const overdue  = all.filter(t => t.deadline && dlState(t.deadline, t.status) === 'overdue').length;
     const complete = all.filter(t => t.status === 'complete').length;
     document.getElementById('stats').innerHTML = [
       ['Active',   active,   false],
@@ -1598,7 +1907,7 @@
     list.innerHTML = shown.map(t => {
       const a = area(t.tags);
       const ts = types(t.tags);
-      const ds = dlState(t.deadline);
+      const ds = dlState(t.deadline, t.status);
       return `<div class="task">
         <div class="dot ${t.status}"></div>
         <div class="task-body">
@@ -1608,7 +1917,7 @@
             ${a  ? `<span class="tag ${areaClass(a)}">${esc(a)}</span>` : ''}
             ${t.course ? `<span class="tag course">${esc(t.course)}</span>` : ''}
             ${ts.map(tp => `<span class="tag">${esc(tp)}</span>`).join('')}
-            ${t.deadline ? `<span class="dl ${ds||''}">${dlLabel(t.deadline)}</span>` : ''}
+            ${t.deadline ? `<span class="dl ${ds||''}">${dlLabel(t.deadline, t.status)}</span>` : ''}
           </div>
           <div class="filepath">${esc(t.file)}</div>
         </div>
@@ -1624,7 +1933,9 @@
   const FOLDER_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
 
   function renderGallery(folders) {
-    document.getElementById('gallery').innerHTML = folders.map(f => `
+    const gallery = document.getElementById('gallery');
+    if (!gallery) return;
+    gallery.innerHTML = folders.map(f => `
       <div class="g-card" onclick="openFolder('${esc(f.name)}')">
         <div class="g-name">${FOLDER_ICON}<span>${esc(f.name)}</span></div>
         ${f.excerpt ? `<div class="g-excerpt">${esc(f.excerpt)}</div>` : ''}
@@ -1655,6 +1966,544 @@
 
   // Landing "What should we work on?" — recently-worked-in folders, distributed
   // across the three parallax columns (thirds, like the original component).
+  /* -- Home-centered vault graph + synchronized file tree -- */
+  const vaultGraph = {
+    data: null, nodes: new Map(), children: new Map(), expanded: new Set(),
+    treeExpanded: new Set(), selected: '', showLinks: true, loading: false,
+    svg: null, layer: null, zoom: null, simulation: null, resizeObserver: null,
+    visibleEdges: [], previewToken: 0, activityByNode: new Map(),
+    activitySignature: '', activityTimer: null,
+  };
+
+  function vaultLoadMap(force = false) {
+    if (vaultGraph.loading || (vaultGraph.data && !force)) {
+      if (vaultGraph.data) vaultRenderAll();
+      return;
+    }
+    vaultGraph.loading = true;
+    const state = document.getElementById('vault-graph-state');
+    if (state) { state.hidden = false; state.textContent = 'Mapping the vault...'; }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    fetch('/api/vault-map', { signal: controller.signal }).then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok || d.error) throw new Error(d.error || 'Could not map the vault.');
+        vaultGraph.data = d;
+        vaultGraph.nodes = new Map(d.nodes.map(n => [n.id, n]));
+        vaultGraph.children = new Map();
+        d.nodes.forEach(n => {
+          if (!n.parent) return;
+          if (!vaultGraph.children.has(n.parent)) vaultGraph.children.set(n.parent, []);
+          vaultGraph.children.get(n.parent).push(n.id);
+        });
+        vaultGraph.children.forEach(ids => ids.sort((a, b) => {
+          const na = vaultGraph.nodes.get(a), nb = vaultGraph.nodes.get(b);
+          const ka = na.kind === 'folder' ? 0 : 1, kb = nb.kind === 'folder' ? 0 : 1;
+          return ka - kb || na.name.localeCompare(nb.name, undefined, { sensitivity: 'base' });
+        }));
+        vaultGraph.expanded = new Set([d.root]);
+        vaultGraph.treeExpanded = new Set([d.root]);
+        vaultGraph.selected = '';
+        vaultGraph.loading = false;
+        if (state) state.hidden = true;
+        const count = document.getElementById('vault-tree-count');
+        if (count) count.textContent = `${d.nodes.length} items`;
+        vaultInitGraph();
+        vaultRenderAll();
+        vaultStartActivityPolling();
+        setTimeout(vaultFit, 650);
+      })
+      .catch(err => {
+        vaultGraph.loading = false;
+        const message = err.name === 'AbortError' ? 'Vault mapping timed out. Try refreshing the map.' : (err.message || 'Could not map the vault.');
+        if (state) { state.hidden = false; state.textContent = message; }
+      })
+      .finally(() => clearTimeout(timeout));
+  }
+
+  function vaultInitGraph() {
+    if (vaultGraph.svg || typeof d3 === 'undefined') return;
+    const svg = d3.select('#vault-graph');
+    vaultGraph.svg = svg;
+    vaultGraph.layer = svg.append('g').attr('class', 'vault-zoom-layer');
+    vaultGraph.layer.append('g').attr('class', 'vault-edges');
+    vaultGraph.layer.append('g').attr('class', 'vault-nodes');
+    vaultGraph.zoom = d3.zoom().scaleExtent([.18, 4.5]).on('zoom', event => vaultGraph.layer.attr('transform', event.transform));
+    svg.call(vaultGraph.zoom).on('dblclick.zoom', null);
+    svg.on('click', () => vaultHoverNode(''));
+    vaultGraph.simulation = d3.forceSimulation().velocityDecay(.32)
+      .force('link', d3.forceLink().id(d => d.id))
+      .force('charge', d3.forceManyBody())
+      .force('x', d3.forceX()).force('y', d3.forceY())
+      .force('collide', d3.forceCollide());
+    const pane = document.getElementById('vault-graph-pane');
+    vaultGraph.resizeObserver = new ResizeObserver(() => {
+      if (!vaultGraph.data || document.querySelector('[data-view="browse"]').hidden) return;
+      vaultResizeGraph();
+    });
+    vaultGraph.resizeObserver.observe(pane);
+    const search = document.getElementById('vault-search');
+    search.addEventListener('input', vaultRenderTree);
+    search.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      const match = vaultSearchMatches()[0];
+      if (match) { e.preventDefault(); vaultSelectNode(match.id, true); }
+    });
+    document.getElementById('vault-links').addEventListener('change', e => {
+      vaultGraph.showLinks = e.target.checked;
+      vaultRenderGraph();
+    });
+  }
+
+  function vaultResizeGraph() {
+    if (!vaultGraph.svg) return { width: 800, height: 600 };
+    const pane = document.getElementById('vault-graph-pane');
+    const width = Math.max(320, pane.clientWidth || 800), height = Math.max(420, pane.clientHeight || 600);
+    vaultGraph.svg.attr('viewBox', `0 0 ${width} ${height}`);
+    if (vaultGraph.simulation) {
+      const root = vaultGraph.nodes.get(vaultGraph.data.root);
+      if (root) { root.fx = width / 2; root.fy = height / 2; }
+      vaultGraph.simulation.force('x').x(width / 2);
+      vaultGraph.simulation.force('y').y(height / 2);
+      vaultGraph.simulation.alpha(.25).restart();
+    }
+    return { width, height };
+  }
+
+  function vaultVisibleNodes() {
+    if (!vaultGraph.data) return [];
+    const visible = [];
+    const visit = id => {
+      const node = vaultGraph.nodes.get(id);
+      if (!node) return;
+      visible.push(node);
+      if (vaultGraph.expanded.has(id)) (vaultGraph.children.get(id) || []).forEach(visit);
+    };
+    visit(vaultGraph.data.root);
+    return visible;
+  }
+
+  function vaultNodeLabel(node) {
+    const short = node.name.length > 34 ? node.name.slice(0, 31) + '...' : node.name;
+    if (node.kind === 'home') return `⌂ ${short}`;
+    if (node.kind === 'folder') return `${vaultGraph.expanded.has(node.id) ? '📂' : '📁'} ${short}`;
+    return short;
+  }
+
+  function vaultNodeWidth(node) { return Math.max(62, Math.min(220, vaultNodeLabel(node).length * 6.15 + 24)); }
+
+  function vaultProviderIcon(provider) {
+    if (provider === 'anthropic') return '/static/icon-anthropic.svg';
+    if (provider === 'openai') return '/static/icon-openai.svg';
+    return '';
+  }
+
+  function vaultActivityNodeForPath(path, preferFile = false) {
+    if (!vaultGraph.data) return '';
+    const clean = String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!clean) return vaultGraph.data.root;
+    const exactIds = preferFile ? [`file:${clean}`, `folder:${clean}`] : [`folder:${clean}`, `file:${clean}`];
+    for (const id of exactIds) if (vaultGraph.nodes.has(id)) return id;
+    let parent = clean;
+    while (parent.includes('/')) {
+      parent = parent.slice(0, parent.lastIndexOf('/'));
+      const folderId = `folder:${parent}`;
+      if (vaultGraph.nodes.has(folderId)) return folderId;
+    }
+    return vaultGraph.data.root;
+  }
+
+  function vaultApplyActivity(data) {
+    const activities = Array.isArray(data.activities) ? data.activities : [];
+    const signature = JSON.stringify(activities);
+    if (signature === vaultGraph.activitySignature) return;
+    vaultGraph.activitySignature = signature;
+    const byNode = new Map();
+    const add = (nodeId, activity, editing) => {
+      if (!nodeId) return;
+      const existing = byNode.get(nodeId) || [];
+      const matched = existing.find(item => item.id === activity.id);
+      if (matched) matched.editing = matched.editing || editing;
+      else existing.push({ ...activity, editing });
+      byNode.set(nodeId, existing);
+      vaultRevealPath(nodeId);
+    };
+    activities.forEach(activity => {
+      add(vaultActivityNodeForPath(activity.scope, false), activity, false);
+      (activity.editing_paths || []).forEach(path => add(vaultActivityNodeForPath(path, true), activity, true));
+    });
+    vaultGraph.activityByNode = byNode;
+    vaultRenderAll();
+  }
+
+  function vaultPollActivity() {
+    fetch('/api/vault-activity').then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok || d.error) throw new Error(d.error || 'Could not read agent activity.');
+        vaultApplyActivity(d);
+        const delay = Math.max(800, Math.min(5000, Number(d.poll_ms) || 1200));
+        vaultGraph.activityTimer = setTimeout(vaultPollActivity, delay);
+      })
+      .catch(() => { vaultGraph.activityTimer = setTimeout(vaultPollActivity, 2000); });
+  }
+
+  function vaultStartActivityPolling() {
+    if (vaultGraph.activityTimer) clearTimeout(vaultGraph.activityTimer);
+    vaultGraph.activityTimer = null;
+    vaultPollActivity();
+  }
+
+  function vaultActivityTitle(activity) {
+    const action = activity.editing ? 'editing this file' : 'running here';
+    return `${activity.name || 'Agent'} · ${activity.tier || activity.provider || 'agent'} · ${action}`;
+  }
+
+  function vaultDecorateGraphActivity(selection) {
+    selection
+      .classed('agent-active', d => (vaultGraph.activityByNode.get(d.id) || []).length > 0)
+      .classed('agent-editing', d => (vaultGraph.activityByNode.get(d.id) || []).some(item => item.editing));
+    selection.each(function(d) {
+      const node = d3.select(this);
+      node.selectAll('g.vault-agent-layer').remove();
+      const activities = (vaultGraph.activityByNode.get(d.id) || []).slice(0, 3);
+      if (!activities.length) return;
+      const layer = node.append('g').attr('class', 'vault-agent-layer');
+      activities.forEach((activity, index) => {
+        const icon = vaultProviderIcon(activity.provider);
+        const badge = layer.append('g')
+          .attr('class', `vault-agent-badge${icon ? '' : ' local'}`)
+          .attr('transform', `translate(${-vaultNodeWidth(d) / 2 + 7 + index * 15},14)`);
+        badge.append('circle').attr('class', 'badge-shell').attr('r', 7.5);
+        if (icon) {
+          badge.append('image').attr('class', 'badge-logo').attr('href', icon)
+            .attr('x', -4.5).attr('y', -4.5).attr('width', 9).attr('height', 9);
+        } else {
+          badge.append('circle').attr('class', 'badge-dot').attr('r', 2.8);
+        }
+        badge.append('title').text(vaultActivityTitle(activity));
+      });
+    });
+  }
+
+  function vaultRenderAll() {
+    if (!vaultGraph.data) return;
+    vaultRenderGraph();
+    vaultRenderTree();
+  }
+
+  function vaultRenderGraph() {
+    if (!vaultGraph.data || !vaultGraph.svg) return;
+    const { width, height } = vaultResizeGraph();
+    const nodes = vaultVisibleNodes();
+    const visibleIds = new Set(nodes.map(n => n.id));
+    const edges = vaultGraph.data.edges
+      .filter(e => visibleIds.has(e.source.id || e.source) && visibleIds.has(e.target.id || e.target))
+      .filter(e => e.kind !== 'link' || vaultGraph.showLinks)
+      .map(e => ({ source: e.source.id || e.source, target: e.target.id || e.target, kind: e.kind }));
+    vaultGraph.visibleEdges = edges;
+    nodes.forEach((node, i) => {
+      if (Number.isFinite(node.x)) return;
+      const parent = vaultGraph.nodes.get(node.parent), angle = (i * 2.399963) % (Math.PI * 2);
+      node.x = parent && Number.isFinite(parent.x) ? parent.x + Math.cos(angle) * 45 : width / 2 + Math.cos(angle) * 70;
+      node.y = parent && Number.isFinite(parent.y) ? parent.y + Math.sin(angle) * 45 : height / 2 + Math.sin(angle) * 70;
+    });
+    const root = vaultGraph.nodes.get(vaultGraph.data.root);
+    if (root) { root.fx = width / 2; root.fy = height / 2; }
+
+    const edgeSel = vaultGraph.layer.select('.vault-edges').selectAll('path').data(
+      edges, d => `${d.kind}:${d.source.id || d.source}:${d.target.id || d.target}`
+    );
+    edgeSel.exit().remove();
+    const edgeMerge = edgeSel.enter().append('path').attr('class', 'vault-edge').merge(edgeSel)
+      .attr('class', d => `vault-edge ${d.kind === 'link' ? 'authored' : 'hierarchy'}`);
+    const nodeSel = vaultGraph.layer.select('.vault-nodes').selectAll('g.vault-node').data(nodes, d => d.id);
+    nodeSel.exit().remove();
+    const enter = nodeSel.enter().append('g').attr('class', 'vault-node')
+      .attr('tabindex', 0).attr('role', 'button')
+      .on('click', (event, d) => { event.stopPropagation(); vaultSelectNode(d.id, true); })
+      .on('keydown', (event, d) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); vaultSelectNode(d.id, true); }
+      })
+      .on('mouseenter', (event, d) => vaultHoverNode(d.id))
+      .on('mouseleave', () => vaultHoverNode(''))
+      .call(d3.drag()
+        .on('start', (event, d) => { if (!event.active) vaultGraph.simulation.alphaTarget(.2).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+        .on('end', (event, d) => {
+          if (!event.active) vaultGraph.simulation.alphaTarget(0);
+          if (d.id !== vaultGraph.data.root) { d.fx = null; d.fy = null; }
+        }));
+    enter.append('rect').attr('height', 26).attr('y', -13).attr('rx', 13);
+    enter.append('text').attr('text-anchor', 'middle').attr('dy', '0.36em');
+    enter.append('title');
+    const nodeMerge = enter.merge(nodeSel).attr('data-kind', d => d.kind).classed('selected', d => d.id === vaultGraph.selected);
+    nodeMerge.select('rect').attr('width', d => vaultNodeWidth(d)).attr('x', d => -vaultNodeWidth(d) / 2);
+    nodeMerge.select('text').text(vaultNodeLabel);
+    nodeMerge.select('title').text(d => `${d.path}\n${d.kind === 'folder' ? `${d.children} immediate items` : d.extension || 'file'}`);
+    vaultDecorateGraphActivity(nodeMerge);
+
+    vaultGraph.simulation.nodes(nodes).on('tick', () => {
+      edgeMerge.attr('d', d => {
+        const sx = d.source.x || 0, sy = d.source.y || 0, tx = d.target.x || 0, ty = d.target.y || 0;
+        if (d.kind !== 'link') return `M${sx},${sy}L${tx},${ty}`;
+        const dx = tx - sx, dy = ty - sy, mx = (sx + tx) / 2 - dy * .09, my = (sy + ty) / 2 + dx * .09;
+        return `M${sx},${sy}Q${mx},${my} ${tx},${ty}`;
+      });
+      nodeMerge.attr('transform', d => `translate(${d.x || 0},${d.y || 0})`);
+    });
+    vaultGraph.simulation.force('link').distance(d => d.kind === 'link' ? 180 : d.kind === 'branch' ? 140 : 95)
+      .strength(d => d.kind === 'link' ? .045 : .48).links(edges);
+    vaultGraph.simulation.force('charge').strength(d => d.kind === 'home' ? -420 : d.kind === 'folder' ? -190 : -90);
+    vaultGraph.simulation.force('x').x(width / 2).strength(.025);
+    vaultGraph.simulation.force('y').y(height / 2).strength(.025);
+    vaultGraph.simulation.force('collide').radius(d => vaultNodeWidth(d) / 2 + 10).strength(.8);
+    vaultGraph.simulation.alpha(.72).restart();
+    const status = document.getElementById('vault-status');
+    if (status) status.textContent = `${nodes.length} / ${vaultGraph.data.nodes.length} visible`;
+    vaultHoverNode('');
+  }
+
+  function vaultHoverNode(id) {
+    if (!vaultGraph.layer) return;
+    const neighbors = new Set(id ? [id] : []);
+    if (id) vaultGraph.visibleEdges.forEach(edge => {
+      const source = edge.source.id || edge.source, target = edge.target.id || edge.target;
+      if (source === id) neighbors.add(target);
+      if (target === id) neighbors.add(source);
+    });
+    vaultGraph.layer.selectAll('.vault-node').classed('hot', d => !!id && neighbors.has(d.id)).classed('dim', d => !!id && !neighbors.has(d.id));
+    vaultGraph.layer.selectAll('.vault-edge')
+      .classed('hot', d => !!id && ((d.source.id || d.source) === id || (d.target.id || d.target) === id))
+      .classed('dim', d => !!id && (d.source.id || d.source) !== id && (d.target.id || d.target) !== id);
+  }
+
+  function vaultRevealPath(id) {
+    let node = vaultGraph.nodes.get(id);
+    while (node && node.parent) {
+      vaultGraph.expanded.add(node.parent); vaultGraph.treeExpanded.add(node.parent);
+      node = vaultGraph.nodes.get(node.parent);
+    }
+  }
+
+  function vaultRevealLinkedNeighborhood(id) {
+    vaultGraph.data.edges.forEach(edge => {
+      if (edge.kind !== 'link') return;
+      const source = edge.source.id || edge.source, target = edge.target.id || edge.target;
+      if (source === id) vaultRevealPath(target);
+      if (target === id) vaultRevealPath(source);
+    });
+  }
+
+  function vaultSetFolderExpanded(id, expanded, select = false) {
+    const node = vaultGraph.nodes.get(id);
+    if (!node || (node.kind !== 'folder' && node.kind !== 'home')) return;
+    if (expanded) {
+      vaultRevealPath(id);
+      vaultGraph.expanded.add(id);
+      vaultGraph.treeExpanded.add(id);
+    } else {
+      vaultGraph.expanded.delete(id);
+      vaultGraph.treeExpanded.delete(id);
+    }
+    if (select) {
+      vaultGraph.selected = id;
+      vaultCloseInspector();
+    }
+    vaultRenderAll();
+    if (select) setTimeout(() => vaultCenterNode(node), 80);
+  }
+
+  function vaultSelectNode(id, reveal = false) {
+    const node = vaultGraph.nodes.get(id);
+    if (!node) return;
+    if (node.kind === 'folder' || node.kind === 'home') {
+      vaultSetFolderExpanded(id, !vaultGraph.expanded.has(id), true);
+      return;
+    }
+    if (reveal) vaultRevealPath(id);
+    vaultRevealLinkedNeighborhood(id);
+    vaultGraph.selected = id;
+    vaultRenderAll(); vaultShowInspector(node);
+    setTimeout(() => vaultCenterNode(node), 80);
+  }
+
+  function vaultCenterNode(node) {
+    if (!vaultGraph.svg || !Number.isFinite(node.x)) return;
+    const pane = document.getElementById('vault-graph-pane'), transform = d3.zoomTransform(vaultGraph.svg.node());
+    const x = pane.clientWidth / 2 - node.x * transform.k, y = pane.clientHeight / 2 - node.y * transform.k;
+    vaultGraph.svg.transition().duration(280).call(vaultGraph.zoom.transform, d3.zoomIdentity.translate(x, y).scale(transform.k));
+  }
+
+  function vaultSearchMatches() {
+    const input = document.getElementById('vault-search'), query = input ? input.value.trim().toLowerCase() : '';
+    if (!query || !vaultGraph.data) return [];
+    return vaultGraph.data.nodes.filter(n => n.name.toLowerCase().includes(query) || n.path.toLowerCase().includes(query));
+  }
+
+  function vaultRenderTree() {
+    const tree = document.getElementById('vault-tree');
+    if (!tree || !vaultGraph.data) return;
+    tree.innerHTML = '';
+    const matches = vaultSearchMatches(), query = document.getElementById('vault-search').value.trim(), allowed = new Set();
+    if (query) matches.forEach(match => {
+      let node = match;
+      while (node) { allowed.add(node.id); node = node.parent ? vaultGraph.nodes.get(node.parent) : null; }
+    });
+    const appendNode = (id, depth) => {
+      const node = vaultGraph.nodes.get(id);
+      if (!node || (query && !allowed.has(id))) return;
+      const children = (vaultGraph.children.get(id) || []).filter(child => !query || allowed.has(child));
+      const row = document.createElement('div');
+      const activities = vaultGraph.activityByNode.get(id) || [];
+      row.className = 'vault-tree-row' + (id === vaultGraph.selected ? ' selected' : '')
+        + (activities.length ? ' agent-active' : '') + (activities.some(item => item.editing) ? ' agent-editing' : '');
+      row.style.paddingLeft = `${Math.min(depth, 12) * 13}px`;
+      row.setAttribute('role', 'treeitem'); row.setAttribute('aria-level', String(depth + 1));
+      if (children.length) row.setAttribute('aria-expanded', String(vaultGraph.treeExpanded.has(id) || !!query));
+      const caret = document.createElement('button');
+      caret.type = 'button'; caret.className = 'vault-tree-caret' + (children.length ? '' : ' blank');
+      caret.textContent = (vaultGraph.treeExpanded.has(id) || query) ? '▾' : '▸';
+      caret.setAttribute('aria-label', `${vaultGraph.treeExpanded.has(id) ? 'Collapse' : 'Expand'} ${node.name}`);
+      caret.addEventListener('click', () => {
+        vaultSetFolderExpanded(id, !vaultGraph.treeExpanded.has(id));
+      });
+      row.appendChild(caret);
+      const label = document.createElement('button');
+      label.type = 'button'; label.className = 'vault-tree-label'; label.title = node.path;
+      const icon = document.createElement('span');
+      icon.className = 'vault-tree-icon' + (node.kind === 'folder' ? ' folder' : '');
+      icon.textContent = node.kind === 'home' ? '⌂' : node.kind === 'folder'
+        ? (vaultGraph.treeExpanded.has(id) || query ? '📂' : '📁')
+        : (node.extension ? node.extension.slice(1, 4).toUpperCase() : '·');
+      label.appendChild(icon); label.appendChild(document.createTextNode(node.name));
+      label.addEventListener('click', () => vaultSelectNode(id, true));
+      row.appendChild(label);
+      if (activities.length) {
+        const agents = document.createElement('span'); agents.className = 'vault-tree-agents';
+        activities.slice(0, 3).forEach(activity => {
+          const badge = document.createElement('span');
+          const providerIcon = vaultProviderIcon(activity.provider);
+          badge.className = 'vault-tree-agent' + (providerIcon ? '' : ' local');
+          badge.title = vaultActivityTitle(activity);
+          badge.setAttribute('aria-label', badge.title);
+          if (providerIcon) {
+            const img = document.createElement('img'); img.src = providerIcon; img.alt = '';
+            badge.appendChild(img);
+          }
+          agents.appendChild(badge);
+        });
+        row.appendChild(agents);
+      }
+      tree.appendChild(row);
+      if ((vaultGraph.treeExpanded.has(id) || query) && children.length) children.forEach(child => appendNode(child, depth + 1));
+    };
+    appendNode(vaultGraph.data.root, 0);
+    if (query && !matches.length) tree.innerHTML = '<div class="vault-tree-empty">No matching folders or files.</div>';
+    const count = document.getElementById('vault-tree-count');
+    if (count) count.textContent = query ? `${matches.length} found` : `${vaultGraph.data.nodes.length} items`;
+  }
+
+  function vaultFormatBytes(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'], unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const value = bytes / Math.pow(1024, unit);
+    return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+  }
+
+  function vaultShowInspector(node) {
+    const panel = document.getElementById('vault-inspector');
+    if (!panel) return;
+    const kind = node.kind === 'home' ? 'Home note' : node.kind;
+    const changed = node.modified ? new Date(node.modified * 1000).toLocaleString() : 'Unknown';
+    const folderMeta = node.kind === 'folder' || node.kind === 'home'
+      ? `<span>${node.folder_children} folders</span><span>${node.file_children} files</span>`
+      : `<span>${esc(node.extension ? node.extension.slice(1).toUpperCase() : 'FILE')}</span><span>${vaultFormatBytes(node.size)}</span>`;
+    panel.hidden = false;
+    panel.innerHTML = `<div class="vi-head"><div><div class="vi-kind">${esc(kind)}</div><div class="vi-title">${esc(node.name)}</div></div>
+      <button class="vi-close" type="button" aria-label="Close inspector">×</button></div>
+      <div class="vi-path">${esc(node.path)}</div>
+      <div class="vi-meta">${folderMeta}<span>Modified ${esc(changed)}</span><span>${node.links} linked edges</span></div>
+      ${(node.kind === 'folder' || node.kind === 'home') ? '<div class="vi-actions"><button class="vault-tool-btn vi-branch" type="button"></button></div>' : ''}
+      <div class="vi-preview"></div>`;
+    panel.querySelector('.vi-close').addEventListener('click', vaultCloseInspector);
+    const branch = panel.querySelector('.vi-branch');
+    if (branch) {
+      branch.textContent = node.kind === 'home' ? 'Collapse to top level' : (vaultGraph.expanded.has(node.id) ? 'Collapse branch' : 'Expand branch');
+      branch.addEventListener('click', () => node.kind === 'home' ? vaultReset() : vaultToggleBranch(node.id));
+    }
+    const preview = panel.querySelector('.vi-preview');
+    if (node.kind === 'folder' || node.preview_kind === 'none') {
+      preview.innerHTML = node.kind === 'folder' ? '' : '<span class="vi-loading">No inline preview for this file type.</span>';
+      return;
+    }
+    if (node.preview_kind === 'image') {
+      const img = document.createElement('img'); img.alt = `Preview of ${node.name}`;
+      img.src = '/api/vault-preview?path=' + encodeURIComponent(node.path);
+      img.addEventListener('error', () => { preview.innerHTML = '<span class="vi-loading">Preview unavailable.</span>'; });
+      preview.appendChild(img); return;
+    }
+    const token = ++vaultGraph.previewToken;
+    preview.innerHTML = '<span class="vi-loading">Loading preview...</span>';
+    fetch('/api/vault-preview?path=' + encodeURIComponent(node.path)).then(r => {
+      if (!r.ok) throw new Error();
+      const truncated = r.headers.get('X-Preview-Truncated') === '1';
+      return r.text().then(text => ({ text, truncated }));
+    }).then(({ text, truncated }) => {
+      if (token !== vaultGraph.previewToken || node.id !== vaultGraph.selected) return;
+      preview.innerHTML = '';
+      if (node.extension === '.md') {
+        const rendered = document.createElement('div'); rendered.className = 'md'; rendered.innerHTML = mdToHtml(text); preview.appendChild(rendered);
+      } else {
+        const pre = document.createElement('pre'); pre.textContent = text; preview.appendChild(pre);
+      }
+      if (truncated) {
+        const note = document.createElement('div'); note.className = 'vi-loading'; note.textContent = 'Preview truncated.'; preview.appendChild(note);
+      }
+    }).catch(() => { if (token === vaultGraph.previewToken) preview.innerHTML = '<span class="vi-loading">Preview unavailable.</span>'; });
+  }
+
+  function vaultCloseInspector() {
+    vaultGraph.previewToken++;
+    const panel = document.getElementById('vault-inspector');
+    if (panel) panel.hidden = true;
+  }
+
+  function vaultToggleBranch(id) {
+    vaultSetFolderExpanded(id, !vaultGraph.expanded.has(id));
+    const node = vaultGraph.nodes.get(id);
+    if (node) vaultShowInspector(node);
+  }
+
+  function vaultZoomBy(factor) {
+    if (vaultGraph.svg) vaultGraph.svg.transition().duration(180).call(vaultGraph.zoom.scaleBy, factor);
+  }
+
+  function vaultFit() {
+    if (!vaultGraph.svg || !vaultGraph.data) return;
+    const nodes = vaultVisibleNodes().filter(n => Number.isFinite(n.x) && Number.isFinite(n.y));
+    if (!nodes.length) return;
+    const pane = document.getElementById('vault-graph-pane');
+    const minX = Math.min(...nodes.map(n => n.x - vaultNodeWidth(n) / 2)) - 45;
+    const maxX = Math.max(...nodes.map(n => n.x + vaultNodeWidth(n) / 2)) + 45;
+    const minY = Math.min(...nodes.map(n => n.y - 30)) - 45, maxY = Math.max(...nodes.map(n => n.y + 30)) + 45;
+    const scale = Math.max(.2, Math.min(1.6, .88 / Math.max((maxX - minX) / pane.clientWidth, (maxY - minY) / pane.clientHeight)));
+    const x = pane.clientWidth / 2 - ((minX + maxX) / 2) * scale, y = pane.clientHeight / 2 - ((minY + maxY) / 2) * scale;
+    vaultGraph.svg.transition().duration(350).call(vaultGraph.zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+  }
+
+  function vaultReset() {
+    if (!vaultGraph.data) return;
+    vaultGraph.expanded = new Set([vaultGraph.data.root]);
+    vaultGraph.treeExpanded = new Set([vaultGraph.data.root]);
+    vaultGraph.selected = vaultGraph.data.root;
+    const search = document.getElementById('vault-search');
+    if (search) search.value = '';
+    vaultRenderAll(); vaultShowInspector(vaultGraph.nodes.get(vaultGraph.data.root));
+    setTimeout(vaultFit, 350);
+  }
+
+  function vaultToggleTree(open) { document.getElementById('vault-browser').classList.toggle('tree-open', open); }
+
   function renderRecentFolders(items) {
     const cols = [1, 2, 3].map(n => document.querySelector(`#parallax-grid .pcol[data-col="${n}"]`));
     cols.forEach(c => { if (c) c.innerHTML = ''; });
@@ -1901,7 +2750,6 @@
   }
 
   fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildAreaPills(); buildCoursePills(); render(); });
-  fetch('/api/browse').then(r => r.json()).then(d => renderGallery(d.folders));
   fetch('/api/recent-folders').then(r => r.json()).then(renderRecentFolders).catch(() => {});
   fetch('/api/usage').then(r => r.json()).then(renderUsage).catch(() => {});
   fetch('/api/news').then(r => r.json()).then(renderNews).catch(() => {});
@@ -1911,12 +2759,16 @@
 
 <script>
   /* ── Workspace shell: view switching + projects + agents ── */
-  const loaded = { projects: false, agents: false, chat: false, inbox: false, settings: false };
+  const loaded = { projects: false, browse: false, agents: false, chat: false, inbox: false, settings: false };
 
   function setView(v) {
     document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.view === v));
     document.querySelectorAll('.view').forEach(s => { s.hidden = s.dataset.view !== v; });
     if (v === 'projects' && !loaded.projects) { loaded.projects = true; loadProjects(); }
+    if (v === 'browse') {
+      if (!loaded.browse) { loaded.browse = true; vaultLoadMap(); }
+      else { vaultRenderAll(); setTimeout(vaultResizeGraph, 0); }
+    }
     if (v === 'agents') {
       if (!loaded.agents) { loaded.agents = true; loadAgents(); }
       else { loadAgentFolders(); refreshRunningSide(); }
@@ -2487,6 +3339,7 @@
   let activeChat = null; // id of the conversation shown in the log
   let routerStatus = null;
   let routerStatusRequest = null;
+  let chatGptStatusRequest = null;
   let defaultModel = null;   // Ollama default from /api/ollama/models
   let ollamaModelsAvailable = false;
   const chatSaveQueues = new Map();  // cid -> serialized PUT/DELETE promise
@@ -2521,7 +3374,7 @@
       (d.chats || []).forEach(m => {
         if (chats[m.id]) return;
         chats[m.id] = { id: m.id, title: m.title, created: m.created, tier: m.tier || 'fast',
-                        model: null, edit: false, msgs: [], attachments: [],
+                        model: null, cliModel: {}, edit: false, msgs: [], attachments: [],
                         busy: false, done: false, loaded: false, generation: 0,
                         requestController: null, loadController: null };
         chatOrder.push(m.id);
@@ -2533,7 +3386,8 @@
   function newChat() {
     fetch('/api/chats', { method: 'POST' }).then(r => r.json()).then(d => {
       chats[d.id] = { id: d.id, title: d.title, created: d.created, tier: d.tier || 'fast',
-                      model: d.model || defaultModel, edit: !!d.edit, msgs: [], attachments: [],
+                      model: d.model || defaultModel, cliModel: d.cliModel || {}, edit: !!d.edit,
+                      msgs: [], attachments: [],
                       busy: false, done: false, loaded: true, generation: 0,
                       requestController: null, loadController: null };
       chatOrder.unshift(d.id);
@@ -2619,6 +3473,7 @@
             c.created = d.created;
             c.tier = d.tier || c.tier;
             c.model = d.model || c.model || defaultModel;
+            c.cliModel = (d.cliModel && typeof d.cliModel === 'object') ? d.cliModel : (c.cliModel || {});
             c.edit = !!d.edit;
             if (id === activeChat) {
               renderChatLog(id); syncChatControls(); renderChatSidebar(); updateSendDisabled();
@@ -2646,7 +3501,7 @@
     if (!c || !c.loaded || deletedChats.has(cid)) return Promise.resolve(null);
     chatOrder = [cid, ...chatOrder.filter(x => x !== cid)];
     const payload = JSON.stringify({ id: cid, title: c.title, created: c.created, tier: c.tier,
-                                     model: c.model, edit: c.edit,
+                                     model: c.model, cliModel: c.cliModel || {}, edit: c.edit,
                                      messages: c.msgs.filter(m => m.role !== 'err') });
     const prior = chatSaveQueues.get(cid) || Promise.resolve();
     const queued = prior.catch(() => null).then(() => {
@@ -2727,11 +3582,12 @@
   }
 
   function chatThinker(c) {
+    const cli = c.cliModel || {};
     return c.tier === 'fast' ? (c.model || 'local model')
          : c.tier === 'smart' ? ((routerStatus && routerStatus.smart && routerStatus.smart.model) || 'Smart')
          : c.tier === 'openai' ? ((routerStatus && routerStatus.openai && routerStatus.openai.model) || 'GPT API')
-         : c.tier === 'chatgpt' ? 'ChatGPT'
-         : 'Claude';
+         : c.tier === 'chatgpt' ? (cli.chatgpt || 'ChatGPT')
+         : (cli.claude || 'Claude');
   }
 
   function updateSendDisabled() {
@@ -2747,6 +3603,7 @@
       document.getElementById('tier-' + tier).disabled = !ready;
     }
     document.getElementById('model-select').disabled = !ready || !ollamaModelsAvailable;
+    document.getElementById('cli-model').disabled = !ready;
   }
 
   // Reflect the active conversation's tier/model/edit into the shared controls.
@@ -2762,6 +3619,19 @@
     sel.style.display = tier === 'fast' ? '' : 'none';
     if (c && !c.model && defaultModel) c.model = defaultModel;
     if (c && c.model && ollamaModelsAvailable) sel.value = c.model;
+    // The account-CLI tiers (claude, chatgpt) get a free-text model box with
+    // per-tier suggestions; blank means the plan/account default.
+    const cli = document.getElementById('cli-model');
+    const isCli = tier === 'claude' || tier === 'chatgpt';
+    cli.style.display = isCli ? '' : 'none';
+    if (isCli) {
+      if (c && !c.cliModel) c.cliModel = {};
+      cli.value = (c && c.cliModel && c.cliModel[tier]) || '';
+      cli.placeholder = tier === 'claude' ? 'plan default' : 'account default';
+      const opts = tier === 'claude' ? ['opus', 'sonnet', 'haiku'] : [];
+      document.getElementById('cli-model-list').innerHTML =
+        opts.map(o => `<option value="${o}">`).join('');
+    }
     renderTierStatus();
     renderEditToggle();
     updateSendDisabled();
@@ -2772,9 +3642,58 @@
     routerStatusRequest = fetch('/api/router/status').then(r => r.json()).then(s => {
       routerStatus = s;
       renderTierStatus();
-      return s;
+      // Executable presence is not enough for the account tier: Codex may be
+      // logged out or using an API key. Probe once automatically so the Chat
+      // view reports the real sign-in state without requiring Settings/Recheck.
+      const chatgpt = s && s.chatgpt;
+      const checkedAt = Number(chatgpt && chatgpt.auth_checked_at || 0);
+      const stale = !checkedAt || (Date.now() / 1000 - checkedAt) > 30;
+      if (chatgpt && chatgpt.installed &&
+          (!chatgpt.auth_state || chatgpt.auth_state === 'unchecked' || stale)) {
+        return checkChatGptStatus(false);
+      }
+      return routerStatus;
     }).catch(() => null).finally(() => { routerStatusRequest = null; });
     return routerStatusRequest;
+  }
+
+  function checkChatGptStatus(force) {
+    if (chatGptStatusRequest) return chatGptStatusRequest;
+    const current = routerStatus && routerStatus.chatgpt;
+    if (!current || !current.installed) return Promise.resolve(routerStatus);
+    const checkedAt = Number(current.auth_checked_at || 0);
+    const fresh = checkedAt && (Date.now() / 1000 - checkedAt) <= 30;
+    if (!force && fresh && current.auth_state && current.auth_state !== 'unchecked') {
+      return Promise.resolve(routerStatus);
+    }
+
+    routerStatus = {
+      ...(routerStatus || {}),
+      chatgpt: { ...current, available: false, auth_state: 'checking',
+                 auth_reason: 'Checking ChatGPT sign-in…' },
+    };
+    renderTierStatus();
+    chatGptStatusRequest = fetch('/api/router/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier: 'chatgpt' }),
+    }).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+      if (!ok || !d.status) throw new Error(d.error || 'Could not check ChatGPT sign-in.');
+      const checked = { ...d.status, available: !!d.ok,
+                        healthChecked: true, healthReason: d.reason || '' };
+      routerStatus = { ...(routerStatus || {}), chatgpt: checked };
+      stgRenderBackendDots({ chatgpt: checked });
+      renderTierStatus();
+      return routerStatus;
+    }).catch(err => {
+      const failed = { ...(routerStatus && routerStatus.chatgpt || current),
+                       available: false, authenticated: false,
+                       auth_state: 'check_failed',
+                       auth_reason: err.message || 'Could not check ChatGPT sign-in.' };
+      routerStatus = { ...(routerStatus || {}), chatgpt: failed };
+      renderTierStatus();
+      return routerStatus;
+    }).finally(() => { chatGptStatusRequest = null; });
+    return chatGptStatusRequest;
   }
 
   // Populate the local-model picker from whatever Ollama has pulled.
@@ -2803,6 +3722,27 @@
     renderTierStatus();
   }
 
+  // Per-conversation model for the account-CLI tiers (claude, chatgpt). Stored
+  // per tier so switching tiers doesn't cross model names between backends.
+  function setCliModel(v) {
+    const c = chatConvo();
+    if (!c || !c.loaded) return;
+    const tier = c.tier;
+    if (tier !== 'claude' && tier !== 'chatgpt') return;
+    if (!c.cliModel) c.cliModel = {};
+    c.cliModel[tier] = (v || '').trim();
+    renderTierStatus();
+    saveChat(activeChat);
+  }
+
+  // The model to send on the blocking /api/chat path. Fast uses the Ollama model;
+  // chatgpt uses its per-conversation override; claude streams separately.
+  function chatSendModel(c) {
+    if (c.tier === 'fast') return c.model;
+    if (c.tier === 'chatgpt') return (c.cliModel && c.cliModel.chatgpt) || null;
+    return null;
+  }
+
   function renderTierStatus() {
     if (!routerStatus) return;
     const c = chatConvo();
@@ -2812,16 +3752,24 @@
     const cls = t.available ? 'up' : 'down';
     let state;
     if (tier === 'chatgpt') {
-      state = t.authenticated === true ? 'signed in'
-        : t.authenticated === false ? (t.healthReason || 'ChatGPT sign-in required')
-        : t.installed ? 'CLI found · sign-in not checked'
-        : 'Codex CLI not found';
+      const authState = t.auth_state || (t.authenticated === true ? 'chatgpt'
+        : t.authenticated === false ? 'signed_out' : 'unchecked');
+      const reason = t.auth_reason || t.healthReason || '';
+      state = authState === 'chatgpt' ? 'signed in with ChatGPT'
+        : authState === 'checking' ? 'checking sign-in…'
+        : authState === 'wrong_method' ? 'API-key login · ChatGPT sign-in required'
+        : authState === 'signed_out' ? 'not signed in · run codex login'
+        : authState === 'not_installed' ? 'Codex CLI not found'
+        : authState === 'unchecked' ? 'CLI found · checking sign-in…'
+        : (reason || 'could not confirm ChatGPT sign-in');
     } else {
       state = t.available ? 'ready'
         : (tier === 'fast' ? 'Ollama offline' : tier === 'claude' ? 'Claude CLI not found'
            : 'no API key — add one in Settings');
     }
-    const model = (tier === 'fast' && c && c.model) ? c.model : t.model;
+    let model = t.model;
+    if (tier === 'fast' && c && c.model) model = c.model;
+    else if ((tier === 'claude' || tier === 'chatgpt') && c && c.cliModel && c.cliModel[tier]) model = c.cliModel[tier];
     document.getElementById('tier-status').innerHTML =
       `<span class="dot-sm ${cls}"></span>${esc(model)} · ${esc(state)}`;
   }
@@ -2832,6 +3780,9 @@
     c.tier = tier;
     syncChatControls();
     saveChat(activeChat);
+    // Recheck on selection as well, so logging in from a terminal is reflected
+    // immediately without restarting or visiting Settings.
+    if (tier === 'chatgpt') checkChatGptStatus(true);
   }
 
   // Edit mode lets chat change vault notes: API tiers use the write tool loop;
@@ -3014,7 +3965,7 @@
       body: JSON.stringify({
         messages: c.msgs.filter(m => m.role === 'user' || m.role === 'assistant')
                         .map(m => ({ role: m.role, content: m.content })),
-        tier: c.tier, model: c.tier === 'fast' ? c.model : null,
+        tier: c.tier, model: chatSendModel(c),
         attachments: atts, edit: c.edit,
       }),
     })
@@ -3062,7 +4013,8 @@
     fetch('/api/chat/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
-      body: JSON.stringify({ messages: msgs, attachments: atts, edit: c.edit }),
+      body: JSON.stringify({ messages: msgs, attachments: atts, edit: c.edit,
+                             model: (c.cliModel && c.cliModel.claude) || null }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
@@ -3176,9 +4128,9 @@
         msg.textContent = `Created ${d.path}${d.home_linked ? ' · linked in Home' : ''}.`;
         document.getElementById('np-form').reset();
         loadProjects();
-        // pull the new context file into the task list + gallery
+        // Pull the new context file into the task list and refresh the vault map.
         fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildAreaPills(); buildCoursePills(); render(); });
-        fetch('/api/browse').then(r => r.json()).then(d2 => renderGallery(d2.folders));
+        if (vaultGraph.data) vaultLoadMap(true);
       })
       .catch(() => { msg.className = 'np-msg err'; msg.textContent = "Couldn't reach the server."; });
   }
@@ -3308,11 +4260,302 @@
   let agentFolders = [];    // top-level vault folders, for the per-agent folder select
   let agentExternals = [];  // connected external folder names
 
+  let customAgents = [];
+  let dispatchModels = { tiers: {} };
+  let dispatchHistory = [];
+  let activeDispatchId = null;
+  let dispatchPollTimer = null;
+  const CAP_LABELS = {
+    vault_read: 'Vault read', vault_write: 'Vault write', code_read: 'Code read',
+    code_write: 'Code write', run_checks: 'Run approved checks', web: 'Web research',
+    inbox_read: 'Inbox read', inbox_draft: 'Stage draft proposals',
+  };
+  const PROFILE_CAPS = {
+    research: ['vault_read','code_read','web'],
+    vault_editor: ['vault_read','vault_write'],
+    code_editor: ['code_read','code_write','run_checks'],
+    inbox: ['inbox_read','inbox_draft'],
+  };
+
+  function dispatchScopeOptions(selected) {
+    const rows = [['', 'Whole vault'], ...agentFolders.map(x => [x, '📁 ' + x]),
+                  ...agentExternals.map(x => ['ext:' + x, '🔗 ' + x])];
+    return rows.map(([v,l]) => `<option value="${esc(v)}" ${v === (selected || '') ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  }
+
+  function dispatchTierOptions(selected) {
+    const names = {fast:'⚡ Local', smart:'🧠 Anthropic API', openai:'🤖 OpenAI API', chatgpt:'● ChatGPT account', claude:'✨ Claude plan'};
+    return Object.keys(names).map(t => {
+      const info = dispatchModels.tiers && dispatchModels.tiers[t];
+      const ready = info && info.available;
+      return `<option value="${t}" ${t === selected ? 'selected' : ''}>${names[t]}${ready ? '' : ' · unavailable'}</option>`;
+    }).join('');
+  }
+
+  function capabilityChecks(selected) {
+    const set = new Set(selected || []);
+    return Object.entries(CAP_LABELS).map(([key,label]) =>
+      `<label><input type="checkbox" name="dispatch-cap" value="${key}" ${set.has(key) ? 'checked' : ''}>${label}</label>`
+    ).join('');
+  }
+
+  function closeDispatchStudio() {
+    const el = document.getElementById('dispatch-studio');
+    el.hidden = true; el.innerHTML = '';
+  }
+
+  function openDispatchStudio(mode, presetId) {
+    const el = document.getElementById('dispatch-studio');
+    el.hidden = false;
+    if (mode === 'agent') return renderAgentEditor(presetId);
+    const group = mode === 'group';
+    const selectedAgent = customAgents.find(a => a.id === presetId);
+    el.innerHTML = `
+      <div class="dispatch-title"><h3>${group ? 'Plan a group dispatch' : 'Quick dispatch'}</h3><button class="dispatch-secondary" onclick="closeDispatchStudio()">Close</button></div>
+      <div class="dispatch-form">
+        <label class="full">Goal<textarea id="dispatch-goal" placeholder="Describe the deliverable, boundaries, and what success looks like."></textarea></label>
+        <label>Priority<select id="dispatch-priority" required>
+          <option value="">Choose speed or depth…</option><option value="fast">Fast · maximum parallelism</option>
+          <option value="balanced">Balanced · mixed model sizes</option><option value="best">Best · stronger models + reviewer</option>
+        </select></label>
+        <label>Workspace scope<select id="dispatch-scope">${dispatchScopeOptions(selectedAgent && selectedAgent.scope)}</select></label>
+        ${group ? `
+          <label>Planner tier<select id="dispatch-tier"><option value="">Recommend automatically</option>${dispatchTierOptions('')}</select></label>
+          <label>Planner model<input id="dispatch-model" placeholder="recommended default"></label>` : `
+          <label>Agent<select id="dispatch-agent"><option value="">One-off agent</option>${customAgents.map(a => `<option value="${a.id}" ${a.id === presetId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+          <label>Capability profile<select id="dispatch-profile" onchange="dispatchProfileChanged()">
+            <option value="research">Research</option><option value="vault_editor">Vault editor</option>
+            <option value="code_editor">Code editor</option><option value="inbox">Inbox</option>
+          </select></label>
+          <label>Tier<select id="dispatch-tier">${dispatchTierOptions(selectedAgent && selectedAgent.tier || 'fast')}</select></label>
+          <label>Model<input id="dispatch-model" value="${esc(selectedAgent && selectedAgent.model || '')}" placeholder="tier default"></label>
+          <label class="full">Agent instructions<textarea id="dispatch-instructions" placeholder="How should this agent approach the work?">${esc(selectedAgent && selectedAgent.instructions || '')}</textarea></label>
+          <div class="full cap-grid" id="dispatch-caps">${capabilityChecks(selectedAgent && selectedAgent.capabilities || PROFILE_CAPS.research)}</div>`}
+      </div>
+      <div class="dispatch-foot"><span class="dispatch-msg" id="dispatch-form-msg">${group ? 'The planner will ask questions before proposing workers.' : 'Write-capable work stays staged until you approve it.'}</span>
+        <button class="dispatch-primary" onclick="createDispatch('${group ? 'group' : 'single'}')">${group ? 'Start planning' : 'Dispatch agent'}</button></div>`;
+    if (!group && selectedAgent) document.getElementById('dispatch-profile').value = selectedAgent.profile || 'research';
+    el.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+
+  function dispatchProfileChanged() {
+    const profile = document.getElementById('dispatch-profile').value;
+    document.getElementById('dispatch-caps').innerHTML = capabilityChecks(PROFILE_CAPS[profile] || []);
+  }
+
+  function renderAgentEditor(agentId) {
+    const el = document.getElementById('dispatch-studio');
+    const item = customAgents.find(a => a.id === agentId) || {};
+    const profile = item.profile || 'research';
+    el.innerHTML = `
+      <div class="dispatch-title"><h3>${agentId ? 'Edit custom agent' : 'Create a reusable agent'}</h3><button class="dispatch-secondary" onclick="closeDispatchStudio()">Close</button></div>
+      <div class="dispatch-form">
+        <label>Name<input id="custom-name" value="${esc(item.name || '')}" placeholder="Release researcher"></label>
+        <label>Profile<select id="custom-profile" onchange="customProfileChanged()">
+          <option value="research" ${profile==='research'?'selected':''}>Research</option>
+          <option value="vault_editor" ${profile==='vault_editor'?'selected':''}>Vault editor</option>
+          <option value="code_editor" ${profile==='code_editor'?'selected':''}>Code editor</option>
+          <option value="inbox" ${profile==='inbox'?'selected':''}>Inbox</option>
+        </select></label>
+        <label class="full">Description<input id="custom-desc" value="${esc(item.description || '')}" placeholder="What this specialist is for"></label>
+        <label class="full">Instructions<textarea id="custom-instructions" placeholder="Role, method, quality bar, and expected output…">${esc(item.instructions || '')}</textarea></label>
+        <label>Default tier<select id="custom-tier"><option value="">Recommend per dispatch</option>${dispatchTierOptions(item.tier || '')}</select></label>
+        <label>Default model<input id="custom-model" value="${esc(item.model || '')}" placeholder="tier default"></label>
+        <label>Default scope<select id="custom-scope">${dispatchScopeOptions(item.scope)}</select></label>
+        <div></div><div class="full cap-grid" id="custom-caps">${capabilityChecks(item.capabilities || PROFILE_CAPS[profile])}</div>
+      </div>
+      <div class="dispatch-foot"><span class="dispatch-msg" id="dispatch-form-msg"></span>
+        <button class="dispatch-primary" onclick="saveCustomAgent('${esc(agentId || '')}')">Save agent</button></div>`;
+  }
+
+  function customProfileChanged() {
+    const profile = document.getElementById('custom-profile').value;
+    document.getElementById('custom-caps').innerHTML = capabilityChecks(PROFILE_CAPS[profile] || []);
+  }
+
+  function checkedCaps(rootId) {
+    return [...document.querySelectorAll('#' + rootId + ' input[name="dispatch-cap"]:checked')].map(x => x.value);
+  }
+
+  function saveCustomAgent(agentId) {
+    const payload = {
+      name: document.getElementById('custom-name').value.trim(), description: document.getElementById('custom-desc').value.trim(),
+      instructions: document.getElementById('custom-instructions').value.trim(), profile: document.getElementById('custom-profile').value,
+      capabilities: checkedCaps('custom-caps'), scope: document.getElementById('custom-scope').value,
+      tier: document.getElementById('custom-tier').value, model: document.getElementById('custom-model').value.trim(),
+    };
+    fetch('/api/agent-definitions' + (agentId ? '/' + encodeURIComponent(agentId) : ''), {
+      method: agentId ? 'PUT' : 'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload),
+    }).then(r => r.json().then(d => ({ok:r.ok,d}))).then(({ok,d}) => {
+      if (!ok) { document.getElementById('dispatch-form-msg').textContent = d.error || 'Could not save agent.'; return; }
+      closeDispatchStudio(); loadCustomAgents();
+    }).catch(() => { document.getElementById('dispatch-form-msg').textContent = 'Could not reach the dashboard.'; });
+  }
+
+  function deleteCustomAgent(id) {
+    if (!confirm('Delete this custom agent? Dispatch history will be kept.')) return;
+    fetch('/api/agent-definitions/' + encodeURIComponent(id), {method:'DELETE'}).then(() => loadCustomAgents());
+  }
+
+  function loadCustomAgents() {
+    fetch('/api/agent-definitions').then(r => r.json()).then(d => { customAgents = d.agents || []; renderCustomAgents(); }).catch(() => {});
+  }
+
+  function renderCustomAgents() {
+    const el = document.getElementById('custom-agent-list');
+    if (!customAgents.length) { el.innerHTML = '<div class="empty-sm">No custom agents yet.</div>'; return; }
+    el.innerHTML = customAgents.map(a => `<div class="custom-agent"><h4>${esc(a.name)}</h4>
+      <p>${esc(a.description || a.profile)} · ${esc(a.tier || 'recommended tier')}</p>
+      <div class="dispatch-actions"><button onclick="openDispatchStudio('quick','${a.id}')">Dispatch</button>
+      <button onclick="openDispatchStudio('agent','${a.id}')">Edit</button><button class="dispatch-danger" onclick="deleteCustomAgent('${a.id}')">Delete</button></div></div>`).join('');
+  }
+
+  function createDispatch(kind) {
+    const goal = document.getElementById('dispatch-goal').value.trim();
+    const priority = document.getElementById('dispatch-priority').value;
+    const scope = document.getElementById('dispatch-scope').value;
+    const msg = document.getElementById('dispatch-form-msg');
+    if (!goal || !priority) { msg.textContent = 'Describe the goal and choose Fast, Balanced, or Best.'; return; }
+    const payload = { kind, goal, priority, scope, planner:{tier:document.getElementById('dispatch-tier').value, model:document.getElementById('dispatch-model').value.trim()} };
+    if (kind === 'single') {
+      const selected = customAgents.find(a => a.id === document.getElementById('dispatch-agent').value);
+      payload.agent_id = selected && selected.id;
+      payload.definition = selected || {
+        name:'One-off agent', description:'Quick dispatch', profile:document.getElementById('dispatch-profile').value,
+        instructions:document.getElementById('dispatch-instructions').value.trim() || 'Complete the task carefully and report evidence, changed files, and checks.',
+        capabilities:checkedCaps('dispatch-caps'), tier:payload.planner.tier, model:payload.planner.model, scope,
+      };
+      if (selected) payload.definition = {...selected, tier:payload.planner.tier || selected.tier, model:payload.planner.model || selected.model, scope};
+    }
+    msg.textContent = kind === 'group' ? 'Opening planning conversation…' : 'Starting dispatch…';
+    fetch('/api/dispatches', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(r => r.json().then(d => ({ok:r.ok,d}))).then(({ok,d}) => {
+        if (!ok) { msg.textContent = d.error || 'Could not create dispatch.'; return; }
+        closeDispatchStudio(); activeDispatchId = d.id; renderDispatch(d); loadDispatchHistory();
+        if (kind === 'single') dispatchAction(d.id, 'launch'); else watchDispatch(d.id);
+      }).catch(() => { msg.textContent = 'Could not reach the dashboard.'; });
+  }
+
+  function loadDispatchHistory() {
+    fetch('/api/dispatches').then(r => r.json()).then(d => { dispatchHistory = d.dispatches || []; renderDispatchHistory(); }).catch(() => {});
+  }
+
+  function renderDispatchHistory() {
+    const el = document.getElementById('dispatch-history');
+    if (!dispatchHistory.length) { el.innerHTML = '<div class="empty-sm">No dispatches yet.</div>'; return; }
+    el.innerHTML = dispatchHistory.slice(0,20).map(d => `<div class="dispatch-history-item" onclick="openDispatch('${d.id}')">
+      <b>${esc(d.goal)}</b><span>${esc(d.kind)} · ${esc(d.priority)} · ${esc(d.state)}</span></div>`).join('');
+  }
+
+  function openDispatch(id) {
+    activeDispatchId = id;
+    fetch('/api/dispatches/' + encodeURIComponent(id)).then(r => r.json()).then(d => { renderDispatch(d); watchDispatch(id); });
+  }
+
+  function watchDispatch(id) {
+    if (dispatchPollTimer) clearTimeout(dispatchPollTimer);
+    fetch('/api/dispatches/' + encodeURIComponent(id)).then(r => r.json()).then(d => {
+      if (activeDispatchId === id) renderDispatch(d);
+      loadDispatchHistory();
+      if (['planning','running'].includes(d.state)) dispatchPollTimer = setTimeout(() => watchDispatch(id), 1100);
+    }).catch(() => { dispatchPollTimer = setTimeout(() => watchDispatch(id), 1800); });
+  }
+
+  function renderDispatch(d) {
+    const el = document.getElementById('dispatch-detail');
+    if (!d || d.error && !d.id) { el.innerHTML = ''; return; }
+    const messages = (d.messages || []).map(m => `<div class="dispatch-bubble ${m.role === 'user' ? 'user' : 'assistant'}">${renderMd(m.content || '')}</div>`).join('');
+    let body = `<div class="dispatch-studio"><div class="dispatch-title"><h3>${esc(d.goal)}</h3><span class="tier ${d.priority==='fast'?'fast':'claude'}">${esc(d.priority)}</span><span class="run-state ${esc(d.state)}">${esc(d.state)}</span></div>`;
+    if (d.kind === 'group' && messages) body += `<div class="dispatch-chat">${messages}</div>`;
+    if (d.state === 'clarifying') body += `<div class="dispatch-chat-send"><textarea id="planner-reply" placeholder="Answer the planner…"></textarea><button class="dispatch-primary" onclick="sendPlannerMessage('${d.id}')">Send</button></div>`;
+    if (d.state === 'planning') body += '<div class="dispatch-msg">Planner is preparing the team and model assignments…</div>';
+    if (d.state === 'ready' && d.plan) body += renderDispatchPlan(d);
+    if (['running','failed','interrupted','cancelled','awaiting_apply','completed'].includes(d.state)) body += renderDispatchStatus(d);
+    body += '</div>';
+    el.innerHTML = body;
+    if (d.state === 'running') el.scrollIntoView({block:'nearest'});
+  }
+
+  function renderDispatchPlan(d) {
+    const workers = (d.plan.workers || []).map(w => `<div class="worker-edit" data-worker="${esc(w.id)}">
+      <input class="w-title" value="${esc(w.title)}" aria-label="Worker title"><select class="w-tier">${dispatchTierOptions(w.tier)}</select>
+      <input class="w-model" value="${esc(w.model || '')}" placeholder="model default" aria-label="Worker model">
+      <textarea class="w-objective" aria-label="Worker objective">${esc(w.objective)}</textarea>
+      <input class="w-caps" value="${esc((w.capabilities||[]).join(', '))}" aria-label="Capabilities">
+      <input class="w-deps" value="${esc((w.depends_on||[]).join(', '))}" placeholder="depends on" aria-label="Dependencies">
+      <input class="w-checks" value="${esc((w.approved_checks||[]).join(', '))}" placeholder="approved checks" aria-label="Approved checks">
+      <div class="worker-meta">${esc(w.id)} · ${esc(w.complexity)} · scope ${esc(w.scope || 'vault root')}</div></div>`).join('');
+    return `<div class="dispatch-plan"><div class="dispatch-msg">Review roles, dependencies, capabilities, and exact models before launch.</div>${workers}</div>
+      <div class="dispatch-foot"><button class="dispatch-secondary" onclick="saveDispatchPlan('${d.id}',false)">Save edits</button>
+      <button class="dispatch-primary" onclick="saveDispatchPlan('${d.id}',true)">Approve and launch</button></div>`;
+  }
+
+  function collectDispatchPlan(d) {
+    const original = d.plan || {};
+    return { summary:original.summary || '', checks:original.checks || [], workers:[...document.querySelectorAll('.worker-edit')].map((el,i) => {
+      const old = (original.workers || [])[i] || {};
+      return {...old, id:el.dataset.worker, title:el.querySelector('.w-title').value.trim(), tier:el.querySelector('.w-tier').value,
+        model:el.querySelector('.w-model').value.trim(), objective:el.querySelector('.w-objective').value.trim(),
+        capabilities:el.querySelector('.w-caps').value.split(',').map(x=>x.trim()).filter(Boolean),
+        depends_on:el.querySelector('.w-deps').value.split(',').map(x=>x.trim()).filter(Boolean),
+        approved_checks:el.querySelector('.w-checks').value.split(',').map(x=>x.trim()).filter(Boolean)};
+    })};
+  }
+
+  function saveDispatchPlan(id, launchAfter) {
+    fetch('/api/dispatches/' + encodeURIComponent(id)).then(r=>r.json()).then(d => fetch('/api/dispatches/' + encodeURIComponent(id) + '/plan', {
+      method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectDispatchPlan(d)),
+    })).then(r=>r.json().then(d=>({ok:r.ok,d}))).then(({ok,d}) => {
+      if (!ok) { alert(d.error || 'Could not save plan.'); return; }
+      renderDispatch(d); if (launchAfter) dispatchAction(id,'launch');
+    });
+  }
+
+  function sendPlannerMessage(id) {
+    const input = document.getElementById('planner-reply'); const content = input.value.trim(); if (!content) return;
+    input.disabled = true;
+    fetch('/api/dispatches/' + encodeURIComponent(id) + '/messages', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})})
+      .then(r=>r.json().then(d=>({ok:r.ok,d}))).then(({ok,d})=>{ if(!ok){alert(d.error||'Planning failed.');return;} renderDispatch(d);watchDispatch(id); });
+  }
+
+  function renderDispatchStatus(d) {
+    const rows = (d.workers || []).map(w => `<div class="worker-row"><div><b>${esc(w.title)}</b><div class="worker-meta">${esc(w.tier)} · ${esc(w.model || 'default')}${w.error ? ' · ' + esc(w.error) : ''}</div></div><span class="state">${esc(w.status)}</span></div>
+      ${(w.result && w.result.reply) || (w.artifact && w.artifact.preview) ? `<details class="dispatch-result"><summary>Worker details${w.artifact && w.artifact.files ? ` · ${w.artifact.files.length} staged item(s)` : ''}</summary>
+        ${w.result && w.result.reply ? `<div class="md">${renderMd(w.result.reply)}</div>` : ''}
+        ${w.artifact && w.artifact.preview ? `<div class="artifact-preview">${esc(w.artifact.preview)}</div>` : ''}</details>` : ''}`).join('');
+    let controls = '';
+    if (d.state === 'running') controls = `<button class="dispatch-danger" onclick="dispatchAction('${d.id}','cancel')">Cancel</button>`;
+    if (['failed','interrupted'].includes(d.state)) controls = `<button class="dispatch-primary" onclick="dispatchAction('${d.id}','resume')">Retry / resume</button>`;
+    let result = d.result && d.result.reply ? `<div class="dispatch-result"><div class="md">${renderMd(d.result.reply)}</div></div>` : '';
+    if (d.state === 'awaiting_apply') {
+      result += (d.artifacts || []).map(a => `<div class="dispatch-result"><b>${(a.files||[]).length} staged item(s)</b><div class="artifact-preview">${esc(a.preview || '')}</div></div>`).join('');
+      controls += `<button class="dispatch-secondary" onclick="dispatchAction('${d.id}','discard')">Discard changes</button><button class="dispatch-primary" onclick="dispatchAction('${d.id}','apply')">Apply changes</button>`;
+    }
+    return `<div class="dispatch-status">${rows}${result}<div class="dispatch-foot">${controls}</div></div>`;
+  }
+
+  function dispatchAction(id, action) {
+    fetch('/api/dispatches/' + encodeURIComponent(id) + '/' + action, {method:'POST'})
+      .then(r=>r.json().then(d=>({ok:r.ok,d}))).then(({ok,d})=>{ if(!ok){alert(d.error||'Dispatch action failed.');return;} openDispatch(id); });
+  }
+
+  function loadDispatchWorkspace() {
+    Promise.all([
+      fetch('/api/agent/models').then(r=>r.json()), fetch('/api/agent-definitions').then(r=>r.json()), fetch('/api/dispatches').then(r=>r.json()),
+    ]).then(([models,agentsData,history]) => {
+      dispatchModels = models || {tiers:{}}; customAgents = agentsData.agents || []; dispatchHistory = history.dispatches || [];
+      renderCustomAgents(); renderDispatchHistory();
+      const live = dispatchHistory.find(d => ['planning','running','awaiting_apply'].includes(d.state));
+      if (live) openDispatch(live.id);
+    }).catch(() => {});
+  }
+
   function loadAgents() {
     fetch('/api/agents').then(r => r.json()).then(d => { agentList = d.agents || []; renderAgents(); })
       .catch(() => { document.getElementById('agent-grid').innerHTML = '<div class="empty-sm">Could not load agents.</div>'; });
     loadAgentFolders();
     refreshRunningSide();
+    loadDispatchWorkspace();
   }
 
   function syncAgentExternals(folders) {
@@ -3340,19 +4583,26 @@
         task: t.value,
         tier: (document.getElementById('tier-' + a.id) || {}).value,
         folder: (document.getElementById('folder-' + a.id) || {}).value,
+        model: (document.getElementById('model-' + a.id) || {}).value,
       };
     });
-    document.getElementById('agent-grid').innerHTML = agentList.map(a => `
+    document.getElementById('agent-grid').innerHTML =
+      '<datalist id="agent-model-list"><option value="opus"><option value="sonnet"><option value="haiku"></datalist>' +
+      agentList.map(a => `
       <div class="agent-card" id="card-${esc(a.id)}">
         <div class="agent-top">
           <span class="agent-dot ${esc(a.status)}"></span>
           <span class="agent-name">${esc(a.name)}</span>
-          <select id="tier-${esc(a.id)}" class="agent-tier-select" title="Which backend runs this agent">
+          <select id="tier-${esc(a.id)}" class="agent-tier-select" title="Which backend runs this agent"
+                  onchange="agentTierChanged('${esc(a.id)}')">
             <option value="fast"   ${a.tier === 'fast'   ? 'selected' : ''}>⚡ fast · local</option>
             <option value="smart"  ${a.tier === 'smart'  ? 'selected' : ''}>🧠 smart · API</option>
             <option value="openai" ${a.tier === 'openai' ? 'selected' : ''}>🤖 gpt · API</option>
             <option value="claude" ${a.tier === 'claude' ? 'selected' : ''}>✨ claude · plan</option>
           </select>
+          <input id="model-${esc(a.id)}" class="agent-tier-select" list="agent-model-list" autocomplete="off"
+                 placeholder="plan default" title="Claude model — leave blank for the plan default"
+                 style="display:${a.tier === 'claude' ? '' : 'none'}; max-width:140px;">
         </div>
         <div class="agent-desc">${esc(a.desc)}</div>
         <div class="agent-selects">
@@ -3381,9 +4631,19 @@
         if (k.tier) document.getElementById('tier-' + a.id).value = k.tier;
         const f = document.getElementById('folder-' + a.id);
         if (f && k.folder && [...f.options].some(o => o.value === k.folder)) f.value = k.folder;
+        const m = document.getElementById('model-' + a.id);
+        if (m && k.model) m.value = k.model;
       }
+      agentTierChanged(a.id);
       if (agentBusy[a.id]) setAgentBusy(a.id, true);
     });
+  }
+
+  // Show the Claude model box only when this agent's tier is the claude CLI.
+  function agentTierChanged(id) {
+    const tierSel = document.getElementById('tier-' + id);
+    const model = document.getElementById('model-' + id);
+    if (tierSel && model) model.style.display = tierSel.value === 'claude' ? '' : 'none';
   }
 
   function applyPreset(id, sel) {
@@ -3422,6 +4682,8 @@
     const tier = tierSel ? tierSel.value : a.tier;
     const folderSel = document.getElementById('folder-' + id);
     const folder = folderSel ? folderSel.value : '';
+    const modelEl = document.getElementById('model-' + id);
+    const model = (tier === 'claude' && modelEl) ? modelEl.value.trim() : '';
 
     setAgentBusy(id, true);
     const log = document.getElementById('activity-log');
@@ -3434,7 +4696,7 @@
 
     fetch('/api/agent/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: id, task: task, tier: tier, folder: folder }),
+      body: JSON.stringify({ agent: id, task: task, tier: tier, folder: folder, model: model }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
@@ -3890,6 +5152,125 @@
   function wizClose() {
     document.getElementById('wizard').classList.remove('show');
   }
+
+  /* ── Aceternity navbar-menu dropdown port (vanilla; CSS in the .acx-* block).
+     acxEnhance() upgrades every native <select> in place: the select stays in
+     the DOM (hidden, tabIndex -1) so all existing getElementById/.value wiring
+     and inline onchange handlers keep working; a trigger button + a floating
+     glass panel replace only the presentation. Sync back from app code happens
+     via (a) an instance-level `value` interceptor for programmatic writes and
+     (b) a per-select MutationObserver for disabled/display toggles and option
+     repopulation. A document-level observer auto-enhances selects added by
+     re-renders (agent cards, inbox accounts, models). ── */
+  (() => {
+    const VDESC = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+    let openMenu = null; // { sel, trigger, panel }
+
+    function closeMenu(focusBack) {
+      if (!openMenu) return;
+      const { trigger, panel } = openMenu;
+      openMenu = null;
+      trigger.classList.remove('open');
+      panel.classList.remove('open');
+      panel.style.pointerEvents = 'none';
+      setTimeout(() => panel.remove(), 300);
+      if (focusBack) trigger.focus({ preventScroll: true });
+    }
+
+    function openFor(sel, trigger) {
+      if (openMenu && openMenu.sel === sel) { closeMenu(); return; }
+      closeMenu();
+      const panel = document.createElement('div');
+      panel.className = 'acx-menu';
+      panel.setAttribute('role', 'listbox');
+      Array.from(sel.options).forEach((opt, i) => {
+        const it = document.createElement('button');
+        it.type = 'button';
+        it.className = 'acx-item' + (i === sel.selectedIndex ? ' sel' : '');
+        it.textContent = opt.text || '—';
+        if (opt.disabled) it.disabled = true;
+        it.onclick = () => {
+          VDESC.set.call(sel, opt.value);
+          sel.__acxSync();
+          closeMenu(true);
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        panel.appendChild(it);
+      });
+      document.body.appendChild(panel);
+      const r = trigger.getBoundingClientRect();
+      const pw = panel.offsetWidth, ph = panel.offsetHeight;
+      const left = Math.max(8, Math.min(r.left, innerWidth - pw - 8));
+      let top = r.bottom + 6, origin = 'top left';
+      if (top + ph > innerHeight - 8 && r.top - ph - 6 > 8) { top = r.top - ph - 6; origin = 'bottom left'; }
+      panel.style.left = left + 'px';
+      panel.style.top = top + 'px';
+      panel.style.transformOrigin = origin;
+      requestAnimationFrame(() => panel.classList.add('open'));
+      trigger.classList.add('open');
+      openMenu = { sel, trigger, panel };
+      const cur = panel.querySelector('.acx-item.sel:not([disabled])');
+      if (cur) cur.focus({ preventScroll: true });
+    }
+
+    document.addEventListener('pointerdown', (e) => {
+      if (openMenu && !openMenu.panel.contains(e.target) && !openMenu.trigger.contains(e.target)) closeMenu();
+    }, true);
+    document.addEventListener('keydown', (e) => {
+      if (!openMenu) return;
+      const items = Array.from(openMenu.panel.querySelectorAll('.acx-item:not([disabled])'));
+      const idx = items.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); closeMenu(true); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); (items[idx + 1] || items[0]).focus({ preventScroll: true }); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); (items[idx - 1] || items[items.length - 1]).focus({ preventScroll: true }); }
+    });
+    addEventListener('scroll', (e) => {
+      if (openMenu && !(e.target instanceof Element && e.target.closest('.acx-menu'))) closeMenu();
+    }, true);
+    addEventListener('resize', () => closeMenu());
+
+    function acxEnhance(sel) {
+      if (sel.__acx || sel.multiple) return;
+      sel.__acx = true;
+      sel.classList.add('acx-native');
+      sel.tabIndex = -1;
+      const btn = document.createElement('button');
+      btn.type = 'button'; // never a submit inside .np-form
+      btn.className = (sel.className.replace('acx-native', '').trim() + ' acx-trigger').trim();
+      if (sel.title) btn.title = sel.title;
+      btn.innerHTML = '<span class="acx-label"></span>'
+        + '<svg class="acx-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+        + ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+      btn.onclick = () => { if (!btn.disabled) openFor(sel, btn); };
+      const label = btn.querySelector('.acx-label');
+      sel.__acxSync = () => {
+        if (openMenu && openMenu.sel === sel && !sel.isConnected) closeMenu();
+        const opt = sel.options[sel.selectedIndex];
+        label.textContent = opt ? (opt.text || '—') : '…';
+        btn.disabled = sel.disabled;
+        btn.style.display = sel.style.display === 'none' ? 'none' : '';
+      };
+      Object.defineProperty(sel, 'value', {
+        get() { return VDESC.get.call(sel); },
+        set(v) { VDESC.set.call(sel, v); sel.__acxSync(); },
+      });
+      new MutationObserver(sel.__acxSync).observe(sel, {
+        attributes: true, attributeFilter: ['disabled', 'style'],
+        childList: true, subtree: true, characterData: true,
+      });
+      sel.insertAdjacentElement('afterend', btn);
+      sel.__acxSync();
+    }
+
+    const acxScan = (root) => root.querySelectorAll('select').forEach(acxEnhance);
+    acxScan(document);
+    new MutationObserver((muts) => {
+      for (const m of muts) for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.tagName === 'SELECT') acxEnhance(n); else if (n.querySelectorAll) acxScan(n);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  })();
 
   updateCheck();
   wizMaybeShow();

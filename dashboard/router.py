@@ -24,6 +24,7 @@ import base64
 import json
 import mimetypes
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -128,11 +129,17 @@ CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
 
 TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
 
-# ``status()`` stays cheap: it reports executable presence until the explicit
-# Settings health check has established the active Codex authentication mode.
-# The cache is keyed by the resolved executable so changing the CLI setting
-# cannot leave stale auth state attached to a different binary.
-_CODEX_HEALTH = {"exe": None, "ok": None, "reason": ""}
+# ``status()`` stays cheap: it reports executable presence plus the most recent
+# explicit login check. The browser performs that check automatically when the
+# ChatGPT tier becomes relevant. The cache is keyed by the resolved executable
+# so changing the CLI setting cannot attach stale auth state to another binary.
+_CODEX_HEALTH = {
+    "exe": None,
+    "ok": None,
+    "state": "unchecked",
+    "reason": "",
+    "checked_at": None,
+}
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────
@@ -263,12 +270,17 @@ def status_for(tier: str) -> dict:
         }
     if tier == "chatgpt":
         exe = _codex_cli_path()
-        auth = _CODEX_HEALTH["ok"] if _CODEX_HEALTH["exe"] == exe else None
+        checked = _CODEX_HEALTH["exe"] == exe
+        auth = _CODEX_HEALTH.get("ok") if checked else None
+        auth_state = _CODEX_HEALTH.get("state", "unchecked") if checked else "unchecked"
         return {
             "backend": "codex-cli",
             "model": _codex_cli_model() or "ChatGPT account default",
             "installed": exe is not None,
             "authenticated": auth,
+            "auth_state": auth_state,
+            "auth_reason": _CODEX_HEALTH.get("reason", "") if checked else "",
+            "auth_checked_at": _CODEX_HEALTH.get("checked_at") if checked else None,
             # Executable presence alone is not readiness: an installed CLI may
             # be logged out or authenticated with the wrong account method.
             "available": exe is not None and auth is True,
@@ -594,14 +606,20 @@ def codex_cli_health() -> tuple[bool, str]:
     """Check that Codex is installed and using ChatGPT-backed authentication."""
     exe = _codex_cli_path()
 
-    def finish(ok: bool, reason: str) -> tuple[bool, str]:
-        _CODEX_HEALTH.update(exe=exe, ok=ok, reason=reason)
+    def finish(ok: bool, reason: str, state: str) -> tuple[bool, str]:
+        _CODEX_HEALTH.update(
+            exe=exe, ok=ok, state=state, reason=reason, checked_at=time.time()
+        )
         return ok, reason
 
     if exe is None:
-        return finish(False, "Codex CLI was not found on PATH.")
+        return finish(False, "Codex CLI was not found on PATH.", "not_installed")
     if not os.path.isdir(CODEX_CLI_CWD):
-        return finish(False, f"Codex working folder does not exist: {CODEX_CLI_CWD}")
+        return finish(
+            False,
+            f"Codex working folder does not exist: {CODEX_CLI_CWD}",
+            "check_failed",
+        )
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         proc = subprocess.run(
@@ -616,26 +634,49 @@ def codex_cli_health() -> tuple[bool, str]:
             creationflags=creationflags,
         )
     except FileNotFoundError:
-        return finish(False, "Codex CLI vanished mid-check.")
+        return finish(False, "Codex CLI vanished mid-check.", "not_installed")
     except PermissionError as e:
-        return finish(False, f"Couldn't start Codex CLI: {e}")
+        return finish(False, f"Couldn't start Codex CLI: {e}", "check_failed")
     except subprocess.TimeoutExpired:
-        return finish(False, "Codex CLI login check timed out.")
+        return finish(False, "Codex CLI login check timed out.", "timed_out")
     except OSError as e:
-        return finish(False, f"Couldn't check Codex CLI: {e}")
-    detail = (proc.stdout or proc.stderr or "").strip()
+        return finish(False, f"Couldn't check Codex CLI: {e}", "check_failed")
+
+    # Some CLI versions write status to stderr even on success. Inspect both so
+    # a warning cannot hide the actual authentication method.
+    detail = "\n".join(
+        part.strip() for part in (proc.stdout, proc.stderr) if (part or "").strip()
+    )
+    low = detail.lower()
+    if "not logged in" in low or "not signed in" in low:
+        return finish(
+            False,
+            "Codex CLI is installed, but not signed in. Run `codex login` and choose ChatGPT.",
+            "signed_out",
+        )
+    if "api key" in low or "api-key" in low or "access token" in low:
+        return finish(
+            False,
+            "Codex CLI is signed in with an API key or access token, not ChatGPT. "
+            "Run `codex logout`, then `codex login` and choose ChatGPT sign-in.",
+            "wrong_method",
+        )
+    if proc.returncode == 0 and "chatgpt" in low:
+        return finish(True, "Codex CLI is signed in with ChatGPT.", "chatgpt")
+    if proc.returncode != 0 and ("login" in low or "logged" in low or "auth" in low):
+        return finish(
+            False,
+            "Codex CLI is installed, but not signed in. Run `codex login` and choose ChatGPT.",
+            "signed_out",
+        )
     if proc.returncode == 0:
-        low = detail.lower()
-        if "api key" in low or "api-key" in low:
-            return finish(
-                False,
-                "Codex CLI is signed in with an API key, not ChatGPT. Run `codex "
-                "logout`, then `codex login` and choose ChatGPT sign-in.",
-            )
-        return finish(True, detail or "Codex CLI is signed in with ChatGPT.")
-    if "login" in detail.lower() or "auth" in detail.lower():
-        return finish(False, "Codex CLI found, but not signed in. Run `codex login`.")
-    return finish(False, detail or "Codex CLI check failed.")
+        return finish(
+            False,
+            "Codex CLI responded, but Regalia could not confirm a ChatGPT account login. "
+            "Use Recheck after signing in with `codex login`.",
+            "unknown",
+        )
+    return finish(False, detail or "Codex CLI login check failed.", "check_failed")
 
 
 def _stage_cli_attachments(attachments, directory: str) -> list[dict]:
@@ -757,12 +798,19 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()[:4000]
             hint = ""
-            if "login" in detail.lower() or "auth" in detail.lower():
+            if ("login" in detail.lower() or "logged" in detail.lower()
+                    or "auth" in detail.lower()):
                 hint = " Run `codex login` and choose ChatGPT sign-in."
-                _CODEX_HEALTH.update(exe=exe, ok=False, reason=detail or hint.strip())
+                _CODEX_HEALTH.update(
+                    exe=exe, ok=False, state="signed_out",
+                    reason=detail or hint.strip(), checked_at=time.time(),
+                )
             raise RouterError(f"The Codex CLI failed: {detail or 'unknown error'}{hint}", 502)
 
-        _CODEX_HEALTH.update(exe=exe, ok=True, reason="Codex CLI is signed in with ChatGPT.")
+        _CODEX_HEALTH.update(
+            exe=exe, ok=True, state="chatgpt",
+            reason="Codex CLI is signed in with ChatGPT.", checked_at=time.time(),
+        )
         reply = (proc.stdout or "").strip()
         return {
             "reply": reply or "…(the model went quiet — try again)",
@@ -772,6 +820,130 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
     finally:
         if staged_dir:
             staged_dir.cleanup()
+
+
+def codex_agent_stream(prompt, system=None, model=None, cwd=None, allow_write=False,
+                       timeout=None, cancel_event=None):
+    """Run a scoped Codex account agent and yield its JSONL execution events.
+
+    Unlike chat_tools(), Codex drives its own file/shell loop. It runs in an
+    isolated dispatch workspace, with ChatGPT authentication forced and the
+    same allowlisted environment used by account chat.
+    """
+    exe = _codex_cli_path()
+    if exe is None:
+        raise RouterError(
+            "The Codex CLI isn't installed or isn't on PATH. Install Codex and "
+            "sign in with your ChatGPT account first.", 503,
+        )
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise RouterError("Nothing to send to the Codex agent.", 400)
+    active_cwd = str(cwd or CODEX_CLI_CWD)
+    if not os.path.isdir(active_cwd):
+        raise RouterError(f"Codex working folder does not exist: {active_cwd}", 503)
+    sys_text = _flatten_system(system)
+    if sys_text:
+        prompt = "System instructions:\n" + sys_text + "\n\nTask:\n" + prompt
+    cmd = [
+        exe, "exec", "--json", "--ephemeral", "--ignore-user-config",
+        "--ignore-rules", "--skip-git-repo-check",
+        "--sandbox", "workspace-write" if allow_write else "read-only",
+        "-C", active_cwd, "-c", 'forced_login_method="chatgpt"',
+    ]
+    mdl = model or _codex_cli_model()
+    if mdl:
+        cmd += ["-m", mdl]
+    cmd.append("-")
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", env=_codex_env(),
+            cwd=active_cwd, creationflags=creationflags,
+        )
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        raise RouterError(f"Couldn't start the Codex agent: {e}", 503)
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+    stderr_chunks: list[str] = []
+
+    def _drain():
+        try:
+            for line in proc.stderr:
+                stderr_chunks.append(line)
+        except (OSError, ValueError):
+            pass
+
+    threading.Thread(target=_drain, daemon=True).start()
+    stdout_lines: queue.Queue = queue.Queue()
+
+    def _read_stdout():
+        try:
+            for output_line in proc.stdout:
+                stdout_lines.put(output_line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            stdout_lines.put(None)
+
+    threading.Thread(target=_read_stdout, daemon=True).start()
+    idle_limit = timeout or _codex_cli_timeout()
+    last_output = time.monotonic()
+    cancelled = False
+    timed_out = False
+    stream_closed = False
+    try:
+        while not stream_closed:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                proc.kill()
+                break
+            try:
+                line = stdout_lines.get(timeout=0.1)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                stream_closed = True
+            elif line:
+                last_output = time.monotonic()
+                try:
+                    yield json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            elif time.monotonic() - last_output > idle_limit:
+                timed_out = True
+                proc.kill()
+                break
+        while not stdout_lines.empty():
+            line = stdout_lines.get_nowait()
+            if line is None:
+                continue
+            try:
+                yield json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                pass
+    finally:
+        proc.wait()
+    if cancelled:
+        raise RouterError("The Codex agent was cancelled.", 409)
+    if timed_out:
+        raise RouterError(f"The Codex agent was silent for over {idle_limit}s and was stopped.", 504)
+    if proc.returncode:
+        detail = "".join(stderr_chunks).strip()
+        if "login" in detail.lower() or "auth" in detail.lower():
+            _CODEX_HEALTH.update(
+                exe=exe, ok=False, state="signed_out", reason=detail,
+                checked_at=time.time(),
+            )
+        raise RouterError(f"The Codex agent failed: {detail or 'unknown error'}", 502)
+    _CODEX_HEALTH.update(
+        exe=exe, ok=True, state="chatgpt",
+        reason="Codex CLI is signed in with ChatGPT.", checked_at=time.time(),
+    )
 
 
 # ── Subscription: Claude Code CLI ────────────────────────────────────────────
@@ -1012,7 +1184,7 @@ def _claude_code_chat_stream_inner(messages, system, model, attachments,
 
 def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=None,
                        model=None, cwd=None, timeout=None, mcp_config=None,
-                       extra_dirs=None):
+                       extra_dirs=None, cancel_event=None):
     """Run the Claude Code CLI in streaming mode, yielding parsed JSON events.
 
     This is the agentic, subscription-billed counterpart to chat_tools(): instead
@@ -1024,7 +1196,8 @@ def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=No
     final summary text.
 
     builtin_tools is the exact available built-in set; allowed_tools is the exact
-    built-in/MCP set pre-approved for this run. Callers never grant Bash. File
+    built-in/MCP set pre-approved for this run. Dispatch callers may grant only
+    the validation commands approved in the reviewed plan. File
     access stays confined to cwd plus explicit extra_dirs. As with the
     plain claude tier, ANTHROPIC_API_KEY/AUTH_TOKEN are stripped from the child env
     so it always bills the signed-in subscription, never API credits.
@@ -1111,11 +1284,19 @@ def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=No
     # has no built-in timeout the way subprocess.run does, hence the manual one.
     idle_limit = timeout or _claude_cli_timeout()
     timed_out = {"v": False}
+    cancelled = {"v": False}
     last_event = {"t": time.monotonic()}
     watch_done = threading.Event()
 
     def _watchdog():
         while not watch_done.wait(1.0):
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled["v"] = True
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                return
             if time.monotonic() - last_event["t"] > idle_limit:
                 timed_out["v"] = True
                 try:
@@ -1143,6 +1324,8 @@ def claude_code_stream(prompt, system=None, builtin_tools=None, allowed_tools=No
         err_thread.join(timeout=1)
         watch_thread.join(timeout=1)
 
+    if cancelled["v"]:
+        raise RouterError("The Claude agent was cancelled.", 409)
     if timed_out["v"]:
         raise RouterError(
             f"The Claude CLI went silent for over {idle_limit}s and was stopped. "

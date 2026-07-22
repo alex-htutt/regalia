@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import posixpath
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -17,11 +19,13 @@ import threading
 import uuid
 
 import yaml
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 import agent
 import chats
 import config
+import dispatch_engine
+import dispatches
 import externals
 import mailbox
 import news_sources
@@ -46,6 +50,18 @@ else:
     VAULT_ROOT = Path(__file__).parent.parent
 IGNORE_DIRS = {".obsidian", ".cursor", ".claude", "templates", "__pycache__", "dashboard", "founders-edition"}
 IGNORE_FILES = {"CLAUDE.md", "README_HOME.md", "USAGE.md", "Home.md"}
+
+# The vault map is broader than the task loader: every normal file type is a
+# node. It retains the existing noise/safety exclusions, with Home.md restored
+# as the authored graph root.
+BROWSER_IGNORE_FILES = IGNORE_FILES - {"Home.md"}
+BROWSER_TEXT_EXTS = {
+    ".md", ".txt", ".csv", ".json", ".yaml", ".yml", ".log", ".py",
+    ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".html", ".css",
+    ".toml", ".ini", ".cfg", ".sh", ".ps1", ".bat", ".luau",
+}
+BROWSER_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+BROWSER_PREVIEW_BYTES = 64 * 1024
 
 # Update check — runs ONCE here, at import (i.e. launch), on a background thread.
 # Offline-safe; the routes only read its cached result. If autoupdate is on and a
@@ -268,6 +284,254 @@ def api_browse():
             "context": context,
         }
     )
+
+
+def _browser_preview_kind(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in BROWSER_TEXT_EXTS:
+        return "text"
+    if ext in BROWSER_IMAGE_EXTS:
+        return "image"
+    return "none"
+
+
+def _browser_rel_allowed(rel: Path) -> bool:
+    """Whether a vault-relative path belongs in the read-only browser map."""
+    if not rel.parts or any(part.startswith(".") for part in rel.parts):
+        return False
+    if any(part in IGNORE_DIRS for part in rel.parts):
+        return False
+    return rel.name not in BROWSER_IGNORE_FILES
+
+
+def _browser_stat(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+        return stat.st_size, round(stat.st_mtime)
+    except OSError:
+        return 0, 0
+
+
+def _vault_map() -> dict:
+    """Build the read-only graph/tree inventory for the active vault.
+
+    Home.md is the graph root. The filesystem hierarchy is kept separate from
+    authored Markdown links so the frontend can style and toggle them without
+    losing the dependable folder skeleton.
+    """
+    root = VAULT_ROOT.resolve()
+    home_path = root / "Home.md"
+    home_size, home_modified = _browser_stat(home_path)
+    home_id = "file:Home.md"
+    nodes: list[dict] = [{
+        "id": home_id,
+        "path": "Home.md",
+        "name": "Home.md",
+        "kind": "home",
+        "extension": ".md",
+        "parent": "",
+        "depth": 0,
+        "size": home_size,
+        "modified": home_modified,
+        "preview_kind": "text" if home_path.is_file() else "none",
+        "exists": home_path.is_file(),
+        "children": 0,
+        "folder_children": 0,
+        "file_children": 0,
+        "links": 0,
+    }]
+    edges: list[dict] = []
+    node_by_id = {home_id: nodes[0]}
+    path_to_id: dict[str, str] = {"home.md": home_id}
+    file_stems: dict[str, list[str]] = {"home": [home_id]}
+    file_names: dict[str, list[str]] = {"home.md": [home_id]}
+
+    def add_child(parent_id: str, child: dict, edge_kind: str) -> None:
+        nodes.append(child)
+        node_by_id[child["id"]] = child
+        path_to_id[child["path"].lower()] = child["id"]
+        edges.append({"source": parent_id, "target": child["id"], "kind": edge_kind})
+        parent = node_by_id[parent_id]
+        parent["children"] += 1
+        if child["kind"] == "folder":
+            parent["folder_children"] += 1
+        else:
+            parent["file_children"] += 1
+
+    def walk(directory: Path, parent_id: str) -> None:
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return
+        directories = sorted(
+            (p for p in entries if p.is_dir() and not p.is_symlink()),
+            key=lambda p: p.name.lower(),
+        )
+        files = sorted(
+            (p for p in entries if p.is_file() and not p.is_symlink()),
+            key=lambda p: p.name.lower(),
+        )
+        for child_dir in directories:
+            rel = child_dir.relative_to(root)
+            if not _browser_rel_allowed(rel):
+                continue
+            path = rel.as_posix()
+            node_id = f"folder:{path}"
+            _, modified = _browser_stat(child_dir)
+            node = {
+                "id": node_id, "path": path, "name": child_dir.name,
+                "kind": "folder", "extension": "", "parent": parent_id,
+                "depth": len(rel.parts), "size": 0, "modified": modified,
+                "preview_kind": "none", "exists": True, "children": 0,
+                "folder_children": 0, "file_children": 0, "links": 0,
+            }
+            add_child(parent_id, node, "branch" if parent_id == home_id else "contains")
+            walk(child_dir, node_id)
+        for child_file in files:
+            rel = child_file.relative_to(root)
+            if rel.as_posix().lower() == "home.md" or not _browser_rel_allowed(rel):
+                continue
+            path = rel.as_posix()
+            node_id = f"file:{path}"
+            size, modified = _browser_stat(child_file)
+            node = {
+                "id": node_id, "path": path, "name": child_file.name,
+                "kind": "file", "extension": child_file.suffix.lower(),
+                "parent": parent_id, "depth": len(rel.parts), "size": size,
+                "modified": modified, "preview_kind": _browser_preview_kind(child_file),
+                "exists": True, "children": 0, "folder_children": 0,
+                "file_children": 0, "links": 0,
+            }
+            add_child(parent_id, node, "branch" if parent_id == home_id else "contains")
+            file_stems.setdefault(child_file.stem.lower(), []).append(node_id)
+            file_names.setdefault(child_file.name.lower(), []).append(node_id)
+
+    walk(root, home_id)
+
+    def exact_target(candidate: str) -> str | None:
+        candidate = posixpath.normpath(candidate.replace("\\", "/")).lstrip("/")
+        if candidate in ("", ".", "..") or candidate.startswith("../"):
+            return None
+        for value in (candidate, candidate + ".md"):
+            found = path_to_id.get(value.lower())
+            if found:
+                return found
+        return None
+
+    def resolve_link(source_path: str, raw: str, markdown: bool) -> str | None:
+        target = urllib.parse.unquote(raw.strip())
+        if not target or target.startswith("#"):
+            return None
+        if markdown:
+            if target.startswith("<") and ">" in target:
+                target = target[1:target.index(">")]
+            else:
+                target = re.sub(r"\s+[\"'].*$", "", target).strip()
+            if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith("//"):
+                return None
+        else:
+            target = target.split("|", 1)[0].strip()
+        target = target.split("#", 1)[0].strip().replace("\\", "/")
+        if not target:
+            return None
+
+        source_dir = posixpath.dirname(source_path)
+        # Standard Markdown paths are source-relative. Explicit wikilink paths
+        # are traditionally vault-relative, but same-folder remains a useful
+        # fallback for local vault conventions.
+        candidates = []
+        if markdown:
+            candidates.extend((posixpath.join(source_dir, target), target))
+        else:
+            candidates.extend((target, posixpath.join(source_dir, target)))
+        for candidate in candidates:
+            found = exact_target(candidate)
+            if found:
+                return found
+
+        key_name = posixpath.basename(target).lower()
+        named = file_names.get(key_name, [])
+        if len(named) == 1:
+            return named[0]
+        key_stem = Path(key_name).stem if "." in key_name else key_name
+        stemmed = file_stems.get(key_stem, [])
+        return stemmed[0] if len(stemmed) == 1 else None
+
+    wikilink_re = re.compile(r"\[\[([^\]]+)\]\]")
+    markdown_link_re = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+    authored: set[tuple[str, str]] = set()
+    for node in nodes:
+        if node["extension"] != ".md" or not node["exists"]:
+            continue
+        source_path = node["path"]
+        try:
+            content = (root / source_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in wikilink_re.finditer(content):
+            target_id = resolve_link(source_path, match.group(1), markdown=False)
+            if target_id and target_id != node["id"]:
+                authored.add((node["id"], target_id))
+        for match in markdown_link_re.finditer(content):
+            target_id = resolve_link(source_path, match.group(1), markdown=True)
+            if target_id and target_id != node["id"]:
+                authored.add((node["id"], target_id))
+
+    for source, target in sorted(authored):
+        edges.append({"source": source, "target": target, "kind": "link"})
+        node_by_id[source]["links"] += 1
+        node_by_id[target]["links"] += 1
+
+    return {"root": home_id, "nodes": nodes, "edges": edges}
+
+
+@app.route("/api/vault-map")
+def api_vault_map():
+    return jsonify(_vault_map())
+
+
+@app.route("/api/vault-preview")
+def api_vault_preview():
+    root = VAULT_ROOT.resolve()
+    rel_text = request.args.get("path", "").replace("\\", "/").strip("/")
+    if not rel_text:
+        return jsonify({"error": "file path required"}), 400
+    target = (root / rel_text).resolve()
+    if target != root and root not in target.parents:
+        return jsonify({"error": "path outside vault"}), 400
+    if not target.is_file():
+        return jsonify({"error": "file not found"}), 404
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        return jsonify({"error": "path outside vault"}), 400
+    if not _browser_rel_allowed(rel) and rel.as_posix().lower() != "home.md":
+        return jsonify({"error": "file is excluded from browser"}), 404
+
+    kind = _browser_preview_kind(target)
+    if kind == "none":
+        return jsonify({"error": "preview unavailable for this file type"}), 415
+    if kind == "image":
+        response = send_file(
+            target,
+            mimetype=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            conditional=True,
+            max_age=0,
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    try:
+        with target.open("rb") as preview_file:
+            data = preview_file.read(BROWSER_PREVIEW_BYTES + 1)
+    except OSError:
+        return jsonify({"error": "could not read file"}), 404
+    truncated = len(data) > BROWSER_PREVIEW_BYTES
+    text = data[:BROWSER_PREVIEW_BYTES].decode("utf-8", errors="replace")
+    response = app.response_class(text, mimetype="text/plain")
+    response.headers["X-Preview-Truncated"] = "1" if truncated else "0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 def _rel_time(epoch: float) -> str:
@@ -1010,9 +1274,9 @@ def _emit_to(run_id: str):
     return emit
 
 
-def _run_worker(run_id: str, agent_id: str, task: str, tier: str, folder: str = ""):
+def _run_worker(run_id: str, agent_id: str, task: str, tier: str, folder: str = "", model: str = ""):
     try:
-        result = agent.run_agent(agent_id, task, tier, emit=_emit_to(run_id), folder=folder)
+        result = agent.run_agent(agent_id, task, tier, emit=_emit_to(run_id), folder=folder, model=model)
         with _RUNS_LOCK:
             run = _RUNS.get(run_id)
             if run is not None:
@@ -1049,6 +1313,10 @@ def api_agent_run():
     task = str(data.get("task") or "").strip()
     tier = str(data.get("tier") or "").strip().lower()
     folder = str(data.get("folder") or "").replace("\\", "/").strip().strip("/")
+    # Optional per-run model override (honored on the claude CLI tier; empty falls
+    # back to the plan default). Other agent tiers keep the Settings model.
+    raw_model = data.get("model")
+    model = raw_model.strip() if (isinstance(raw_model, str) and raw_model.strip()) else ""
     if agent_id not in agent.AGENTS:
         return jsonify({"error": f"Unknown agent '{agent_id}'."}), 400
     if folder:
@@ -1058,10 +1326,11 @@ def api_agent_run():
             agent.resolve_scope(folder)
         except agent.AgentError as e:
             return jsonify({"error": e.message}), 400
-    if tier and tier not in agent.AGENT_TIERS:
+    legacy_agent_tiers = tuple(t for t in agent.AGENT_TIERS if t != "chatgpt")
+    if tier and tier not in legacy_agent_tiers:
         return jsonify({
             "error": f"Tier '{tier}' cannot run agents. Use one of: "
-                     f"{', '.join(agent.AGENT_TIERS)}."
+                     f"{', '.join(legacy_agent_tiers)}."
         }), 400
 
     run_id = uuid.uuid4().hex[:12]
@@ -1086,7 +1355,7 @@ def api_agent_run():
         _trim_runs_locked()
 
     threading.Thread(
-        target=_run_worker, args=(run_id, agent_id, task, tier, folder), daemon=True
+        target=_run_worker, args=(run_id, agent_id, task, tier, folder, model), daemon=True
     ).start()
     return jsonify({"ok": True, "run_id": run_id, "agent": agent_id, "tier": run["tier"]})
 
@@ -1102,6 +1371,134 @@ def api_agent_runs():
         ]
     runs.sort(key=lambda r: r["started"], reverse=True)
     return jsonify({"runs": runs})
+
+
+_ACTIVITY_WRITE_TOOLS = {
+    "write_note", "write_file", "write", "edit", "multiedit",
+    "notebookedit", "file_change",
+}
+_ACTIVITY_FILE_CAPS = {"vault_read", "vault_write", "code_read", "code_write", "run_checks"}
+
+
+def _activity_provider(tier: str) -> str:
+    tier = str(tier or "").lower()
+    if tier in ("smart", "claude"):
+        return "anthropic"
+    if tier in ("openai", "chatgpt"):
+        return "openai"
+    return "local"
+
+
+def _activity_vault_rel(scope: str, raw_path) -> str | None:
+    """Normalize an agent tool path onto the active vault without escaping it."""
+    text = str(raw_path or "").replace("\\", "/").strip().strip('"\'')
+    if not text:
+        return None
+    root = VAULT_ROOT.resolve()
+    candidate = Path(text).expanduser()
+    if candidate.is_absolute():
+        try:
+            rel = candidate.resolve().relative_to(root)
+        except (OSError, ValueError):
+            return None
+    else:
+        clean_scope = str(scope or "").replace("\\", "/").strip("/")
+        raw_normalized = posixpath.normpath(text)
+        if raw_normalized == ".." or raw_normalized.startswith("../"):
+            return None
+        if clean_scope and (text == clean_scope or text.startswith(clean_scope + "/")):
+            joined = text
+        else:
+            joined = posixpath.join(clean_scope, text)
+        normalized = posixpath.normpath(joined).lstrip("/")
+        if normalized in ("", ".", "..") or normalized.startswith("../"):
+            return None
+        rel = Path(normalized)
+    if not _browser_rel_allowed(rel) and rel.as_posix().lower() != "home.md":
+        return None
+    return rel.as_posix()
+
+
+def _activity_edit_paths(events: list[dict], scope: str) -> list[str]:
+    paths: set[str] = set()
+    for event in events:
+        if event.get("type") != "tool":
+            continue
+        tool = str(event.get("tool") or "").split("__")[-1].lower()
+        if tool not in _ACTIVITY_WRITE_TOOLS:
+            continue
+        tool_input = event.get("input") if isinstance(event.get("input"), dict) else {}
+        raw_paths = [tool_input.get(key) for key in ("path", "file_path", "notebook_path")]
+        for change in tool_input.get("changes") or []:
+            if isinstance(change, dict):
+                raw_paths.append(change.get("path") or change.get("file_path"))
+        for raw in raw_paths:
+            rel = _activity_vault_rel(scope, raw)
+            if rel:
+                paths.add(rel)
+    return sorted(paths, key=str.lower)
+
+
+def _vault_activity() -> dict:
+    """Current folder/file activity for both classic runs and dispatch workers."""
+    activities: list[dict] = []
+    with _RUNS_LOCK:
+        classic = [dict(run, steps=list(run.get("steps") or [])) for run in _RUNS.values()
+                   if run.get("status") == "running"]
+    for run in classic:
+        folder = str(run.get("folder") or "").replace("\\", "/").strip("/")
+        if folder.startswith("ext:") or (not folder and not agent.supports_folder(run.get("agent") or "")):
+            continue
+        activities.append({
+            "id": f"run:{run['id']}",
+            "name": run.get("name") or run.get("agent") or "Agent",
+            "tier": run.get("tier") or "",
+            "provider": _activity_provider(run.get("tier") or ""),
+            "scope": folder,
+            "editing_paths": _activity_edit_paths(run["steps"], folder),
+            "source": "agent",
+        })
+
+    try:
+        active_dispatches = [item for item in dispatches.list_dispatches(limit=200)
+                             if item.get("state") == "running"]
+    except Exception:  # noqa: BLE001 - activity is best-effort UI status
+        active_dispatches = []
+    for summary in active_dispatches:
+        try:
+            obj = dispatches.get_dispatch(summary["id"])
+            events = dispatches.events(summary["id"], 0).get("events") or []
+        except Exception:  # noqa: BLE001 - one damaged dispatch must not hide others
+            continue
+        events_by_worker: dict[str, list[dict]] = {}
+        for event in events:
+            worker_id = str(event.get("worker") or "")
+            if worker_id:
+                events_by_worker.setdefault(worker_id, []).append(event)
+        for worker in obj.get("workers") or []:
+            if worker.get("status") != "running":
+                continue
+            scope = str(worker.get("scope") or obj.get("scope") or "").replace("\\", "/").strip("/")
+            capabilities = set(worker.get("capabilities") or [])
+            if scope.startswith("ext:") or not capabilities.intersection(_ACTIVITY_FILE_CAPS):
+                continue
+            worker_id = str(worker.get("id") or "worker")
+            activities.append({
+                "id": f"dispatch:{obj['id']}:{worker_id}",
+                "name": worker.get("title") or worker_id,
+                "tier": worker.get("tier") or "",
+                "provider": _activity_provider(worker.get("tier") or ""),
+                "scope": scope,
+                "editing_paths": _activity_edit_paths(events_by_worker.get(worker_id, []), scope),
+                "source": "dispatch",
+            })
+    activities.sort(key=lambda item: (item["scope"].lower(), item["name"].lower(), item["id"]))
+    return {"activities": activities, "poll_ms": 1200}
+
+
+@app.route("/api/vault-activity")
+def api_vault_activity():
+    return jsonify(_vault_activity())
 
 
 @app.route("/api/agent/run/<run_id>")
@@ -1123,6 +1520,154 @@ def api_agent_run_status(run_id):
     if snapshot is None:
         return jsonify({"error": "No such run."}), 404
     return jsonify(snapshot)
+
+
+# ── Custom agents + durable single/group dispatches ──────────────────────────
+
+def _dispatch_error(error):
+    status = getattr(error, "status", 400)
+    message = getattr(error, "message", str(error))
+    return jsonify({"error": message}), status
+
+
+@app.route("/api/agent-definitions", methods=["GET", "POST"])
+def api_agent_definitions():
+    if request.method == "GET":
+        return jsonify({"agents": dispatches.list_agents(), "profiles": dispatches.PROFILES})
+    data = request.get_json(silent=True)
+    try:
+        return jsonify(dispatches.save_agent(data)), 201
+    except dispatches.DispatchStoreError as e:
+        return _dispatch_error(e)
+
+
+@app.route("/api/agent-definitions/<agent_id>", methods=["GET", "PUT", "DELETE"])
+def api_agent_definition(agent_id):
+    try:
+        if request.method == "GET":
+            obj = dispatches.get_agent(agent_id)
+            return (jsonify(obj) if obj else (jsonify({"error": "No such custom agent."}), 404))
+        if request.method == "DELETE":
+            return jsonify({"deleted": dispatches.delete_agent(agent_id)})
+        return jsonify(dispatches.save_agent(request.get_json(silent=True), agent_id=agent_id))
+    except dispatches.DispatchStoreError as e:
+        return _dispatch_error(e)
+
+
+@app.route("/api/agent/models")
+def api_agent_models():
+    return jsonify(dispatch_engine.model_catalog())
+
+
+@app.route("/api/dispatches", methods=["GET", "POST"])
+def api_dispatches():
+    if request.method == "GET":
+        return jsonify({"dispatches": dispatches.list_dispatches(request.args.get("limit", 50))})
+    data = request.get_json(silent=True)
+    try:
+        if not isinstance(data, dict):
+            raise dispatches.DispatchStoreError("Dispatch payload must be an object.")
+        scope = str(data.get("scope") or "").replace("\\", "/").strip().strip("/")
+        if scope:
+            agent.resolve_scope(scope)
+        definition = None
+        if str(data.get("kind") or "single").lower() == "single":
+            definition = data.get("definition") if isinstance(data.get("definition"), dict) else None
+            custom_id = str(data.get("agent_id") or "")
+            if definition is None and custom_id:
+                definition = dispatches.get_agent(custom_id)
+                if definition is None:
+                    raise dispatch_engine.DispatchError("No such custom agent.", 404)
+            if definition is None:
+                raise dispatch_engine.DispatchError("A single dispatch needs an agent definition.")
+            if not custom_id:
+                definition = dispatches.validate_agent(definition)
+            definition = {**definition, "scope": definition.get("scope") or scope}
+            if definition.get("scope"):
+                agent.resolve_scope(definition["scope"])
+        obj = dispatches.create_dispatch(data)
+        if obj["kind"] == "single":
+            obj = dispatch_engine.configure_single(obj["id"], definition)
+        return jsonify(dispatch_engine.public_dispatch(obj)), 201
+    except (dispatches.DispatchStoreError, dispatch_engine.DispatchError,
+            agent.AgentError) as e:
+        return _dispatch_error(e)
+
+
+@app.route("/api/dispatches/<dispatch_id>", methods=["GET", "DELETE"])
+def api_dispatch(dispatch_id):
+    try:
+        obj = dispatches.get_dispatch(dispatch_id)
+        if obj is None:
+            return jsonify({"error": "No such dispatch."}), 404
+        if request.method == "DELETE":
+            if obj.get("state") in ("planning", "running"):
+                return jsonify({"error": "Cancel the running dispatch before deleting it."}), 409
+            return jsonify({"deleted": dispatches.delete_dispatch(dispatch_id)})
+        return jsonify(dispatch_engine.public_dispatch(obj))
+    except dispatches.DispatchStoreError as e:
+        return _dispatch_error(e)
+
+
+@app.route("/api/dispatches/<dispatch_id>/messages", methods=["POST"])
+def api_dispatch_message(dispatch_id):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Planning message must be an object."}), 400
+    try:
+        obj = dispatch_engine.submit_planner_message(
+            dispatch_id, data.get("content"), data.get("planner"),
+        )
+        return jsonify(dispatch_engine.public_dispatch(obj)), 202
+    except (dispatches.DispatchStoreError, dispatch_engine.DispatchError) as e:
+        return _dispatch_error(e)
+
+
+@app.route("/api/dispatches/<dispatch_id>/plan", methods=["PUT"])
+def api_dispatch_plan(dispatch_id):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Plan must be an object."}), 400
+    try:
+        return jsonify(dispatch_engine.public_dispatch(
+            dispatch_engine.update_plan(dispatch_id, data)
+        ))
+    except (dispatches.DispatchStoreError, dispatch_engine.DispatchError) as e:
+        return _dispatch_error(e)
+
+
+@app.route("/api/dispatches/<dispatch_id>/<action>", methods=["POST"])
+def api_dispatch_action(dispatch_id, action):
+    actions = {
+        "launch": dispatch_engine.launch,
+        "resume": dispatch_engine.launch,
+        "cancel": dispatch_engine.cancel,
+        "apply": dispatch_engine.apply,
+        "discard": dispatch_engine.discard,
+    }
+    fn = actions.get(action)
+    if fn is None:
+        return jsonify({"error": f"Unknown dispatch action '{action}'."}), 404
+    try:
+        result = fn(dispatch_id)
+        if isinstance(result, dict) and result.get("id") == dispatch_id:
+            result = dispatch_engine.public_dispatch(result)
+        return jsonify(result)
+    except (dispatches.DispatchStoreError, dispatch_engine.DispatchError) as e:
+        return _dispatch_error(e)
+
+
+@app.route("/api/dispatches/<dispatch_id>/events")
+def api_dispatch_events(dispatch_id):
+    try:
+        after = int(request.args.get("after", "0"))
+        if after < 0:
+            raise ValueError
+        return jsonify(dispatches.events(dispatch_id, after))
+    except ValueError:
+        return jsonify({"error": "after must be a non-negative integer."}), 400
+    except dispatches.DispatchStoreError as e:
+        return _dispatch_error(e)
 
 
 # ── Inbox / email (Gmail + Outlook) ──────────────────────────────────────────
@@ -1549,10 +2094,15 @@ def api_chat():
     # fast/smart/openai unlock the write tools in the loop below; the ChatGPT and
     # Claude CLI tiers switch their sandbox/tool policy in router.chat().
     edit_mode = bool(data.get("edit"))
-    # A model override only applies to the local (fast) tier — guard it so an
-    # Ollama model name can never be handed to Anthropic on the smart tier.
+    # A per-request model override is honored for the tiers whose UI exposes a
+    # model picker: the local (fast/Ollama) tier and the two account-CLI tiers
+    # (chatgpt/Codex, claude). Smart/OpenAI stay on the Settings-configured model,
+    # so an Ollama model name can never be handed to Anthropic on the smart tier.
     raw_model = data.get("model")
-    model = raw_model.strip() if (tier == "fast" and isinstance(raw_model, str) and raw_model.strip()) else None
+    model = (raw_model.strip()
+             if (tier in ("fast", "chatgpt", "claude")
+                 and isinstance(raw_model, str) and raw_model.strip())
+             else None)
 
     # Tool-loop tiers run the model over the real vault tools. Fast (local) always
     # uses the read-only loop so it can answer "what does note X say" — not just
@@ -1694,6 +2244,9 @@ def api_chat_stream():
 
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     edit_mode = bool(data.get("edit"))
+    # Per-conversation Claude model override; empty falls back to the plan default.
+    raw_model = data.get("model")
+    model = raw_model.strip() if (isinstance(raw_model, str) and raw_model.strip()) else None
 
     run_id = uuid.uuid4().hex[:12]
     with _CHAT_STREAMS_LOCK:
@@ -1710,7 +2263,7 @@ def api_chat_stream():
 
     threading.Thread(
         target=_chat_stream_worker,
-        args=(run_id, messages, user_system, None, attachments, edit_mode),
+        args=(run_id, messages, user_system, model, attachments, edit_mode),
         daemon=True,
     ).start()
     return jsonify({"ok": True, "run_id": run_id})
