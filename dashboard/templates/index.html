@@ -16,6 +16,9 @@
   /* Boot settings (server-injected, secrets masked) — applied before first
      paint so the theme/accent never flash. Keep this ABOVE the <style>. */
   window.__settings = {{ boot_settings|safe }};
+  /* Personalization catalog (interest buckets, career stages, shipped defaults)
+     the Settings + wizard UIs render their choices from. Refreshed by stgLoad. */
+  window.__catalog = {{ boot_catalog|safe }};
   (function (s) {
     var root = document.documentElement;
     if (s.theme === 'light') root.dataset.theme = 'light';
@@ -601,7 +604,7 @@
   .view-head p { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
 
   /* ── New-project form ── */
-  .panel-wrap { padding: 16px var(--page-pad) 32px; max-width: min(100%, 1120px); }
+  .panel-wrap { padding: 16px var(--page-pad) 32px; }
   .np-form {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: var(--panel-pad);
@@ -687,6 +690,34 @@
   .bento-card:hover .bento-title { transform: translateX(2px); }
   .bento-sub { font-size: 12px; color: var(--muted); line-height: 1.42; }
   .bento-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  /* ── Personalization card ── */
+  .stg-p-hint {
+    display: block; font-size: 11px; font-weight: 400; color: var(--muted);
+    text-transform: none; letter-spacing: 0; margin-top: 3px; line-height: 1.42;
+  }
+  .stg-p-hint code {
+    font-family: var(--mono, ui-monospace, monospace); font-size: 10.5px;
+    background: var(--glass-inset); padding: 1px 4px; border-radius: 4px;
+  }
+  .stg-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .stg-chip {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 5px 11px; border-radius: 999px; font-size: 12px; user-select: none;
+    color: var(--muted); background: var(--glass-inset);
+    border: 1px solid var(--glass-border); transition: all .15s ease;
+  }
+  .stg-chip:hover { color: var(--text); border-color: var(--amber); }
+  .stg-chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .stg-chip.on {
+    color: var(--amber-fg); background: var(--amber-bg);
+    border-color: var(--amber); font-weight: 600;
+  }
+  .stg-p-toggles { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .bento-card label.stg-p-toggle {
+    flex-direction: row; align-items: center; gap: 8px; text-transform: none;
+    letter-spacing: 0; font-weight: 400; color: var(--text); cursor: pointer;
+  }
+  .stg-p-toggle input { width: auto; }
   @media (max-width: 900px) {
     .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .bento-span-2, .bento-span-3 { grid-column: 1 / -1; }
@@ -752,7 +783,6 @@
   .chat-clear:hover { border-color: var(--border-hover); color: var(--text); }
   .chat-clear:disabled { opacity: 0.45; cursor: default; }
   /* Multi-chat sidebar (v1.20) — conversations persist server-side and run in parallel */
-  .chat-wrap { max-width: min(100%, 1180px); }
   .chat-split { display: grid; grid-template-columns: minmax(170px, 22%) minmax(0, 1fr); gap: 12px; }
   .chat-side {
     display: flex; flex-direction: column; gap: 8px;
@@ -935,13 +965,14 @@
   .dispatch-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
   .dispatch-form .full { grid-column:1/-1; }
   .dispatch-form label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:11px; }
-  .dispatch-form input, .dispatch-form textarea, .dispatch-form select,
-  .dispatch-chat textarea, .worker-edit input, .worker-edit textarea, .worker-edit select {
+  .dispatch-form input, .dispatch-form textarea, .dispatch-form select, .dispatch-form .acx-trigger,
+  .dispatch-chat textarea, .worker-edit input, .worker-edit textarea, .worker-edit select, .worker-edit .acx-trigger {
     width:100%; box-sizing:border-box; border:1px solid var(--border); border-radius:7px;
     background:var(--bg); color:var(--text); padding:8px 9px; font:12px inherit; outline:none;
   }
   .dispatch-form textarea { min-height:90px; resize:vertical; }
   .dispatch-form input:focus, .dispatch-form textarea:focus, .dispatch-form select:focus,
+  .dispatch-form .acx-trigger:focus-visible, .worker-edit .acx-trigger:focus-visible,
   .dispatch-chat textarea:focus { border-color:var(--border-hover); }
   .cap-grid { display:flex; flex-wrap:wrap; gap:7px 12px; padding:8px; border:1px solid var(--border); border-radius:8px; }
   .cap-grid label { flex-direction:row; align-items:center; color:var(--text); }
@@ -1187,7 +1218,6 @@
   }
 
   /* ── Inbox view ── */
-  .inbox-wrap { max-width: min(100%, 1040px); }
   .inbox-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   .inbox-bar select, .inbox-bar input, .inbox-bar .acx-trigger {
     border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px;
@@ -1353,7 +1383,7 @@
      Populated + driven by wiz* functions in the shell script below. -->
 <div class="wiz-overlay" id="wizard" role="dialog" aria-modal="true" aria-labelledby="wiz-title">
   <div class="wiz-card">
-    <div class="wiz-steps" id="wiz-steps"><span class="on"></span><span></span><span></span></div>
+    <div class="wiz-steps" id="wiz-steps"><span class="on"></span><span></span><span></span><span></span></div>
     <div id="wiz-content"></div>
   </div>
 </div>
@@ -1566,10 +1596,16 @@
             <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
           </div>
           <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
-          <input class="model-select" id="cli-model" list="cli-model-list" onchange="setCliModel(this.value)"
-                 oninput="setCliModel(this.value)" style="display:none;" autocomplete="off"
-                 placeholder="plan default" title="Model — leave blank for the plan/account default">
-          <datalist id="cli-model-list"></datalist>
+          <select class="model-select" id="cli-model" onchange="setCliModel(this.value)" style="display:none;"
+                  title="Claude model — Plan default uses your plan's model">
+            <option value="">Plan default</option>
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
+          <input class="model-select" id="cli-model-free" onchange="setCliModel(this.value)" oninput="setCliModel(this.value)"
+                 style="display:none;" autocomplete="off" placeholder="account default"
+                 title="Model — leave blank for the account default">
           <span class="tier-status" id="tier-status"></span>
           <button class="pill" id="chat-edit" onclick="toggleEdit()" title="Edit mode — let chat change vault notes">✏️ Edit: off</button>
           <button class="chat-clear" onclick="clearChat()" title="Clear this conversation's messages">Clear</button>
@@ -1683,6 +1719,38 @@
                 <label class="np-row" style="flex-direction:row; align-items:center; gap:8px; text-transform:none; letter-spacing:0; font-weight:400; color:var(--text)">
                   <input id="stg-landing" type="checkbox" style="width:auto"> Show the landing page (scrollytelling hero) on load
                 </label>
+              </div>
+            </div>
+
+            <div class="bento-card bento-span-3">
+              <div class="bento-head">
+                <div class="bento-icon">🎯</div>
+                <div class="bento-heads">
+                  <div class="bento-title">Personalization</div>
+                  <div class="bento-sub">Tailor the overview briefing to you — which jobs get surfaced and which news feeds you read. Saving here also applies Appearance and Defaults.</div>
+                </div>
+              </div>
+              <div class="bento-body">
+                <label>Job interests<span class="stg-p-hint">Only roles matching a selected area are surfaced. None selected = show everything.</span></label>
+                <div class="stg-chips" id="stg-p-interests"></div>
+                <div class="np-row" style="margin-top:12px">
+                  <label>Career stage<select id="stg-p-stage">
+                    <option value="any">Any — no stage preference</option>
+                    <option value="student">Student — internships &amp; co-ops</option>
+                    <option value="early">Early career — new-grad / junior</option>
+                    <option value="mid">Mid-level</option>
+                    <option value="senior">Senior — staff / lead / principal</option>
+                  </select></label>
+                  <label>Preferred locations<input id="stg-p-locations" type="text" placeholder="New York, Remote, Bay Area" autocomplete="off"></label>
+                </div>
+                <label style="margin-top:10px">Job boards <span class="stg-p-hint">Greenhouse board tokens, comma-separated (the slug in a company's careers URL). Empty = the shipped defaults.</span>
+                  <input id="stg-p-boards" type="text" placeholder="anthropic, stripe, databricks" autocomplete="off"></label>
+                <label style="margin-top:10px">News feeds <span class="stg-p-hint">One RSS/Atom feed per line — <code>Name | https://url</code> or just the URL. Empty = the shipped defaults.</span>
+                  <textarea id="stg-p-feeds" rows="4" placeholder="Hacker News | https://hnrss.org/frontpage&#10;https://techcrunch.com/feed/" autocomplete="off" spellcheck="false" style="resize:vertical"></textarea></label>
+                <div class="stg-p-toggles">
+                  <label class="stg-p-toggle"><input id="stg-p-show-jobs" type="checkbox"> Show the Opportunities column</label>
+                  <label class="stg-p-toggle"><input id="stg-p-show-news" type="checkbox"> Show the Tech news column</label>
+                </div>
               </div>
             </div>
 
@@ -2520,7 +2588,7 @@
       if (!col) return;
       const tile = document.createElement('div');
       tile.className = 'tile';
-      tile.onclick = () => openFolder(f.path);
+      tile.onclick = () => dispatchToFolder(f.path);
       tile.innerHTML =
         `<div class="ic">📁</div>
          <h3>${esc(f.name)}</h3>
@@ -2531,6 +2599,15 @@
     // Apply the scrollytelling start state to the freshly-loaded tiles so they
     // begin hidden and assemble on scroll (instead of flashing in fully visible).
     if (window.__scrollyUpdate) window.__scrollyUpdate();
+  }
+
+  // Landing tile → Agents view, Quick dispatch primed with this folder as the
+  // workspace scope. The folder may be a nested path (e.g. research/RAG-pipelines);
+  // dispatchScopeOptions() adds it as a selected option even when it isn't one of
+  // the top-level scope choices, and resolve_scope() accepts any in-vault subpath.
+  function dispatchToFolder(path) {
+    setView('agents');
+    openDispatchStudio('quick', null, path);
   }
 
   function closeModal() {
@@ -2704,11 +2781,11 @@
         <button class="refresh" onclick="refreshNews(this)">↻ Refresh</button>
       </div>
       <div class="news-cols">
-        ${newsCol('Tech news', d.news, 'news')}
+        ${d.show_news === false ? '' : newsCol('Tech news', d.news, 'news')}
         <div class="news-col" id="mail-col"><h3>Important mail</h3><div class="news-item meta">Checking inboxes…</div></div>
-        ${newsCol('Opportunities &middot; for you', d.jobs, 'jobs')}
+        ${d.show_jobs === false ? '' : newsCol('Opportunities &middot; for you', d.jobs, 'jobs')}
       </div>
-      <div class="news-foot">Cached ~30 min. Sources configured in news_sources.py; mail scoring in email_sources.py.</div>
+      <div class="news-foot">Cached ~30 min. Tune the jobs &amp; feeds in <a href="#" onclick="setView('settings');return false;">Settings → Personalization</a>.</div>
     </div>`;
     loadImportantMail();
   }
@@ -2782,6 +2859,7 @@
   function stgLoad() {
     fetch('/api/settings').then(r => r.json()).then(d => {
       window.__settings = d.settings;
+      if (d.catalog) window.__catalog = d.catalog;
       stgFill(d.settings, d.vault_root);
       stgConnections();
     }).catch(() => { stgFill(window.__settings || {}, ''); stgConnections(); });
@@ -2797,7 +2875,68 @@
     document.getElementById('stg-news-ttl').value = s.news_ttl || '';
     document.getElementById('stg-vault-now').textContent =
       vaultRoot ? `Currently serving: ${vaultRoot} — changing the folder takes effect after a restart.` : '';
+    stgFillPersonalization(s.personalization || {});
     stgUpdateFill();
+  }
+
+  /* ── Personalization (Settings) — briefing profile: interests, career stage,
+     locations, boards, feeds, column toggles. Rendered from window.__catalog;
+     saved as one `personalization` object inside the main stgSave payload. */
+  function stgFillPersonalization(p) {
+    const cat = window.__catalog || {};
+    const picked = new Set(p.job_interests || []);
+    const host = document.getElementById('stg-p-interests');
+    if (host) {
+      host.innerHTML = (cat.interests || []).map(b => `
+        <label class="stg-chip ${picked.has(b) ? 'on' : ''}">
+          <input type="checkbox" value="${esc(b)}" ${picked.has(b) ? 'checked' : ''}
+            onchange="this.closest('.stg-chip').classList.toggle('on', this.checked)">
+          ${esc(b)}
+        </label>`).join('');
+    }
+    const stage = document.getElementById('stg-p-stage');
+    if (stage) stage.value = (cat.career_stages || []).includes(p.career_stage) ? p.career_stage : 'any';
+    const locs = document.getElementById('stg-p-locations');
+    if (locs) {
+      locs.value = (p.job_locations || []).join(', ');
+      locs.placeholder = (cat.default_locations || []).slice(0, 4).join(', ') || 'New York, Remote';
+    }
+    const boards = document.getElementById('stg-p-boards');
+    if (boards) {
+      boards.value = (p.job_boards || []).join(', ');
+      boards.placeholder = (cat.default_boards || []).slice(0, 4).join(', ') || 'anthropic, stripe';
+    }
+    const feeds = document.getElementById('stg-p-feeds');
+    if (feeds) {
+      feeds.value = (p.news_feeds || [])
+        .map(f => f.name ? `${f.name} | ${f.url}` : f.url).join('\n');
+    }
+    const sj = document.getElementById('stg-p-show-jobs');
+    if (sj) sj.checked = p.show_jobs !== false;
+    const sn = document.getElementById('stg-p-show-news');
+    if (sn) sn.checked = p.show_news !== false;
+  }
+
+  /* Read the Personalization card back into a full personalization object (the
+     backend expects the whole object; missing sub-keys reset to defaults). */
+  function stgReadPersonalization() {
+    const interests = [...document.querySelectorAll('#stg-p-interests input:checked')].map(c => c.value);
+    const splitList = v => (v || '').split(',').map(s => s.trim()).filter(Boolean);
+    const feeds = (document.getElementById('stg-p-feeds').value || '')
+      .split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+        const bar = line.indexOf('|');
+        if (bar === -1) return { name: '', url: line };
+        return { name: line.slice(0, bar).trim(), url: line.slice(bar + 1).trim() };
+      }).filter(f => f.url);
+    return {
+      job_interests: interests,
+      career_stage: document.getElementById('stg-p-stage').value,
+      job_locations: splitList(document.getElementById('stg-p-locations').value),
+      job_boards: splitList(document.getElementById('stg-p-boards').value),
+      news_feeds: feeds,
+      show_jobs: document.getElementById('stg-p-show-jobs').checked,
+      show_news: document.getElementById('stg-p-show-news').checked,
+    };
   }
 
   /* Version / update status line under the auto-update toggle. Reads the cached
@@ -2858,6 +2997,7 @@
       autoupdate: document.getElementById('stg-autoupdate').checked,
       vault_path: document.getElementById('stg-vault').value.trim(),
       news_ttl: document.getElementById('stg-news-ttl').value.trim(),
+      personalization: stgReadPersonalization(),
     };
     msg.textContent = 'Saving…';
     fetch('/api/settings', {
@@ -2866,10 +3006,13 @@
     }).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
       if (!ok) { msg.textContent = d.error || 'Could not save.'; return; }
       window.__settings = d.settings;
+      if (d.catalog) window.__catalog = d.catalog;
       stgAccentCleared = false;
       stgApplyLive(d.settings);
       stgFill(d.settings, d.vault_root);
       if (typeof updateRenderBanner === 'function') updateRenderBanner();
+      // The briefing profile may have changed — pull a fresh, re-scored briefing.
+      fetch('/api/news').then(r => r.json()).then(renderNews).catch(() => {});
       msg.textContent = 'Saved ✓';
       setTimeout(() => { if (msg.textContent === 'Saved ✓') msg.textContent = ''; }, 1600);
     }).catch(() => { msg.textContent = 'Could not save.'; });
@@ -2899,9 +3042,8 @@
         <div class="np-row">
           <label>Ollama URL<input id="con-ollama-host" type="text" value="${v('ollama_host')}" placeholder="http://localhost:11434" autocomplete="off"></label>
           <label>Model<span class="np-row" style="gap:8px">
-            <input id="con-ollama-model" type="text" list="con-ollama-list" value="${v('ollama_model')}" placeholder="llama3.2" autocomplete="off">
-            <datalist id="con-ollama-list"></datalist>
-            <button type="button" class="pill" onclick="stgOllamaPull()" title="Download this model into Ollama">⬇ Pull model</button>
+            <input id="con-ollama-model" type="text" value="${v('ollama_model')}" placeholder="llama3.2 or ollama.com link" autocomplete="off">
+            <button type="button" class="pill" onclick="stgOllamaPull()" title="Download this model into Ollama — accepts a name or an ollama.com/library/… link">⬇ Pull model</button>
           </span></label>
         </div>
         <div class="np-msg" id="con-pull-msg"></div>
@@ -2994,12 +3136,8 @@
           <div class="np-row">
             <label>Azure application ID<input id="con-ms-id" type="text" value="${v('ms_oauth_client_id')}" placeholder="00000000-0000-…" autocomplete="off"></label>
             <label>Tenant<span class="np-row" style="gap:8px">
-              <input id="con-ms-tenant" type="text" list="con-ms-tenants" value="${v('ms_oauth_tenant')}" placeholder="consumers" autocomplete="off">
-              <datalist id="con-ms-tenants">
-                <option value="consumers">personal Outlook.com</option>
-                <option value="organizations">work/school</option>
-                <option value="common">both</option>
-              </datalist>
+              <input id="con-ms-tenant" type="text" value="${v('ms_oauth_tenant')}" placeholder="consumers · organizations · common" autocomplete="off"
+                     title="consumers = personal Outlook.com · organizations = work/school · common = both (or paste a tenant ID)">
               <button type="button" class="pill" onclick="stgSaveFields({ms_oauth_client_id:'con-ms-id', ms_oauth_tenant:'con-ms-tenant'}, 'con-email-msg')">Save</button>
             </span></label>
           </div>
@@ -3007,7 +3145,6 @@
         </div>
       </form>`;
     stgBackendDots();
-    stgOllamaModels();
     stgListInboxes();
   }
 
@@ -3017,12 +3154,6 @@
     loadRouterStatus().then(st => { if (st) stgRenderBackendDots(st); });
   }
 
-  function stgOllamaModels() {
-    fetch('/api/ollama/models').then(r => r.json()).then(d => {
-      const list = document.getElementById('con-ollama-list');
-      if (list) list.innerHTML = (d.models || []).map(m => `<option value="${esc(m)}">`).join('');
-    }).catch(() => {});
-  }
 
   function stgSaveFields(map, msgId) {
     const payload = {};
@@ -3058,22 +3189,25 @@
 
   let pullPoll = null;
   function stgOllamaPull() {
-    const model = (document.getElementById('con-ollama-model').value
-                   || document.getElementById('con-ollama-model').placeholder || '').trim();
+    const input = document.getElementById('con-ollama-model');
+    const model = (input.value || 'llama3.2').trim();
     const msg = document.getElementById('con-pull-msg');
-    if (!model) { msg.textContent = 'Enter a model name to pull (e.g. llama3.2).'; return; }
+    if (!model) { msg.textContent = 'Enter a model name or ollama.com link to pull.'; return; }
     msg.textContent = `Starting pull of ${model}…`;
     fetch('/api/ollama/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ model }) })
       .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
         if (!ok) { msg.textContent = d.error || 'Could not start the pull.'; return; }
+        // The server normalizes a pasted link to the bare model name — reflect it
+        // back so "Save backend settings" stores the clean name, not the URL.
+        if (d.model) input.value = d.model;
         clearInterval(pullPoll);
         pullPoll = setInterval(() => {
           fetch('/api/ollama/pull/status').then(r => r.json()).then(st => {
             msg.textContent = st.detail || '';
             if (st.state === 'running') return;
             clearInterval(pullPoll);
-            if (st.state === 'done') { stgOllamaModels(); stgBackendDots(); loadRouterStatus(); }
+            if (st.state === 'done') { stgBackendDots(); loadRouterStatus(); }
           }).catch(() => clearInterval(pullPoll));
         }, 1500);
       }).catch(() => { msg.textContent = 'Could not start the pull.'; });
@@ -3604,6 +3738,7 @@
     }
     document.getElementById('model-select').disabled = !ready || !ollamaModelsAvailable;
     document.getElementById('cli-model').disabled = !ready;
+    document.getElementById('cli-model-free').disabled = !ready;
   }
 
   // Reflect the active conversation's tier/model/edit into the shared controls.
@@ -3619,18 +3754,16 @@
     sel.style.display = tier === 'fast' ? '' : 'none';
     if (c && !c.model && defaultModel) c.model = defaultModel;
     if (c && c.model && ollamaModelsAvailable) sel.value = c.model;
-    // The account-CLI tiers (claude, chatgpt) get a free-text model box with
-    // per-tier suggestions; blank means the plan/account default.
-    const cli = document.getElementById('cli-model');
-    const isCli = tier === 'claude' || tier === 'chatgpt';
-    cli.style.display = isCli ? '' : 'none';
-    if (isCli) {
+    // Claude gets a fixed model dropdown (blank = plan default). ChatGPT keeps a
+    // free-text box (blank = account default) since its model set isn't enumerable.
+    const cliSel = document.getElementById('cli-model');
+    const cliFree = document.getElementById('cli-model-free');
+    cliSel.style.display = tier === 'claude' ? '' : 'none';
+    cliFree.style.display = tier === 'chatgpt' ? '' : 'none';
+    if (tier === 'claude' || tier === 'chatgpt') {
       if (c && !c.cliModel) c.cliModel = {};
-      cli.value = (c && c.cliModel && c.cliModel[tier]) || '';
-      cli.placeholder = tier === 'claude' ? 'plan default' : 'account default';
-      const opts = tier === 'claude' ? ['opus', 'sonnet', 'haiku'] : [];
-      document.getElementById('cli-model-list').innerHTML =
-        opts.map(o => `<option value="${o}">`).join('');
+      const stored = (c && c.cliModel && c.cliModel[tier]) || '';
+      if (tier === 'claude') cliSel.value = stored; else cliFree.value = stored;
     }
     renderTierStatus();
     renderEditToggle();
@@ -4280,7 +4413,12 @@
   function dispatchScopeOptions(selected) {
     const rows = [['', 'Whole vault'], ...agentFolders.map(x => [x, '📁 ' + x]),
                   ...agentExternals.map(x => ['ext:' + x, '🔗 ' + x])];
-    return rows.map(([v,l]) => `<option value="${esc(v)}" ${v === (selected || '') ? 'selected' : ''}>${esc(l)}</option>`).join('');
+    const sel = selected || '';
+    // A nested folder (from a landing tile) or a custom agent's saved subfolder
+    // scope won't be in the top-level list — surface it so it stays selectable
+    // instead of silently falling back to "Whole vault".
+    if (sel && !rows.some(([v]) => v === sel)) rows.push([sel, '📁 ' + sel]);
+    return rows.map(([v,l]) => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(l)}</option>`).join('');
   }
 
   function dispatchTierOptions(selected) {
@@ -4304,12 +4442,13 @@
     el.hidden = true; el.innerHTML = '';
   }
 
-  function openDispatchStudio(mode, presetId) {
+  function openDispatchStudio(mode, presetId, scopeOverride) {
     const el = document.getElementById('dispatch-studio');
     el.hidden = false;
     if (mode === 'agent') return renderAgentEditor(presetId);
     const group = mode === 'group';
     const selectedAgent = customAgents.find(a => a.id === presetId);
+    const scope = scopeOverride || (selectedAgent && selectedAgent.scope);
     el.innerHTML = `
       <div class="dispatch-title"><h3>${group ? 'Plan a group dispatch' : 'Quick dispatch'}</h3><button class="dispatch-secondary" onclick="closeDispatchStudio()">Close</button></div>
       <div class="dispatch-form">
@@ -4318,7 +4457,7 @@
           <option value="">Choose speed or depth…</option><option value="fast">Fast · maximum parallelism</option>
           <option value="balanced">Balanced · mixed model sizes</option><option value="best">Best · stronger models + reviewer</option>
         </select></label>
-        <label>Workspace scope<select id="dispatch-scope">${dispatchScopeOptions(selectedAgent && selectedAgent.scope)}</select></label>
+        <label>Workspace scope<select id="dispatch-scope">${dispatchScopeOptions(scope)}</select></label>
         ${group ? `
           <label>Planner tier<select id="dispatch-tier"><option value="">Recommend automatically</option>${dispatchTierOptions('')}</select></label>
           <label>Planner model<input id="dispatch-model" placeholder="recommended default"></label>` : `
@@ -4587,7 +4726,6 @@
       };
     });
     document.getElementById('agent-grid').innerHTML =
-      '<datalist id="agent-model-list"><option value="opus"><option value="sonnet"><option value="haiku"></datalist>' +
       agentList.map(a => `
       <div class="agent-card" id="card-${esc(a.id)}">
         <div class="agent-top">
@@ -4600,9 +4738,13 @@
             <option value="openai" ${a.tier === 'openai' ? 'selected' : ''}>🤖 gpt · API</option>
             <option value="claude" ${a.tier === 'claude' ? 'selected' : ''}>✨ claude · plan</option>
           </select>
-          <input id="model-${esc(a.id)}" class="agent-tier-select" list="agent-model-list" autocomplete="off"
-                 placeholder="plan default" title="Claude model — leave blank for the plan default"
-                 style="display:${a.tier === 'claude' ? '' : 'none'}; max-width:140px;">
+          <select id="model-${esc(a.id)}" class="agent-tier-select" title="Claude model — Plan default uses the plan's model"
+                  style="display:${a.tier === 'claude' ? '' : 'none'}; max-width:140px;">
+            <option value="">plan default</option>
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
         </div>
         <div class="agent-desc">${esc(a.desc)}</div>
         <div class="agent-selects">
@@ -4932,8 +5074,8 @@
     document.getElementById('wizard').classList.add('show');
   }
 
-  function wizSteps(active) {   // active: 0-based index of the lit step (of 3)
-    return [0, 1, 2].map(i => `<span class="${i <= active ? 'on' : ''}"></span>`).join('');
+  function wizSteps(active) {   // active: 0-based index of the lit step (of 4)
+    return [0, 1, 2, 3].map(i => `<span class="${i <= active ? 'on' : ''}"></span>`).join('');
   }
 
   /* ── Step ① — Connect an AI ── */
@@ -4975,7 +5117,7 @@
       <div class="wiz-foot">
         <button type="button" class="wiz-skip" onclick="wizSkip()">Skip for now</button>
         <div class="wiz-foot-right">
-          <button type="button" class="np-submit" id="wiz-ai-next" onclick="wizGoVault()" disabled>Continue</button>
+          <button type="button" class="np-submit" id="wiz-ai-next" onclick="wizRenderPersonalize()" disabled>Continue</button>
         </div>
       </div>`;
     wizAIStatus(false);
@@ -4999,7 +5141,7 @@
         if (next) next.disabled = !anyUp;
         const msg = document.getElementById('wiz-msg');
         if (msg && announce) msg.textContent = anyUp
-          ? 'AI connected ✓ — Continue to choose your vault.'
+          ? 'AI connected ✓ — Continue to personalize Regalia.'
           : 'No AI detected yet — paste a key or install a backend, then Recheck.';
       }).catch(() => {});
     });
@@ -5025,11 +5167,89 @@
       .catch(() => { msg.textContent = 'Could not save.'; });
   }
 
-  /* ── Step ② — Choose a vault ── */
-  function wizGoVault() { wizRenderChoice(); }
-
-  function wizRenderChoice() {
+  /* ── Step ② — Personalize ── */
+  function wizRenderPersonalize() {
     document.getElementById('wiz-steps').innerHTML = wizSteps(1);
+    const cat = window.__catalog || {};
+    const p = (window.__settings || {}).personalization || {};
+    const picked = new Set(p.job_interests || []);
+    const stage = (cat.career_stages || []).includes(p.career_stage) ? p.career_stage : 'any';
+    const curTheme = (window.__settings || {}).theme === 'light' ? 'light' : 'dark';
+    document.getElementById('wiz-content').innerHTML = `
+      <div class="wiz-h" id="wiz-title">Make it yours</div>
+      <p class="wiz-p">These tune the overview briefing and the look — pick what fits, or skip
+        and set it later under <b>Settings → Personalization</b>. Nothing here is required.</p>
+      <div class="wiz-body">
+        <div class="wiz-setup">
+          <div class="ws-row" style="margin:0"><b style="color:var(--text)">What kind of work interests you?</b></div>
+          <div class="stg-chips" id="wiz-p-interests">
+            ${(cat.interests || []).map(b => `
+              <label class="stg-chip ${picked.has(b) ? 'on' : ''}">
+                <input type="checkbox" value="${esc(b)}" ${picked.has(b) ? 'checked' : ''}
+                  onchange="this.closest('.stg-chip').classList.toggle('on', this.checked)">
+                ${esc(b)}</label>`).join('')}
+          </div>
+        </div>
+        <div class="wiz-setup">
+          <div class="ws-row" style="gap:12px; flex-wrap:wrap">
+            <label style="flex:1; min-width:150px">Career stage<select id="wiz-p-stage">
+              <option value="any">Any</option>
+              <option value="student">Student — internships</option>
+              <option value="early">Early career</option>
+              <option value="mid">Mid-level</option>
+              <option value="senior">Senior</option>
+            </select></label>
+            <label style="flex:1; min-width:150px">Theme<select id="wiz-p-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select></label>
+          </div>
+        </div>
+        <div class="wiz-msg" id="wiz-msg"></div>
+      </div>
+      <div class="wiz-foot">
+        <button type="button" class="wiz-skip" onclick="wizRenderAI()">← Back</button>
+        <div class="wiz-foot-right">
+          <button type="button" class="np-submit" onclick="wizSavePersonalize(this)">Continue</button>
+        </div>
+      </div>`;
+    document.getElementById('wiz-p-stage').value = stage;
+    document.getElementById('wiz-p-theme').value = curTheme;
+  }
+
+  function wizSavePersonalize(btn) {
+    const msg = document.getElementById('wiz-msg');
+    const interests = [...document.querySelectorAll('#wiz-p-interests input:checked')].map(c => c.value);
+    const theme = document.getElementById('wiz-p-theme').value;
+    const cur = (window.__settings || {}).personalization || {};
+    const payload = {
+      theme,
+      personalization: {
+        ...cur,
+        job_interests: interests,
+        career_stage: document.getElementById('wiz-p-stage').value,
+      },
+    };
+    btn.disabled = true; msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (ok) {
+          window.__settings = d.settings;
+          if (d.catalog) window.__catalog = d.catalog;
+          if (typeof stgApplyLive === 'function') stgApplyLive(d.settings);
+        }
+        wizRenderChoice();   // move on regardless — personalization is optional
+      })
+      .catch(() => { wizRenderChoice(); })
+      .finally(() => { btn.disabled = false; });
+  }
+
+  /* ── Step ③ — Choose a vault ── */
+  function wizRenderChoice() {
+    document.getElementById('wiz-steps').innerHTML = wizSteps(2);
     const newMode = wiz.mode === 'new';
     document.getElementById('wiz-content').innerHTML = `
       <div class="wiz-h" id="wiz-title">Welcome to Regalia</div>
@@ -5062,7 +5282,7 @@
         </div>
       </div>
       <div class="wiz-foot">
-        <button type="button" class="wiz-skip" onclick="wizRenderAI()">← Back</button>
+        <button type="button" class="wiz-skip" onclick="wizRenderPersonalize()">← Back</button>
         <div class="wiz-foot-right">
           <button type="button" class="np-submit" onclick="wizConfirm(this)">Continue</button>
         </div>
@@ -5123,7 +5343,7 @@
   }
 
   function wizRenderDone(vaultPath, restart) {
-    document.getElementById('wiz-steps').innerHTML = wizSteps(2);
+    document.getElementById('wiz-steps').innerHTML = wizSteps(3);
     document.getElementById('wiz-content').innerHTML = `
       <div class="wiz-h">You're all set</div>
       <p class="wiz-p">Regalia will work in:<br><b style="color:var(--text);word-break:break-all">${esc(vaultPath)}</b></p>

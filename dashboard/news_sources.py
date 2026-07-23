@@ -31,12 +31,18 @@ LEVER_BOARDS = []  # e.g. "ramp", "brex" — value is the lever.co/<slug> token
 # can't be pulled here without a custom adapter. The scorer still lights up the
 # "Quant" tag whenever a matching role appears from any board above.
 
-# ── Profile-tailored opportunity matching — EDIT THESE TO MATCH YOUR PROFILE.
-# The /api/news jobs section ranks live postings against this profile: roles
-# matching an interest bucket score points, internships / new-grad roles get a
-# big boost, senior roles are pushed down, and clearly-irrelevant roles drop out.
-# Interest buckets — bucket label -> keywords. Short tokens (ml, ai) are matched
-# word-bounded (see _score_job in app.py) so they don't hit inside other words.
+# ── Profile-tailored opportunity matching.
+# The /api/news jobs section ranks live postings against the user's profile: roles
+# matching an interest bucket score points, roles matching the user's career stage
+# are boosted, off-stage roles are pushed down, and clearly-irrelevant roles drop
+# out. Everything below is the SHIPPED DEFAULT / CATALOG — each user overrides it
+# from Settings → Personalization (stored in config, resolved in app.py). A fresh
+# install (no personalization saved) uses these lists as-is.
+#
+# INTEREST_KEYWORDS is the full CATALOG of interest buckets the user picks from;
+# when the user selects a subset, only those buckets score. bucket label ->
+# keywords. Short tokens (ml, ai) are matched word-bounded (see _score_job in
+# app.py) so they don't hit inside other words.
 INTEREST_KEYWORDS = {
     "Quant": [
         "quant", "quantitative", "trading", "trader", "market making",
@@ -56,6 +62,26 @@ INTEREST_KEYWORDS = {
         "software engineer", "software engineering", "swe", "backend",
         "full stack", "full-stack", "frontend", "platform engineer",
         "developer", "infrastructure engineer",
+    ],
+    "Data": [
+        "data engineer", "data scientist", "data science", "analytics",
+        "data analyst", "etl", "data platform", "business intelligence",
+    ],
+    "Security": [
+        "security engineer", "security", "cybersecurity", "appsec",
+        "infosec", "penetration", "cryptography", "threat", "vulnerability",
+    ],
+    "DevOps/Infra": [
+        "devops", "site reliability", "sre", "cloud engineer", "kubernetes",
+        "platform engineer", "infrastructure", "systems engineer",
+    ],
+    "Product": [
+        "product manager", "product management", "program manager",
+        "technical product", "product owner",
+    ],
+    "Design": [
+        "designer", "product design", "ux", "ui", "user experience",
+        "user research", "design engineer",
     ],
 }
 

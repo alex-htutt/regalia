@@ -165,6 +165,19 @@ def load_tasks() -> list[dict]:
     return tasks
 
 
+def _personalization_catalog() -> dict:
+    """Choices the Personalization UI renders: the interest-bucket catalog, the
+    career-stage options, and the shipped defaults (shown as hints/placeholders
+    when the user hasn't overridden them)."""
+    return {
+        "interests": list(news_sources.INTEREST_KEYWORDS.keys()),
+        "career_stages": list(config.CAREER_STAGES),
+        "default_boards": list(news_sources.GREENHOUSE_BOARDS),
+        "default_locations": list(news_sources.PREFERRED_LOCATIONS),
+        "default_feeds": [{"name": n, "url": u} for n, u in news_sources.NEWS_FEEDS],
+    }
+
+
 @app.route("/")
 def index():
     # Boot settings ride into the page inline so the theme applies before first
@@ -172,6 +185,7 @@ def index():
     return render_template(
         "index.html",
         boot_settings=json.dumps(config.mask(config.load())),
+        boot_catalog=json.dumps(_personalization_catalog()),
     )
 
 
@@ -188,8 +202,10 @@ def api_settings():
             cfg = config.update(data if isinstance(data, dict) else None)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        return jsonify({"settings": config.mask(cfg), "vault_root": str(VAULT_ROOT)})
-    return jsonify({"settings": config.mask(config.load()), "vault_root": str(VAULT_ROOT)})
+        return jsonify({"settings": config.mask(cfg), "vault_root": str(VAULT_ROOT),
+                        "catalog": _personalization_catalog()})
+    return jsonify({"settings": config.mask(config.load()), "vault_root": str(VAULT_ROOT),
+                    "catalog": _personalization_catalog()})
 
 
 @app.route("/api/update")
@@ -792,38 +808,85 @@ def _fetch_rss_group(feeds, limit) -> tuple[list[dict], list[str]]:
     return items, errors
 
 
-def _score_job(title: str, location: str) -> tuple[int, list[str]]:
-    """Rank one posting against the user's profile (news_sources config).
+def _resolve_profile() -> dict:
+    """The effective jobs/news profile: the user's saved personalization
+    (config) overlaid on the shipped news_sources defaults. Every field is
+    concrete here so the scorer/fetchers never re-read config mid-pass.
 
-    Returns (score, tags). Interest-bucket hits add points and a tag;
-    internship/new-grad roles get a big boost (early-career profile); senior
-    roles are pushed down; a preferred location is a soft bonus. Score <= 0 means
-    "not for you" and the posting is dropped by the caller. Title matching is
-    word-bounded so short tokens (ml, ai) don't fire inside other words.
+    Returns {interests: {bucket: [kw]}, locations: [str], stage: str,
+    boards: [token], feeds: [(name,url)], show_jobs: bool, show_news: bool}.
+    """
+    p = config.personalization()
+    picked = [b for b in (p.get("job_interests") or []) if b in news_sources.INTEREST_KEYWORDS]
+    interests = ({b: news_sources.INTEREST_KEYWORDS[b] for b in picked}
+                 if picked else dict(news_sources.INTEREST_KEYWORDS))
+    locations = [s.lower() for s in (p.get("job_locations") or news_sources.PREFERRED_LOCATIONS)]
+    boards = list(p.get("job_boards") or news_sources.GREENHOUSE_BOARDS)
+    feeds = ([(f.get("name") or "", f.get("url") or "") for f in p.get("news_feeds") if f.get("url")]
+             if p.get("news_feeds") else list(news_sources.NEWS_FEEDS))
+    return {
+        "interests": interests,
+        "locations": locations,
+        "stage": p.get("career_stage") or "any",
+        "boards": boards,
+        "feeds": feeds,
+        "show_jobs": p.get("show_jobs", True),
+        "show_news": p.get("show_news", True),
+    }
+
+
+def _score_job(title: str, location: str, profile: dict) -> tuple[int, list[str]]:
+    """Rank one posting against the resolved user profile.
+
+    Returns (score, tags). Interest-bucket hits add points and a tag; the user's
+    career stage boosts on-stage roles and penalizes off-stage ones (a student
+    wants internships, a senior wants senior roles); a preferred location is a
+    soft bonus. Score <= 0 means "not for you" and the posting is dropped by the
+    caller. Title matching is word-bounded so short tokens (ml, ai) don't fire
+    inside other words.
     """
     t = (title or "").lower()
     loc = (location or "").lower()
     tags: list[str] = []
     score = 0
-    for bucket, kws in news_sources.INTEREST_KEYWORDS.items():
+    for bucket, kws in profile["interests"].items():
         if any(re.search(rf"\b{re.escape(kw)}\b", t) for kw in kws):
             tags.append(bucket)
             score += 3
-    if any(sig in t for sig in news_sources.EARLY_CAREER_SIGNALS):
-        score += 5
-        tags.insert(0, "Intern" if "intern" in t else "Early career")
-    if any(sig in t for sig in news_sources.SENIOR_SIGNALS):
-        score -= 4
-    if any(p in loc for p in news_sources.PREFERRED_LOCATIONS):
+    is_early = any(sig in t for sig in news_sources.EARLY_CAREER_SIGNALS)
+    is_senior = any(sig in t for sig in news_sources.SENIOR_SIGNALS)
+    stage = profile["stage"]
+    if stage in ("student", "early"):
+        if is_early:
+            score += 5
+            tags.insert(0, "Intern" if "intern" in t else "Early career")
+        if is_senior:
+            score -= 4
+    elif stage == "senior":
+        if is_senior:
+            score += 4
+            tags.insert(0, "Senior")
+        if is_early:
+            score -= 4
+    elif stage == "mid":
+        if is_senior:
+            score -= 1
+        if is_early:
+            score -= 1
+    else:  # "any" — light early-career nudge, no penalties
+        if is_early:
+            score += 2
+            tags.insert(0, "Intern" if "intern" in t else "Early career")
+    if any(p in loc for p in profile["locations"]):
         score += 1
     return score, tags
 
 
-def _fetch_jobs() -> tuple[list[dict], list[str]]:
-    """Pull a wide pool of postings, score each against the user's profile, drop
+def _fetch_jobs(profile: dict) -> tuple[list[dict], list[str]]:
+    """Pull a wide pool of postings, score each against the resolved profile, drop
     the irrelevant ones, and return the top matches (best fit first)."""
     pool, errors = [], []
-    for board in news_sources.GREENHOUSE_BOARDS:
+    for board in profile["boards"]:
         try:
             raw = _http_get(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs")
             for job in json.loads(raw).get("jobs", [])[: news_sources.MAX_PER_BOARD]:
@@ -850,7 +913,7 @@ def _fetch_jobs() -> tuple[list[dict], list[str]]:
             errors.append(f"lever/{board}: {type(e).__name__}")
 
     for job in pool:
-        job["score"], job["tags"] = _score_job(job["title"], job["location"])
+        job["score"], job["tags"] = _score_job(job["title"], job["location"], profile)
     matches = [j for j in pool if j["score"] > 0]
     # Number each posting within its own board (0,1,2,…) so we can break score
     # ties by round-robining across companies — keeps one board (e.g. Anthropic's
@@ -870,27 +933,43 @@ def _fetch_jobs() -> tuple[list[dict], list[str]]:
 def _build_briefing() -> dict:
     # (v1.23) The old "social" section (Bluesky + blog feeds) was replaced by the
     # Important-mail panel, which has its own endpoint: GET /api/mail/important.
-    news, e1 = _fetch_rss_group(news_sources.NEWS_FEEDS, news_sources.MAX_PER_NEWS_FEED)
-    jobs, e2 = _fetch_jobs()
+    # (v1.33) Sources + scoring come from the resolved personalization profile.
+    profile = _resolve_profile()
+    news, e1 = (_fetch_rss_group(profile["feeds"], news_sources.MAX_PER_NEWS_FEED)
+                if profile["show_news"] else ([], []))
+    jobs, e2 = _fetch_jobs(profile) if profile["show_jobs"] else ([], [])
     return {
         "available": True,
         "fetched": datetime.now().astimezone().isoformat(timespec="seconds"),
         "news": news,
         "jobs": jobs,
+        "show_news": profile["show_news"],
+        "show_jobs": profile["show_jobs"],
         "errors": e1 + e2,
     }
 
 
+def _profile_sig() -> str:
+    """A stable fingerprint of the personalization that affects the briefing, so
+    the TTL cache refreshes immediately when the user edits their profile."""
+    return json.dumps(config.personalization(), sort_keys=True, ensure_ascii=False)
+
+
 def load_briefing(force: bool = False) -> dict:
-    """Return the cached briefing, refreshing if older than NEWS_TTL (or forced)."""
+    """Return the cached briefing, refreshing if older than NEWS_TTL, if the
+    personalization profile changed, or if forced."""
+    sig = _profile_sig()
     with _NEWS_LOCK:
-        fresh = _NEWS_CACHE["data"] is not None and (time.time() - _NEWS_CACHE["ts"]) < _news_ttl()
+        fresh = (_NEWS_CACHE["data"] is not None
+                 and (time.time() - _NEWS_CACHE["ts"]) < _news_ttl()
+                 and _NEWS_CACHE.get("sig") == sig)
         if fresh and not force:
             return _NEWS_CACHE["data"]
     data = _build_briefing()  # network I/O outside the lock
     with _NEWS_LOCK:
         _NEWS_CACHE["data"] = data
         _NEWS_CACHE["ts"] = time.time()
+        _NEWS_CACHE["sig"] = sig
     return data
 
 
@@ -1774,9 +1853,11 @@ def api_ollama_pull():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Model payload must be an object."}), 400
-    model = str(data.get("model") or "").strip()
+    # Accept a bare name or a pasted ollama.com model link (normalized to the name).
+    model = config.normalize_ollama_model(data.get("model"))
     if not _MODEL_NAME_RE.match(model):
-        return jsonify({"error": "model must be a name like 'llama3.2' or 'qwen3:8b'"}), 400
+        return jsonify({"error": "model must be a name like 'llama3.2' or 'qwen3:8b', "
+                                 "or an ollama.com model link"}), 400
     with _PULL_LOCK:
         if _PULL_STATE["state"] == "running":
             return jsonify({"error": f"Already pulling {_PULL_STATE['model']} — one at a time."}), 409

@@ -16,15 +16,35 @@ Design notes:
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
 import threading
+import urllib.parse
 from pathlib import Path
 
 import paths
 
 CONFIG_PATH = paths.data_dir() / ".config.json"
+
+# ── Personalization (v1.33) ──────────────────────────────────────────────────
+# The overview briefing (job openings + tech news) is tailored to the individual
+# user, not baked into the shipped news_sources.py profile. This dict is the
+# per-user overlay; every field empty/[] means "fall through to the shipped
+# defaults in news_sources.py" so a fresh install shows a generic briefing, not
+# the creator's. The UI always POSTs the WHOLE object (missing sub-keys reset to
+# these defaults) — see update() / personalization().
+CAREER_STAGES = ("student", "early", "mid", "senior", "any")
+DEFAULT_PERSONALIZATION: dict = {
+    "job_interests": [],   # bucket labels from news_sources.INTEREST_KEYWORDS; [] = all
+    "career_stage": "any",  # one of CAREER_STAGES — biases early-career vs senior roles
+    "job_locations": [],   # preferred location strings; [] = shipped defaults
+    "job_boards": [],      # Greenhouse board tokens; [] = shipped defaults
+    "news_feeds": [],      # [{"name","url"}] RSS/Atom feeds; [] = shipped defaults
+    "show_jobs": True,     # render the "Opportunities" briefing column
+    "show_news": True,     # render the "Tech news" briefing column
+}
 
 # Every key the store accepts, with its default. Unknown keys are rejected so a
 # typo'd POST can't silently plant garbage. For the backend/email knobs, "" means
@@ -54,6 +74,7 @@ DEFAULTS: dict = {
     "claude_cli_model": "",    # empty = plan default
     "claude_cli_timeout": "",  # seconds (stored as string; "" = default)
     "news_ttl": "",            # briefing cache seconds ("" = default)
+    "personalization": copy.deepcopy(DEFAULT_PERSONALIZATION),  # overview briefing profile
     # ── email OAuth client (app identity, not per-user tokens) ──
     "ms_oauth_client_id": "",     # Azure public-client app id (not a secret)
     "ms_oauth_tenant": "",        # "" = consumers
@@ -72,6 +93,10 @@ _BOOL_KEYS = ("landing_enabled", "autoupdate", "onboarded")
 # Store keys that must parse as a positive integer when non-empty.
 _INT_KEYS = ("codex_cli_timeout", "claude_cli_timeout", "news_ttl")
 
+# Store keys whose value is a structured dict, not a string/bool. Validated by a
+# dedicated cleaner and skipped by the generic string-strip pass in update().
+_DICT_KEYS = ("personalization",)
+
 _lock = threading.Lock()
 
 
@@ -79,6 +104,10 @@ def load() -> dict:
     """Defaults overlaid with whatever the file holds. Never raises on a
     missing/corrupt file — settings degrade to defaults, not a 500."""
     cfg = dict(DEFAULTS)
+    # Deep-copy the mutable dict defaults so a caller can never mutate the shared
+    # DEFAULTS template through a returned config.
+    for k in _DICT_KEYS:
+        cfg[k] = copy.deepcopy(DEFAULTS[k])
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -106,6 +135,89 @@ def value(key: str, env_var: str, default: str = "") -> str:
     return os.environ.get(env_var) or str(load().get(key) or "") or default
 
 
+def personalization() -> dict:
+    """The effective overview-briefing profile: DEFAULT_PERSONALIZATION overlaid
+    with whatever the user has saved. Always a fresh, fully-populated dict (every
+    sub-key present) that callers may freely read/mutate."""
+    merged = copy.deepcopy(DEFAULT_PERSONALIZATION)
+    stored = load().get("personalization")
+    if isinstance(stored, dict):
+        for k, v in stored.items():
+            if k in merged:
+                merged[k] = v
+    return merged
+
+
+def _clean_str_list(value, field: str) -> list:
+    """Normalize a submitted list into a de-duplicated list of trimmed strings."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list")
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{field} entries must be strings")
+        s = item.strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _clean_feeds(value) -> list:
+    """Normalize news_feeds into [{"name","url"}] with http(s) URLs; a bare URL
+    string is accepted and its name derived later from the feed itself."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("news_feeds must be a list")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, str):
+            name, url = "", item.strip()
+        elif isinstance(item, dict):
+            name, url = str(item.get("name") or "").strip(), str(item.get("url") or "").strip()
+        else:
+            raise ValueError("news_feeds entries must be objects or URL strings")
+        if not url:
+            continue
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("news feed URLs must be an http(s):// address")
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append({"name": name, "url": url})
+    return out
+
+
+def _clean_personalization(raw) -> dict:
+    """Validate a personalization payload and merge it over the defaults. Missing
+    sub-keys reset to default (the UI posts the whole object), so this is a
+    replace, not a partial merge onto the stored value."""
+    if not isinstance(raw, dict):
+        raise ValueError("personalization must be an object")
+    for k in raw:
+        if k not in DEFAULT_PERSONALIZATION:
+            raise ValueError(f"Unknown personalization field: {k!r}")
+    out = copy.deepcopy(DEFAULT_PERSONALIZATION)
+    if "career_stage" in raw:
+        stage = str(raw["career_stage"] or "any").strip().lower()
+        if stage not in CAREER_STAGES:
+            raise ValueError(f"career_stage must be one of {CAREER_STAGES}")
+        out["career_stage"] = stage
+    for lk in ("job_interests", "job_locations", "job_boards"):
+        if lk in raw:
+            out[lk] = _clean_str_list(raw[lk], lk)
+    if "news_feeds" in raw:
+        out["news_feeds"] = _clean_feeds(raw["news_feeds"])
+    for bk in ("show_jobs", "show_news"):
+        if bk in raw:
+            out[bk] = bool(raw[bk])
+    return out
+
+
 def update(changes: dict) -> dict:
     """Validate + merge a partial dict into the store; returns the new config.
     Raises ValueError with a UI-safe message on a bad key/value."""
@@ -121,8 +233,10 @@ def update(changes: dict) -> dict:
     for bk in _BOOL_KEYS:
         if bk in changes:
             changes[bk] = bool(changes[bk])
+    if "personalization" in changes:
+        changes["personalization"] = _clean_personalization(changes["personalization"])
     for k in changes:
-        if k in _BOOL_KEYS:
+        if k in _BOOL_KEYS or k in _DICT_KEYS:
             continue
         if not isinstance(changes[k], str):
             raise ValueError(f"{k} must be a string")
@@ -138,6 +252,10 @@ def update(changes: dict) -> dict:
     for k in ("ollama_host", "openai_base"):
         if changes.get(k) and not changes[k].lower().startswith(("http://", "https://")):
             raise ValueError(f"{k} must be an http(s):// URL (or empty)")
+    # A pasted ollama.com model link is normalized to the bare pullable name so
+    # the router's /api/chat gets a valid model, not a URL.
+    if changes.get("ollama_model"):
+        changes["ollama_model"] = normalize_ollama_model(changes["ollama_model"])
     if changes.get("gmail_oauth_client_json"):
         try:
             parsed = json.loads(changes["gmail_oauth_client_json"])
@@ -173,6 +291,32 @@ def mask(cfg: dict) -> dict:
     for k, v in cfg.items():
         out[k] = {"set": bool(v)} if k in SECRET_KEYS else v
     return out
+
+
+def normalize_ollama_model(raw) -> str:
+    """Accept either a bare Ollama model name or an ollama.com model link and
+    return the name Ollama's `/api/pull` (and `/api/chat`) expects.
+
+    Pasting `https://ollama.com/library/llama3.2:1b` and typing the bare
+    `llama3.2:1b` both resolve to `llama3.2:1b`. The official-library prefix is
+    dropped (those pull by bare name); community/namespaced models
+    (`ollama.com/<user>/<model>`) keep their `<user>/<model>` namespace. Query
+    strings and fragments (`?…`, `#…`) are discarded. A value that isn't a link
+    is returned trimmed but otherwise untouched — this never rejects, so callers
+    still run it through their own name validation.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if "://" in s or s.lower().startswith("ollama.com/"):
+        # Prepend a scheme for the bare-host form so urlparse fills in .path.
+        parsed = urllib.parse.urlparse(s if "://" in s else "https://" + s)
+        path = parsed.path.strip("/")
+        if path:
+            s = path
+    if s.lower().startswith("library/"):
+        s = s[len("library/"):]
+    return s.strip("/")
 
 
 def _looks_like_hex(s: str) -> bool:

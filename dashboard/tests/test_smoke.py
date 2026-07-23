@@ -1583,6 +1583,66 @@ class UiConfigTests(unittest.TestCase):
         self.assertNotIn("connect_email.py", html)
         self.assertNotIn("GMAIL_OAUTH_CLIENT", html)
 
+    # ── Personalization (v1.33) ──
+    def test_personalization_defaults_and_catalog(self):
+        d = self.client.get("/api/settings").get_json()
+        p = d["settings"]["personalization"]
+        self.assertEqual(p["job_interests"], [])
+        self.assertEqual(p["career_stage"], "any")
+        self.assertTrue(p["show_jobs"])
+        # The catalog rides along so the UI can render the choices.
+        self.assertIn("interests", d["catalog"])
+        self.assertIn("AI/ML", d["catalog"]["interests"])
+        self.assertEqual(list(self._config.CAREER_STAGES), d["catalog"]["career_stages"])
+
+    def test_personalization_round_trips(self):
+        payload = {"personalization": {
+            "job_interests": ["Quant", "AI/ML", "bogus-bucket"],
+            "career_stage": "student",
+            "job_locations": ["New York", " Remote "],
+            "job_boards": ["anthropic", "ramp"],
+            "news_feeds": ["https://example.com/rss",
+                           {"name": "Blog", "url": "https://b.com/atom"}],
+            "show_jobs": True, "show_news": False,
+        }}
+        r = self.client.post("/api/settings", json=payload)
+        self.assertEqual(r.status_code, 200)
+        p = self.client.get("/api/settings").get_json()["settings"]["personalization"]
+        self.assertEqual(p["job_interests"], ["Quant", "AI/ML", "bogus-bucket"])
+        self.assertEqual(p["career_stage"], "student")
+        self.assertEqual(p["job_locations"], ["New York", "Remote"])  # trimmed
+        self.assertEqual(p["news_feeds"][0], {"name": "", "url": "https://example.com/rss"})
+        self.assertEqual(p["news_feeds"][1], {"name": "Blog", "url": "https://b.com/atom"})
+        self.assertFalse(p["show_news"])
+
+    def test_personalization_rejects_bad_values(self):
+        self.assertEqual(self.client.post(
+            "/api/settings", json={"personalization": {"career_stage": "wizard"}}).status_code, 400)
+        self.assertEqual(self.client.post(
+            "/api/settings", json={"personalization": {"news_feeds": ["ftp://x"]}}).status_code, 400)
+        self.assertEqual(self.client.post(
+            "/api/settings", json={"personalization": {"nope": 1}}).status_code, 400)
+        self.assertEqual(self.client.post(
+            "/api/settings", json={"personalization": "not-an-object"}).status_code, 400)
+
+    def test_resolve_profile_and_scoring_honor_personalization(self):
+        # No personalization -> full interest catalog, "any" stage.
+        prof = dashboard_app._resolve_profile()
+        self.assertEqual(set(prof["interests"]), set(dashboard_app.news_sources.INTEREST_KEYWORDS))
+        # Narrow to Quant + student stage; an ML internship should now MISS the
+        # interest buckets (Quant only) but still ride the early-career boost.
+        self._config.update({"personalization": {
+            "job_interests": ["Quant"], "career_stage": "student"}})
+        prof = dashboard_app._resolve_profile()
+        self.assertEqual(list(prof["interests"]), ["Quant"])
+        quant_score, quant_tags = dashboard_app._score_job(
+            "Quantitative Trading Intern", "New York", prof)
+        self.assertIn("Quant", quant_tags)
+        self.assertGreater(quant_score, 0)
+        # A senior role is penalized for a student profile.
+        senior_score, _ = dashboard_app._score_job("Senior Staff Engineer", "Remote", prof)
+        self.assertLessEqual(senior_score, 0)
+
 
 class ChatGptAccountTierTests(unittest.TestCase):
     """ChatGPT account tier is backed by Codex CLI, not the OpenAI API key path."""
