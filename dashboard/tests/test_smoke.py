@@ -34,6 +34,14 @@ DASHBOARD_DIR = Path(__file__).resolve().parent.parent
 if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 
+
+def _module_available(name: str) -> bool:
+    """Return whether an optional nested module is importable without collecting it."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ModuleNotFoundError, AttributeError, ValueError):
+        return False
+
 import agent  # noqa: E402
 import app as dashboard_app  # noqa: E402
 import chats  # noqa: E402
@@ -1081,7 +1089,10 @@ class MailboxMcpBridgeTests(unittest.TestCase):
     def test_inbox_triage_defaults_to_claude(self):
         self.assertEqual(agent.AGENTS["inbox_triage"]["tier"], "claude")
 
-    @unittest.skipUnless(importlib.util.find_spec("mcp"), "mcp SDK not installed")
+    @unittest.skipUnless(
+        _module_available("mcp.server.fastmcp"),
+        "compatible MCP v1 FastMCP SDK not installed",
+    )
     def test_mail_mcp_imports_and_registers_no_send(self):
         import mail_mcp
         self.assertTrue(hasattr(mail_mcp, "stage_email_draft"))
