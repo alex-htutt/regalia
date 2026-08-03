@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import io
 import sys
 import tempfile
 import threading
@@ -38,13 +39,19 @@ class DispatchDatabaseTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = dispatches.DB_PATH
+        self.old_attach_root = dispatches.ATTACH_ROOT
+        self.old_upload_root = dashboard_app.ATTACH_DIR
         dispatches.DB_PATH = Path(self.tmp.name) / "dispatch.sqlite3"
+        dispatches.ATTACH_ROOT = Path(self.tmp.name) / "dispatch-attachments"
+        dashboard_app.ATTACH_DIR = Path(self.tmp.name) / "uploads"
         dispatches._init()
         dashboard_app.app.config["TESTING"] = True
         self.client = dashboard_app.app.test_client()
 
     def tearDown(self):
         dispatches.DB_PATH = self.old_db
+        dispatches.ATTACH_ROOT = self.old_attach_root
+        dashboard_app.ATTACH_DIR = self.old_upload_root
         self.tmp.cleanup()
 
     def test_custom_agent_round_trip(self):
@@ -82,6 +89,39 @@ class DispatchDatabaseTests(unittest.TestCase):
             json={"kind": "single", "goal": "Do work", "priority": "fast"},
         )
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(dispatches.list_dispatches(), [])
+
+    def test_uploaded_attachment_is_bound_to_dispatch_without_leaking_path(self):
+        upload = self.client.post(
+            "/api/dispatches/upload",
+            data={"file": (io.BytesIO(b"source material"), "brief.md")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload.status_code, 200)
+        handle = upload.get_json()
+
+        response = self.client.post("/api/dispatches", json={
+            "kind": "group", "goal": "Use the brief", "priority": "balanced",
+            "attachments": [handle],
+        })
+
+        self.assertEqual(response.status_code, 201)
+        public = response.get_json()
+        self.assertEqual(public["attachments"][0]["name"], "brief.md")
+        self.assertNotIn("path", public["attachments"][0])
+        internal = dispatches.get_dispatch(public["id"])["attachments"][0]
+        stored = Path(internal["path"])
+        self.assertEqual(stored.read_bytes(), b"source material")
+        self.client.delete(f"/api/dispatches/{public['id']}")
+        self.assertFalse(stored.exists())
+
+    def test_invalid_attachment_handle_does_not_create_dispatch(self):
+        response = self.client.post("/api/dispatches", json={
+            "kind": "group", "goal": "Use a file", "priority": "fast",
+            "attachments": [{"id": "../../outside.md", "name": "outside.md"}],
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("invalid", response.get_json()["error"])
         self.assertEqual(dispatches.list_dispatches(), [])
 
 
@@ -160,6 +200,68 @@ class ReviewGateTests(unittest.TestCase):
         target.write_text("user edit", encoding="utf-8")
         with self.assertRaisesRegex(dispatch_workspace.WorkspaceError, "changed after dispatch"):
             dispatch_workspace.apply_artifact(artifact)
+
+    def test_staged_attachment_is_removed_before_artifact_collection(self):
+        source = Path(self.tmp.name) / "source-with-input"
+        source.mkdir()
+        (source / "note.txt").write_text("before", encoding="utf-8")
+        attached = Path(self.tmp.name) / "brief.txt"
+        attached.write_text("read me", encoding="utf-8")
+        ws = dispatch_workspace.prepare_worker("d_" + "3" * 32, "worker", source)
+
+        staged = dispatch_workspace.stage_attachments(ws, [{
+            "path": str(attached), "name": "brief.txt", "mime": "text/plain",
+        }])
+        self.assertEqual(staged[0].read_text(encoding="utf-8"), "read me")
+        (ws.root / "note.txt").write_text("after", encoding="utf-8")
+        dispatch_workspace.remove_staged_attachments(ws)
+        artifact = dispatch_workspace.collect_artifact(ws)
+
+        self.assertEqual(artifact["files"], ["note.txt"])
+        self.assertNotIn("regalia_dispatch_inputs", artifact["preview"])
+
+    def test_read_worker_receives_attachment_inside_isolated_scope(self):
+        source = Path(self.tmp.name) / "worker-source"
+        source.mkdir()
+        (source / "existing.txt").write_text("original", encoding="utf-8")
+        attached = Path(self.tmp.name) / "requirements.md"
+        attached.write_text("must be offline", encoding="utf-8")
+        obj = dispatches.create_dispatch({
+            "kind": "single", "goal": "Review requirements", "priority": "fast",
+        })
+        worker = {
+            "id": "reader", "title": "Reader", "objective": "Review the input",
+            "instructions": "Read carefully.", "complexity": "simple",
+            "capabilities": ["code_read"], "scope": "", "tier": "fast",
+            "model": "", "depends_on": [], "approved_checks": [],
+            "status": "pending", "result": None, "error": None, "artifact": None,
+        }
+        dispatches.mutate_dispatch(obj["id"], lambda current: {
+            **current, "workers": [worker],
+        })
+        seen = {}
+
+        def fake_run(_agent_id, task, **kwargs):
+            seen["task"] = task
+            seen["root"] = kwargs["scope_override"].root
+            inputs = list(seen["root"].glob(".regalia_dispatch_inputs/*"))
+            seen["content"] = inputs[0].read_text(encoding="utf-8")
+            return {"reply": "reviewed", "steps": []}
+
+        scope = agent.AccessScope("vault", source, "vault root", False, ())
+        with mock.patch("dispatch_engine.agent.resolve_scope", return_value=scope), \
+             mock.patch("dispatch_engine.agent.run_agent", side_effect=fake_run):
+            result, artifact = dispatch_engine._run_worker(
+                obj["id"], worker, threading.Event(), [],
+                [{"path": str(attached), "name": "requirements.md", "mime": "text/markdown"}],
+            )
+
+        self.assertEqual(result["reply"], "reviewed")
+        self.assertIsNone(artifact)
+        self.assertEqual(seen["content"], "must be offline")
+        self.assertIn("read-only input files", seen["task"])
+        self.assertFalse(seen["root"].exists())
+        self.assertFalse((source / ".regalia_dispatch_inputs").exists())
 
     @mock.patch("dispatch_engine.dispatch_workspace.cleanup_dispatch")
     @mock.patch("dispatch_engine.mailbox.create_draft", return_value={"id": "draft-1"})

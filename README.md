@@ -16,13 +16,13 @@ Regalia is a single-user cockpit for a Markdown knowledge vault. It reads YAML f
 - **Overview dashboard** — every note with frontmatter becomes a task: stat cards (active / overdue / complete), filters by status · area · course, live search, deadline highlighting.
 - **Landing page** — an ASCII-dither WebGL hero with pinned scrollytelling that lands you in your recently-worked folders.
 - **Chat, grounded in your vault** — multi-conversation chat that can search, open, and quote your actual notes; an opt-in ✏️ Edit mode lets it write them.
-- **Five model tiers, one router** — `fast` (local Ollama), `smart` (Anthropic API), `openai` (OpenAI API), `chatgpt` (Codex CLI signed in to ChatGPT), and `claude` (Claude Code CLI signed in to a Claude plan).
+- **Seven model tiers, one router** — local Ollama; Anthropic, OpenAI, and Gemini APIs; plus Claude, ChatGPT, and Google-account CLI backends.
 - **Settings & connections** — theme, accent, default tier, vault folder, model backends, Gmail/Outlook, and connected external workspaces from one view.
 - **Agents** — Daily Summarizer, Project Scaffolder, Research Agent, and Inbox Triage with streamed steps, task presets, per-run folder scope, and a live running-agents sidebar.
 - **External folders** — connect workspaces outside the vault without restructuring them; Regalia keeps context notes under `external/<name>/` while traversal-safe tools operate on the real folder.
 - **Inbox (drafts-only, by construction)** — connect Gmail and Outlook, read mail, and save drafts. There is deliberately **no send path anywhere in the codebase** — you review and send from your mail client.
 - **Daily briefing** — tech-news RSS, a profile-ranked job board scan, and an important-mail panel on the home page.
-- **Claude usage panel** — your Claude Code token usage (today / all-time / per-model, 14-day chart) read from local JSONL metadata. Message content is never read.
+- **Account usage panels** — local Claude Code and Codex token/limit metadata, including 14-day charts and per-model totals. Message content is never read.
 - **Desktop or browser** — `python app.py` for the browser, `python desktop.py` for a native window (pywebview).
 
 ## Install
@@ -50,14 +50,16 @@ From source, the dashboard indexes the vault it lives inside (the repo root) unl
 | `fast` | Ollama (local) | [Ollama](https://ollama.com) installed — pull models from Settings | Free / private |
 | `smart` | Anthropic API | API key (env or Settings) | API credits |
 | `openai` | OpenAI API | API key (env or Settings) | API credits |
+| `gemini` | Gemini API | API key (env or Settings) | API credits |
 | `chatgpt` | Codex CLI | `codex` CLI signed in with ChatGPT (not an API key) | Your ChatGPT plan |
+| `google` | Gemini CLI | `gemini` CLI signed in with Google (not an API key) | Your Google account allowance |
 | `claude` | Claude Code CLI | `claude` CLI signed in to a Claude subscription | Your subscription |
 
 Every model call goes through `dashboard/router.py`; adding a backend is one more branch there.
 
 ## Configuration
 
-Open **Settings** in the app — everything is configurable from there: theme and accent, model backends (Ollama host + one-click model pull, Anthropic/OpenAI keys and models, Claude CLI path + a connection test), email OAuth clients (paste your Google `client_secret.json` straight into the UI), and inbox connections. Nothing is required for the core dashboard; tiers and the inbox light up as you configure them.
+Open **Settings** in the app — everything is configurable from there: theme and accent, model backends (Ollama host + one-click model pull, Anthropic/OpenAI/Gemini keys and models, and account-CLI paths + connection checks), email OAuth clients (paste your Google `client_secret.json` straight into the UI), and inbox connections. Nothing is required for the core dashboard; tiers and the inbox light up as you configure them.
 
 Prefer managing your own environment? Every knob also has an env var — see `.env.example` — and env vars win over Settings. Email OAuth tokens, chat transcripts, attachments, and the external-folder registry live in gitignored per-machine stores.
 

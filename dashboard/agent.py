@@ -1054,10 +1054,10 @@ AGENTS = {
     },
 }
 
-# Agent runs require tool-calling support. The ChatGPT-account backend is a
-# plain chat backend, so keep the agent-capable tiers explicit here rather than
-# inheriting every value accepted by router.chat().
-AGENT_TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
+# Keep agent-capable tiers explicit rather than inheriting every chat backend.
+# Key-billed `gemini` uses the in-process loop; account-billed `google` lets
+# Gemini CLI drive its native tools and streams the resulting JSONL events.
+AGENT_TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
 VAULT_TOOL_NAMES = frozenset({
     "search_vault", "read_note", "list_notes", "list_folder", "write_note", "create_project",
 })
@@ -1395,7 +1395,9 @@ def _run_agent_claude(spec, task, emit, scope: AccessScope, req_model: str = "",
                     why = ev.get("result") or ev.get("subtype") or "unknown error"
                     raise AgentError(f"The Claude CLI returned an error: {why}")
                 reply = (ev.get("result") or "").strip()
-                model = next(iter(ev.get("modelUsage") or {}), None) or model
+                # The init event already named the session model; modelUsage also
+                # lists cheap background models, so only fall back to it.
+                model = model or router.primary_model(ev.get("modelUsage"))
     except router.RouterError as e:
         emit({"type": "error", "text": e.message})
         raise AgentError(e.message)
@@ -1473,6 +1475,64 @@ def _run_agent_codex(spec, task, emit, scope: AccessScope, req_model: str = "",
 
 # ── The run loop ─────────────────────────────────────────────────────────────
 
+def _run_agent_gemini(spec, task, emit, scope: AccessScope, req_model: str = "",
+                      cancel_event=None) -> dict:
+    """Run a custom worker through Gemini CLI on a signed-in Google account."""
+    writes = any(t in ("write_note", "create_project", "write_file") for t in spec["tools"])
+    system = spec["system"] + _scope_note(scope)
+    if any(t in ("web_search", "fetch_url") for t in spec["tools"]):
+        system += "\nUse live web research when useful and cite every source URL in the final answer."
+    if spec.get("approved_checks"):
+        system += "\nOnly these validation commands were approved: " + "; ".join(spec["approved_checks"])
+    emit({"type": "start", "agent": spec["id"], "tier": "google", "task": task})
+    steps = []
+    names = {}
+    reply_parts = []
+    actual_model = req_model
+    try:
+        for ev in router.gemini_agent_stream(
+                task, system=system, model=req_model or None, cwd=str(scope.root),
+                allow_write=writes, cancel_event=cancel_event):
+            etype = ev.get("type")
+            if etype == "init":
+                actual_model = str(ev.get("model") or actual_model)
+            elif etype == "message" and ev.get("role") == "assistant":
+                text = str(ev.get("content") or "")
+                if text:
+                    if ev.get("delta", True):
+                        reply_parts.append(text)
+                    else:
+                        reply_parts = [text]
+                    emit({"type": "think", "text": text})
+            elif etype == "tool_use":
+                tool_id = str(ev.get("tool_id") or "")
+                name = str(ev.get("tool_name") or ev.get("name") or "tool")
+                tool_input = ev.get("parameters") if isinstance(ev.get("parameters"), dict) else {}
+                names[tool_id] = (name, tool_input)
+                emit({"type": "tool", "tool": name, "input": tool_input})
+            elif etype == "tool_result":
+                tool_id = str(ev.get("tool_id") or "")
+                name, tool_input = names.get(tool_id, ("tool", {}))
+                output = _tool_result_text(ev.get("output"))
+                steps.append({"tool": name, "input": tool_input, "output": output})
+                emit({"type": "tool_result", "tool": name, "output": output[:600]})
+            elif etype == "error":
+                detail = ev.get("message") or ev.get("error")
+                if detail:
+                    emit({"type": "think", "text": str(detail)})
+            elif etype == "result" and str(ev.get("status") or "success").lower() not in (
+                    "success", "ok", "completed"):
+                raise AgentError(str(ev.get("error") or ev.get("message") or "Gemini agent failed."))
+    except router.RouterError as e:
+        emit({"type": "error", "text": e.message})
+        raise AgentError(e.message)
+    reply = "".join(reply_parts).strip()
+    emit({"type": "final", "text": reply})
+    return {"reply": reply or "(the agent finished without a summary)",
+            "steps": steps, "tier": "google",
+            "model": actual_model or "Google account default", "agent": spec["id"]}
+
+
 def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: int = 8,
               folder: str = "", model: str = "", spec_override: dict | None = None,
               scope_override: AccessScope | None = None, cancel_event=None) -> dict:
@@ -1528,6 +1588,10 @@ def run_agent(agent_id: str, task: str, tier: str = "", emit=None, max_steps: in
         )
     if tier == "chatgpt":
         return _run_agent_codex(
+            spec, task, _emit, scope, req_model=req_model, cancel_event=cancel_event,
+        )
+    if tier == "google":
+        return _run_agent_gemini(
             spec, task, _emit, scope, req_model=req_model, cancel_event=cancel_event,
         )
 

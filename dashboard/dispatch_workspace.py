@@ -16,7 +16,7 @@ import paths
 
 WORK_ROOT = paths.data_dir() / ".dispatch_work"
 _IGNORE = shutil.ignore_patterns(
-    ".git", ".dispatch_work", "__pycache__", ".pytest_cache", "node_modules",
+    ".git", ".dispatch_work", ".regalia_dispatch_inputs", "__pycache__", ".pytest_cache", "node_modules",
     "build", "dist", "*.pyc",
 )
 
@@ -129,6 +129,42 @@ def prepare_worker(dispatch_id: str, worker_id: str, source_scope: Path,
     return WorkerWorkspace(
         dispatch_id, worker_id, source_scope, target, "copy", baseline=baseline,
     )
+
+
+def stage_attachments(workspace: WorkerWorkspace, attachments: list[dict]) -> list[Path]:
+    """Place dispatch inputs inside a worker sandbox under collision-safe names."""
+    folder = (workspace.root / ".regalia_dispatch_inputs").resolve()
+    if workspace.root.resolve() not in folder.parents:
+        raise WorkspaceError("Attachment staging path escapes the worker workspace.")
+    folder.mkdir(parents=True, exist_ok=True)
+    staged = []
+    for index, item in enumerate(attachments or [], 1):
+        source = Path(str(item.get("path") or "")).resolve()
+        if not source.is_file():
+            raise WorkspaceError(f"Attachment '{item.get('name') or index}' is unavailable.")
+        name = Path(str(item.get("name") or source.name)).name
+        safe = "".join(c if c.isalnum() or c in "._ -" else "_" for c in name).strip(" .")
+        destination = folder / f"{index:02d}_{safe or ('attachment-' + str(index))}"
+        shutil.copy2(source, destination)
+        staged.append(destination)
+    return staged
+
+
+def remove_staged_attachments(workspace: WorkerWorkspace) -> None:
+    shutil.rmtree(workspace.root / ".regalia_dispatch_inputs", ignore_errors=True)
+
+
+def cleanup_worker(workspace: WorkerWorkspace) -> None:
+    """Remove one read-only worker sandbox once its result has been captured."""
+    dispatch_root = _safe_child(WORK_ROOT, workspace.dispatch_id)
+    target = _safe_child(dispatch_root, workspace.worker_id)
+    if workspace.kind == "git" and target.exists() and workspace.git_root:
+        _run(["git", "worktree", "remove", "--force", str(target)], workspace.git_root, check=False)
+    elif target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    baseline = _safe_child(dispatch_root, workspace.worker_id + "_baseline")
+    if baseline.exists():
+        shutil.rmtree(baseline, ignore_errors=True)
 
 
 def _file_map(root: Path) -> dict[str, Path]:

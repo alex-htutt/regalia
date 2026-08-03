@@ -74,6 +74,12 @@ updater.startup(autoupdate=bool(config.get("autoupdate")))
 # timestamp — never message content.
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
+# Codex stores one JSONL transcript per local session. Its token_count events
+# include cumulative usage and the latest ChatGPT-account rate-limit windows.
+# As with Claude usage, we read only timestamps, model ids, token counts, and
+# limit metadata — never prompt, response, reasoning, or tool content.
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+
 # Chat attachments land here (gitignored). From source it lives under dashboard/,
 # which is in IGNORE_DIRS so the vault walk never surfaces uploads as notes.
 # Packaged builds move it to the per-user data dir. API tiers inline supported
@@ -85,6 +91,16 @@ ALLOWED_ATTACH_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp",        # images
     ".pdf",                                            # docs
     ".txt", ".md", ".csv", ".json", ".log", ".py",    # text
+}
+
+# Files a user can drop/upload into the vault from the Browse view. Broader than
+# chat attachments — the vault holds notes *and* arbitrary project data — but
+# still an allow-list, and the write is traversal-guarded to a real directory
+# inside the vault (never a hidden/ignored area).
+MAX_VAULT_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB per file
+VAULT_UPLOAD_EXTS = BROWSER_TEXT_EXTS | BROWSER_IMAGE_EXTS | {
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",  # office docs
+    ".zip", ".svg", ".mp3", ".wav", ".mp4", ".webm", ".mov",     # media/archives
 }
 
 # Approx Anthropic API list prices, USD per million tokens, matched by model
@@ -300,6 +316,57 @@ def api_browse():
             "context": context,
         }
     )
+
+
+@app.route("/api/browse/upload", methods=["POST"])
+def api_browse_upload():
+    """Drop or upload a file into a vault folder from the Browse view.
+
+    `path` (form field) is the vault-relative destination directory — same
+    resolution + traversal guard as /api/browse, so the write can never land
+    outside the vault or in a hidden/ignored area. The file is validated by
+    extension + size and saved under its own (sanitized) name; a collision gets
+    a `-1`, `-2`, … suffix rather than clobbering an existing file."""
+    root = VAULT_ROOT.resolve()
+    rel = (request.form.get("path", "") or "").replace("\\", "/").strip("/")
+    target = (root / rel).resolve() if rel else root
+    if target != root and root not in target.parents:
+        return jsonify({"error": "path outside vault"}), 400
+    if not target.is_dir():
+        return jsonify({"error": "folder not found"}), 404
+    # Refuse hidden / ignored destinations (mirrors the browser's own filter) so
+    # uploads can't be smuggled into .obsidian, dashboard/, etc.
+    dest_rel = target.relative_to(root)
+    if dest_rel.parts and not _browser_rel_allowed(dest_rel / "_"):
+        return jsonify({"error": "can't upload into that folder"}), 400
+
+    f = request.files.get("file")
+    if f is None or not (f.filename or "").strip():
+        return jsonify({"error": "No file uploaded."}), 400
+
+    name = os.path.basename(f.filename or "")
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in VAULT_UPLOAD_EXTS:
+        return jsonify({"error": f"Can't add {ext or 'that file type'} to the vault."}), 400
+
+    f.seek(0, os.SEEK_END)
+    size = f.tell()
+    f.seek(0)
+    if size == 0:
+        return jsonify({"error": "That file is empty."}), 400
+    if size > MAX_VAULT_UPLOAD_BYTES:
+        return jsonify({"error": "File is too large (max 100 MB)."}), 400
+
+    stem = re.sub(r"[^A-Za-z0-9._ -]", "_", os.path.splitext(name)[0]).strip() or "file"
+    dest = target / f"{stem}{ext}"
+    n = 1
+    while dest.exists():
+        dest = target / f"{stem}-{n}{ext}"
+        n += 1
+    f.save(str(dest))
+
+    saved_rel = dest.relative_to(root).as_posix()
+    return jsonify({"path": saved_rel, "name": dest.name, "folder": dest_rel.as_posix() if dest_rel.parts else "", "size": size})
 
 
 def _browser_preview_kind(path: Path) -> str:
@@ -733,9 +800,167 @@ def load_usage(days: int = 14) -> dict:
     }
 
 
+def _usage_int(value) -> int:
+    """Best-effort non-negative integer for evolving local transcript schemas."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _codex_rate_windows(rate_limits: dict) -> list[dict]:
+    windows = []
+    for key in ("primary", "secondary"):
+        raw = rate_limits.get(key)
+        if not isinstance(raw, dict):
+            continue
+        minutes = _usage_int(raw.get("window_minutes"))
+        if minutes == 300:
+            label = "5-hour limit"
+        elif minutes == 10080:
+            label = "Weekly limit"
+        elif minutes and minutes % 1440 == 0:
+            label = f"{minutes // 1440}-day limit"
+        elif minutes and minutes % 60 == 0:
+            label = f"{minutes // 60}-hour limit"
+        else:
+            label = f"{minutes}-minute limit" if minutes else key.title()
+        try:
+            used = float(raw.get("used_percent") or 0)
+        except (TypeError, ValueError, OverflowError):
+            used = 0.0
+        windows.append({
+            "kind": key,
+            "label": label,
+            "used_percent": max(0.0, min(100.0, used)),
+            "window_minutes": minutes,
+            "resets_at": _usage_int(raw.get("resets_at")) or None,
+        })
+    return windows
+
+
+def load_codex_usage(days: int = 14) -> dict:
+    """Aggregate observed Codex usage without reading conversation content.
+
+    token_count.total_token_usage is cumulative within a session. Turning each
+    snapshot into a positive delta keeps the daily chart correct even when a
+    session crosses midnight, while summing to the final session total.
+    """
+    if not CODEX_SESSIONS_DIR.is_dir():
+        return {"available": False, "source": "~/.codex/sessions"}
+
+    fields = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+              "output_tokens", "reasoning_output_tokens", "total_tokens")
+    totals = {key: 0 for key in fields}
+    today_iso = date.today().isoformat()
+    today = {"total": 0}
+    by_day: dict[str, int] = {}
+    by_model: dict[str, dict] = {}
+    sessions = 0
+    requests = 0
+    latest_rate: dict | None = None
+    latest_rate_ts = ""
+
+    for jf in CODEX_SESSIONS_DIR.rglob("*.jsonl"):
+        previous = {key: 0 for key in fields}
+        model = "unknown"
+        has_usage = False
+        try:
+            lines = jf.open("r", encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        with lines:
+            for line in lines:
+                # Avoid decoding prompt/response/tool records entirely.
+                if '"token_count"' not in line and '"turn_context"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                payload = obj.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if obj.get("type") == "turn_context":
+                    candidate = payload.get("model")
+                    if isinstance(candidate, str) and candidate.strip():
+                        model = candidate.strip()
+                    continue
+                if obj.get("type") != "event_msg" or payload.get("type") != "token_count":
+                    continue
+                info = payload.get("info")
+                usage = info.get("total_token_usage") if isinstance(info, dict) else None
+                if not isinstance(usage, dict):
+                    continue
+
+                current = {key: _usage_int(usage.get(key)) for key in fields}
+                delta = {
+                    key: (current[key] - previous[key]
+                          if current[key] >= previous[key] else current[key])
+                    for key in fields
+                }
+                previous = current
+                row_total = delta["total_tokens"]
+                if not row_total:
+                    row_total = delta["input_tokens"] + delta["output_tokens"]
+                if row_total:
+                    has_usage = True
+                    requests += 1
+                    for key in fields:
+                        totals[key] += delta[key]
+                    if not delta["total_tokens"]:
+                        totals["total_tokens"] += row_total
+                    day = _local_day(str(obj.get("timestamp") or ""))
+                    if day:
+                        by_day[day] = by_day.get(day, 0) + row_total
+                    if day == today_iso:
+                        today["total"] += row_total
+                    item = by_model.setdefault(
+                        model, {"model": model, "total": 0, "requests": 0}
+                    )
+                    item["total"] += row_total
+                    item["requests"] += 1
+
+                rate_limits = payload.get("rate_limits")
+                timestamp = str(obj.get("timestamp") or "")
+                if isinstance(rate_limits, dict) and timestamp >= latest_rate_ts:
+                    latest_rate = rate_limits
+                    latest_rate_ts = timestamp
+        if has_usage:
+            sessions += 1
+
+    window = [(date.today() - timedelta(days=i)).isoformat()
+              for i in range(days - 1, -1, -1)]
+    rate_limits = {
+        "plan_type": str((latest_rate or {}).get("plan_type") or ""),
+        "windows": _codex_rate_windows(latest_rate or {}),
+        "updated_at": latest_rate_ts or None,
+    }
+    return {
+        "available": bool(sessions or latest_rate),
+        "source": "~/.codex/sessions",
+        "totals": totals,
+        "today": today,
+        "sessions": sessions,
+        "requests": requests,
+        "by_model": sorted(by_model.values(), key=lambda row: row["total"], reverse=True),
+        "by_day": [{"day": day, "total": by_day.get(day, 0)} for day in window],
+        "rate_limits": rate_limits,
+    }
+
+
 @app.route("/api/usage")
 def api_usage():
-    return jsonify(load_usage())
+    claude = load_usage()
+    chatgpt = load_codex_usage()
+    # Preserve the original Claude fields for older clients while adding
+    # provider-specific payloads for the expanded Overview.
+    return jsonify({
+        **claude,
+        "available": bool(claude.get("available") or chatgpt.get("available")),
+        "claude": claude,
+        "chatgpt": chatgpt,
+    })
 
 
 # ── Home-page briefing: tech news + job openings ────────────────────────────
@@ -1392,8 +1617,8 @@ def api_agent_run():
     task = str(data.get("task") or "").strip()
     tier = str(data.get("tier") or "").strip().lower()
     folder = str(data.get("folder") or "").replace("\\", "/").strip().strip("/")
-    # Optional per-run model override (honored on the claude CLI tier; empty falls
-    # back to the plan default). Other agent tiers keep the Settings model.
+    # Optional per-run model override. Account CLI tiers use it directly;
+    # local/API tool-loop tiers also honor it when their picker exposes choices.
     raw_model = data.get("model")
     model = raw_model.strip() if (isinstance(raw_model, str) and raw_model.strip()) else ""
     if agent_id not in agent.AGENTS:
@@ -1405,11 +1630,10 @@ def api_agent_run():
             agent.resolve_scope(folder)
         except agent.AgentError as e:
             return jsonify({"error": e.message}), 400
-    legacy_agent_tiers = tuple(t for t in agent.AGENT_TIERS if t != "chatgpt")
-    if tier and tier not in legacy_agent_tiers:
+    if tier and tier not in agent.AGENT_TIERS:
         return jsonify({
             "error": f"Tier '{tier}' cannot run agents. Use one of: "
-                     f"{', '.join(legacy_agent_tiers)}."
+                     f"{', '.join(agent.AGENT_TIERS)}."
         }), 400
 
     run_id = uuid.uuid4().hex[:12]
@@ -1465,6 +1689,8 @@ def _activity_provider(tier: str) -> str:
         return "anthropic"
     if tier in ("openai", "chatgpt"):
         return "openai"
+    if tier in ("gemini", "google"):
+        return "google"
     return "local"
 
 
@@ -1664,9 +1890,25 @@ def api_dispatches():
             definition = {**definition, "scope": definition.get("scope") or scope}
             if definition.get("scope"):
                 agent.resolve_scope(definition["scope"])
+        raw_attachments = data.get("attachments") or []
+        if not isinstance(raw_attachments, list) or len(raw_attachments) > dispatches.MAX_ATTACHMENTS:
+            raise dispatches.DispatchStoreError(
+                f"Attach no more than {dispatches.MAX_ATTACHMENTS} files."
+            )
+        attachments = _resolve_attachments(raw_attachments)
+        if len(attachments) != len(raw_attachments):
+            raise dispatches.DispatchStoreError(
+                "One or more attachments are invalid or no longer available. Upload them again."
+            )
         obj = dispatches.create_dispatch(data)
-        if obj["kind"] == "single":
-            obj = dispatch_engine.configure_single(obj["id"], definition)
+        try:
+            if obj["kind"] == "single":
+                obj = dispatch_engine.configure_single(obj["id"], definition)
+            if attachments:
+                obj = dispatches.bind_attachments(obj["id"], attachments)
+        except Exception:
+            dispatches.delete_dispatch(obj["id"])
+            raise
         return jsonify(dispatch_engine.public_dispatch(obj)), 201
     except (dispatches.DispatchStoreError, dispatch_engine.DispatchError,
             agent.AgentError) as e:
@@ -2054,13 +2296,19 @@ def api_router_check():
         ok, reason = router.codex_cli_health()
         info = router.status_for(tier)  # health just populated auth-aware status
         return jsonify({"ok": ok, "tier": tier, "reason": reason, "status": info})
+    if tier == "google":
+        ok, reason = router.gemini_cli_health()
+        info = router.status_for(tier)
+        return jsonify({"ok": ok, "tier": tier, "reason": reason, "status": info})
     info = router.status_for(tier)
     ok = bool(info.get("available"))
     reason = "ready" if ok else {
         "fast": "Ollama is not reachable.",
         "smart": "No Anthropic API key is configured.",
         "openai": "No OpenAI API key is configured.",
+        "gemini": "No Gemini API key is configured.",
         "chatgpt": "Codex CLI was not found on PATH.",
+        "google": "Gemini CLI was not found on PATH.",
         "claude": "Claude CLI was not found on PATH.",
     }.get(tier, "Not available.")
     return jsonify({"ok": ok, "tier": tier, "reason": reason, "status": info})
@@ -2088,8 +2336,7 @@ def _prune_attachments() -> None:
         pass
 
 
-@app.route("/api/chat/upload", methods=["POST"])
-def api_chat_upload():
+def _attachment_upload_response():
     """Accept a single chat attachment, store it, return a handle for /api/chat.
 
     The frontend uploads each picked file here first; the returned `id` is what it
@@ -2123,6 +2370,17 @@ def api_chat_upload():
 
     mime = f.mimetype or mimetypes.guess_type(name)[0] or "application/octet-stream"
     return jsonify({"id": stored, "name": name, "mime": mime, "size": size})
+
+
+@app.route("/api/chat/upload", methods=["POST"])
+def api_chat_upload():
+    return _attachment_upload_response()
+
+
+@app.route("/api/dispatches/upload", methods=["POST"])
+def api_dispatch_upload():
+    """Upload a temporary file handle that can be bound to a new dispatch."""
+    return _attachment_upload_response()
 
 
 def _resolve_attachments(raw) -> list:
@@ -2172,28 +2430,30 @@ def api_chat():
         return jsonify({"error": f"Unknown tier '{tier}'."}), 400
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     # "Edit mode" — lets chat change vault notes. Each tier honors it differently:
-    # fast/smart/openai unlock the write tools in the loop below; the ChatGPT and
-    # Claude CLI tiers switch their sandbox/tool policy in router.chat().
+    # fast/smart/openai/gemini unlock the write tools in the loop below; the
+    # account-CLI tiers (ChatGPT, Google, Claude) switch their sandbox/approval
+    # policy in router.chat().
     edit_mode = bool(data.get("edit"))
     # A per-request model override is honored for the tiers whose UI exposes a
-    # model picker: the local (fast/Ollama) tier and the two account-CLI tiers
-    # (chatgpt/Codex, claude). Smart/OpenAI stay on the Settings-configured model,
-    # so an Ollama model name can never be handed to Anthropic on the smart tier.
+    # model picker: the local (fast/Ollama) tier and the account-CLI tiers
+    # (chatgpt/Codex, google/Gemini CLI, claude). Smart/OpenAI/Gemini API stay on
+    # the Settings-configured model, so an Ollama model name can never be handed
+    # to Anthropic on the smart tier.
     raw_model = data.get("model")
     model = (raw_model.strip()
-             if (tier in ("fast", "chatgpt", "claude")
+             if (tier in ("fast", "chatgpt", "google", "claude")
                  and isinstance(raw_model, str) and raw_model.strip())
              else None)
 
     # Tool-loop tiers run the model over the real vault tools. Fast (local) always
     # uses the read-only loop so it can answer "what does note X say" — not just
-    # see the outline; smart/openai join the loop only when Edit mode is on (else
+    # see the outline; smart/openai/gemini join the loop only when Edit mode is on (else
     # they take the plain cloud-chat path below). With Edit mode, the loop also gets the
     # write/scaffold tools. The local model needs tool support; if it can't (or any
     # other fast-tier hiccup), fall back to outline-grounded plain chat so the panel
     # still answers. Smart-tier failures surface to the user. Attachment turns skip
     # the loop (chat_tools has no attachment path) and use the image-inlining chat.
-    use_loop = (tier == "fast" or (tier in ("smart", "openai") and edit_mode))
+    use_loop = (tier == "fast" or (tier in ("smart", "openai", "gemini") and edit_mode))
     if use_loop and not attachments:
         try:
             return jsonify(agent.chat_vault(
@@ -2219,13 +2479,12 @@ def api_chat():
     return jsonify(result)
 
 
-# ── Live Claude chat streams ─────────────────────────────────────────────────
-# The claude tier runs the CLI's own agentic loop, which can legitimately take a
-# while. Rather than block /api/chat for the whole run (and hide everything until
-# it finishes), the panel starts a stream, gets a run_id, then polls for the
-# thinking / tool / text events as they arrive. Mirrors the agent-run store: an
-# in-memory, single-user, capped dict. Only the claude tier uses this path — the
-# other tiers stay on the blocking /api/chat above.
+# ── Live account-backed chat streams ─────────────────────────────────────────
+# ChatGPT and Claude run their CLI agentic loops here. Rather than block
+# /api/chat for the whole run (and hide everything until it finishes), the panel
+# starts a stream, gets a run_id, then polls for readable summaries, activity,
+# and answer text as they arrive. Mirrors the agent-run store: an in-memory,
+# single-user, capped dict. Local/API tiers stay on blocking /api/chat above.
 _CHAT_STREAMS: dict[str, dict] = {}
 _CHAT_STREAMS_LOCK = threading.Lock()
 _CHAT_STREAMS_MAX = 40
@@ -2240,12 +2499,80 @@ def _trim_chat_streams_locked() -> None:
         _CHAT_STREAMS.pop(old["id"], None)
 
 
-def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode):
-    """Consume the Claude CLI stream and map its events onto UI steps.
+# A model sometimes emits its tool-call syntax as plain *text* instead of a
+# structured tool_use block — usually when a call is interrupted, which then
+# leaves a tail of thousands of orphan </invoke> lines. That text is pure noise
+# (the tool chips already report what ran) and it blows the chat panel apart, so
+# strip it here: the reply is what gets persisted and replayed to the model on
+# the next turn, and leaving the junk in makes it echo forever.
+_TOOL_MARKUP_TAG = r"(?:antml:)?(?:function_calls|invoke|parameter)"
+_TOOL_MARKUP_BLOCKS = tuple(
+    re.compile(rf"<{name}\b[\s\S]*?</{name}>", re.IGNORECASE)
+    for name in (r"(?:antml:)?function_calls", r"(?:antml:)?invoke",
+                 r"(?:antml:)?parameter")
+)
+_TOOL_MARKUP_ORPHAN = re.compile(rf"</?{_TOOL_MARKUP_TAG}\b[^>]*>", re.IGNORECASE)
 
-    think = extended-thinking blocks; text = intermediate/answer text as it
-    streams; tool/tool_result = the CLI's file work. The authoritative final
-    reply comes from the trailing 'result' event."""
+
+def _strip_tool_markup(text: str) -> str:
+    """Remove leaked tool-call markup (and its arguments) from model text."""
+    out = str(text or "")
+    if "<" not in out:
+        return out.strip()
+    for pattern in _TOOL_MARKUP_BLOCKS:
+        out = pattern.sub("", out)
+    out = _TOOL_MARKUP_ORPHAN.sub("", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+def _codex_summary_text(summary) -> str:
+    """Flatten only Codex's user-safe reasoning summary field.
+
+    Raw reasoning lives in a separate `content` field and is deliberately never
+    inspected or returned to the browser.
+    """
+    if isinstance(summary, str):
+        return summary.strip()
+    if isinstance(summary, list):
+        return "\n".join(filter(None, (_codex_summary_text(part) for part in summary))).strip()
+    if isinstance(summary, dict):
+        return _codex_summary_text(summary.get("text") or summary.get("summary"))
+    return ""
+
+
+def _codex_tool_label(item: dict) -> str:
+    """Compact, user-facing label for a Codex activity item."""
+    kind = str(item.get("type") or "")
+    if kind == "command_execution":
+        raw = item.get("command") or "command"
+        if isinstance(raw, list):
+            raw = " ".join(str(part) for part in raw)
+        return f"Command · {str(raw).strip()[:100]}"
+    if kind == "file_change":
+        paths = [
+            str(change.get("path") or change.get("file_path") or "")
+            for change in (item.get("changes") or []) if isinstance(change, dict)
+        ]
+        return "Files · " + (", ".join(filter(None, paths))[:100] or "editing")
+    if kind == "mcp_tool_call":
+        server = str(item.get("server") or "").strip()
+        tool = str(item.get("tool") or item.get("name") or "tool").strip()
+        return f"{server + ' · ' if server else ''}{tool}"[:110]
+    if kind == "web_search":
+        return f"Web search · {str(item.get('query') or 'searching')[:95]}"
+    if kind == "plan":
+        return "Plan updated"
+    return ""
+
+
+def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
+                        tier="claude"):
+    """Consume an account CLI stream and map its events onto UI steps.
+
+    `think` is always a provider-supplied readable summary, never hidden
+    chain-of-thought. `text` is answer text and `tool` is compact activity
+    metadata. Only the authoritative final reply is persisted.
+    """
     def append(ev):
         with _CHAT_STREAMS_LOCK:
             run = _CHAT_STREAMS.get(run_id)
@@ -2256,40 +2583,94 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode)
     reply = ""
     model_used = ""
     try:
-        for ev in router.claude_code_chat_stream(
-                messages, system=system, model=model,
-                attachments=attachments, allow_write=edit_mode):
-            etype = ev.get("type")
-            if etype == "system" and ev.get("subtype") == "init":
-                model_used = ev.get("model") or model_used
-            elif etype == "assistant":
-                for b in (ev.get("message") or {}).get("content") or []:
-                    bt = b.get("type")
-                    if bt == "thinking" and (b.get("thinking") or "").strip():
-                        append({"type": "think", "text": b["thinking"]})
-                    elif bt == "text" and (b.get("text") or "").strip():
-                        append({"type": "text", "text": b["text"]})
-                    elif bt == "tool_use":
-                        names[b.get("id")] = b.get("name")
-                        append({"type": "tool", "tool": b.get("name")})
-            elif etype == "user":
-                for b in (ev.get("message") or {}).get("content") or []:
-                    if b.get("type") == "tool_result":
-                        append({"type": "tool_result",
-                                "tool": names.get(b.get("tool_use_id"), "tool")})
-            elif etype == "result":
-                if ev.get("is_error"):
-                    why = ev.get("result") or ev.get("subtype") or "unknown error"
+        if tier == "chatgpt":
+            model_used = model or router._codex_cli_model() or "ChatGPT account"
+            append({"type": "status", "text": "Connecting to ChatGPT…"})
+            for ev in router.codex_chat_stream(
+                    messages, system=system, model=model,
+                    attachments=attachments, allow_write=edit_mode):
+                etype = str(ev.get("type") or "")
+                item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+                kind = str(item.get("type") or "")
+                if etype == "turn.started":
+                    append({"type": "status", "text": "ChatGPT started working."})
+                elif etype == "error":
+                    error = ev.get("error")
+                    detail = str(
+                        error.get("message") if isinstance(error, dict)
+                        else ev.get("message") or error or ""
+                    ).strip()
+                    if detail:
+                        append({"type": "status", "text": detail[:500]})
+                elif etype == "turn.failed":
+                    error = ev.get("error")
+                    why = error.get("message") if isinstance(error, dict) else error
                     raise router.RouterError(
-                        f"The Claude CLI returned an error: {why}", 502)
-                reply = (ev.get("result") or "").strip()
-                model_used = next(iter(ev.get("modelUsage") or {}), None) or model_used
+                        f"The ChatGPT run failed: {why or 'unknown error'}", 502)
+                elif etype == "item.started":
+                    if kind == "reasoning":
+                        append({"type": "status", "text": "Reasoning…"})
+                    label = _codex_tool_label(item)
+                    if label:
+                        append({"type": "tool", "tool": label})
+                elif etype == "item.completed":
+                    if kind == "reasoning":
+                        # `codex exec --json` has used `text` for this readable
+                        # progress summary; app-server names it `summary`. Its
+                        # separate raw `content` field is intentionally ignored.
+                        summary = _codex_summary_text(
+                            item.get("summary") or item.get("text")
+                        )
+                        if summary:
+                            append({"type": "think", "text": summary[:2000]})
+                    elif kind == "agent_message":
+                        text = _strip_tool_markup(item.get("text") or "")
+                        if text:
+                            reply = text
+                            append({"type": "text", "text": text})
+                    elif kind == "error":
+                        detail = str(item.get("message") or "").strip()
+                        if detail:
+                            append({"type": "status", "text": detail[:500]})
+        else:
+            for ev in router.claude_code_chat_stream(
+                    messages, system=system, model=model,
+                    attachments=attachments, allow_write=edit_mode):
+                etype = ev.get("type")
+                if etype == "system" and ev.get("subtype") == "init":
+                    model_used = ev.get("model") or model_used
+                elif etype == "assistant":
+                    for b in (ev.get("message") or {}).get("content") or []:
+                        bt = b.get("type")
+                        if bt in ("thinking", "text"):
+                            clean = _strip_tool_markup(
+                                b.get("thinking" if bt == "thinking" else "text") or "")
+                            if clean:
+                                append({"type": "think" if bt == "thinking" else "text",
+                                        "text": clean})
+                        elif bt == "tool_use":
+                            names[b.get("id")] = b.get("name")
+                            append({"type": "tool", "tool": b.get("name")})
+                elif etype == "user":
+                    for b in (ev.get("message") or {}).get("content") or []:
+                        if b.get("type") == "tool_result":
+                            append({"type": "tool_result",
+                                    "tool": names.get(b.get("tool_use_id"), "tool")})
+                elif etype == "result":
+                    if ev.get("is_error"):
+                        why = ev.get("result") or ev.get("subtype") or "unknown error"
+                        raise router.RouterError(
+                            f"The Claude CLI returned an error: {why}", 502)
+                    reply = _strip_tool_markup(ev.get("result") or "")
+                    # `init` already named the session model — keep it.
+                    model_used = model_used or router.primary_model(ev.get("modelUsage"))
         with _CHAT_STREAMS_LOCK:
             run = _CHAT_STREAMS.get(run_id)
             if run is not None:
                 run["status"] = "done"
                 run["reply"] = reply or "…(the model went quiet — try again)"
-                run["model"] = model_used or "claude (plan)"
+                run["model"] = model_used or (
+                    "ChatGPT account" if tier == "chatgpt" else "claude (plan)")
                 _trim_chat_streams_locked()
     except router.RouterError as e:
         with _CHAT_STREAMS_LOCK:
@@ -2309,7 +2690,7 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode)
 
 @app.route("/api/chat/stream", methods=["POST"])
 def api_chat_stream():
-    """Start a live Claude chat run; returns a run_id to poll. Claude tier only."""
+    """Start a live account-backed chat run and return a run_id to poll."""
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Chat payload must be an object."}), 400
@@ -2323,9 +2704,12 @@ def api_chat_stream():
     if not messages or messages[0]["role"] != "user":
         return jsonify({"error": "Say something to start the conversation."}), 400
 
+    tier = str(data.get("tier") or "claude").strip().lower()
+    if tier not in ("chatgpt", "claude"):
+        return jsonify({"error": "Live chat streams support ChatGPT and Claude."}), 400
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     edit_mode = bool(data.get("edit"))
-    # Per-conversation Claude model override; empty falls back to the plan default.
+    # Per-conversation account model override; empty uses the account/plan default.
     raw_model = data.get("model")
     model = raw_model.strip() if (isinstance(raw_model, str) and raw_model.strip()) else None
 
@@ -2344,7 +2728,7 @@ def api_chat_stream():
 
     threading.Thread(
         target=_chat_stream_worker,
-        args=(run_id, messages, user_system, model, attachments, edit_mode),
+        args=(run_id, messages, user_system, model, attachments, edit_mode, tier),
         daemon=True,
     ).start()
     return jsonify({"ok": True, "run_id": run_id})
@@ -2352,7 +2736,7 @@ def api_chat_stream():
 
 @app.route("/api/chat/stream/<run_id>")
 def api_chat_stream_status(run_id):
-    """Poll a live Claude chat run. `since` is a step cursor to fetch only new
+    """Poll a live account chat run. `since` is a step cursor to fetch only new
     events; `total` in the response is the next cursor to pass."""
     since = request.args.get("since", default=0, type=int) or 0
     with _CHAT_STREAMS_LOCK:

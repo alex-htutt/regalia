@@ -10,16 +10,20 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 import threading
 import time
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 
 import paths
 
 
 DB_PATH = paths.data_dir() / ".dispatches.sqlite3"
+ATTACH_ROOT = paths.data_dir() / ".dispatch_attachments"
+MAX_ATTACHMENTS = 10
 AGENT_ID_RE = re.compile(r"^a_[0-9a-f]{32}$")
 DISPATCH_ID_RE = re.compile(r"^d_[0-9a-f]{32}$")
 PRIORITIES = ("fast", "balanced", "best")
@@ -152,7 +156,7 @@ def _agent_payload(data: dict, agent_id: str | None = None, created: float | Non
     if profile not in PROFILES:
         raise DispatchStoreError(f"Unknown capability profile '{profile}'.")
     tier = str(data.get("tier") or "").strip().lower()
-    if tier and tier not in ("fast", "smart", "openai", "chatgpt", "claude"):
+    if tier and tier not in ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude"):
         raise DispatchStoreError(f"Unknown tier '{tier}'.")
     now = _now()
     return {
@@ -248,6 +252,7 @@ def create_dispatch(data: dict) -> dict:
         "plan": data.get("plan") if isinstance(data.get("plan"), dict) else None,
         "plan_revision": 0,
         "workers": [],
+        "attachments": [],
         "result": None,
         "artifacts": [],
         "error": None,
@@ -262,6 +267,43 @@ def create_dispatch(data: dict) -> dict:
         )
     append_event(did, {"type": "dispatch_created", "state": state})
     return obj
+
+
+def bind_attachments(dispatch_id: str, files: list[dict]) -> dict:
+    """Copy validated temporary uploads into durable dispatch-owned storage."""
+    if not DISPATCH_ID_RE.match(str(dispatch_id or "")):
+        raise DispatchStoreError("Invalid dispatch id.")
+    if not isinstance(files, list) or len(files) > MAX_ATTACHMENTS:
+        raise DispatchStoreError(f"Attach no more than {MAX_ATTACHMENTS} files.")
+    obj = get_dispatch(dispatch_id)
+    if obj is None:
+        raise DispatchStoreError("No such dispatch.", 404)
+    target = (ATTACH_ROOT / dispatch_id).resolve()
+    if target.parent != ATTACH_ROOT.resolve():
+        raise DispatchStoreError("Invalid dispatch attachment path.")
+    target.mkdir(parents=True, exist_ok=True)
+    stored = []
+    try:
+        for index, item in enumerate(files, 1):
+            source = Path(str(item.get("path") or "")).resolve()
+            if not source.is_file():
+                raise DispatchStoreError("One or more attachments are no longer available.")
+            original = str(item.get("name") or source.name)
+            safe = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(original).name).strip(" .")
+            safe = safe or f"attachment-{index}{source.suffix.lower()}"
+            destination = target / f"{index:02d}_{safe}"
+            shutil.copy2(source, destination)
+            stored.append({
+                "id": destination.name,
+                "name": original[:255],
+                "mime": str(item.get("mime") or "")[:160],
+                "size": destination.stat().st_size,
+                "path": str(destination),
+            })
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+    return mutate_dispatch(dispatch_id, lambda current: {**current, "attachments": stored})
 
 
 def get_dispatch(dispatch_id: str):
@@ -283,7 +325,7 @@ def list_dispatches(limit: int = 50) -> list[dict]:
         obj = _loads(row["data"])
         out.append({k: obj.get(k) for k in (
             "id", "kind", "goal", "priority", "scope", "state", "created", "updated",
-        )})
+        )} | {"attachment_count": len(obj.get("attachments") or [])})
     return out
 
 
@@ -320,7 +362,10 @@ def delete_dispatch(dispatch_id: str) -> bool:
     with _lock, _db() as con:
         con.execute("DELETE FROM dispatch_events WHERE dispatch_id=?", (dispatch_id,))
         cur = con.execute("DELETE FROM dispatches WHERE id=?", (dispatch_id,))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    if deleted:
+        shutil.rmtree(ATTACH_ROOT / dispatch_id, ignore_errors=True)
+    return deleted
 
 
 def append_event(dispatch_id: str, event: dict) -> dict:

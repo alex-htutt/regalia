@@ -16,6 +16,7 @@ Run from the dashboard/ folder:
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -79,7 +80,10 @@ class RouteSmokeTests(unittest.TestCase):
     def test_api_usage_returns_dict(self):
         r = self.client.get("/api/usage")
         self.assertEqual(r.status_code, 200)
-        self.assertIsInstance(r.get_json(), dict)
+        data = r.get_json()
+        self.assertIsInstance(data, dict)
+        self.assertIn("claude", data)
+        self.assertIn("chatgpt", data)
 
     def test_api_agents_returns_registry(self):
         r = self.client.get("/api/agents")
@@ -100,6 +104,71 @@ class RouteSmokeTests(unittest.TestCase):
         self.assertIn(d["apply"].get("state"), ("idle", "running", "done", "error"))
         # No 'asset_url' must leak out of the internal state into the API shape.
         self.assertNotIn("asset_url", d)
+
+
+class CodexUsageTests(unittest.TestCase):
+    """ChatGPT usage reads only Codex token/limit metadata and handles deltas."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.original = dashboard_app.CODEX_SESSIONS_DIR
+        dashboard_app.CODEX_SESSIONS_DIR = Path(self.tmp.name)
+
+    def tearDown(self):
+        dashboard_app.CODEX_SESSIONS_DIR = self.original
+        self.tmp.cleanup()
+
+    def test_cumulative_token_events_become_totals_and_account_windows(self):
+        stamp = dashboard_app.datetime.now().astimezone().isoformat()
+        session = Path(self.tmp.name) / "2026" / "07" / "28" / "rollout.jsonl"
+        session.parent.mkdir(parents=True)
+        rate_limits = {
+            "primary": {"used_percent": 20, "window_minutes": 300, "resets_at": 2000000000},
+            "secondary": {"used_percent": 30, "window_minutes": 10080, "resets_at": 2000100000},
+            "plan_type": "plus",
+        }
+        records = [
+            {"timestamp": stamp, "type": "turn_context",
+             "payload": {"model": "gpt-5.6-sol"}},
+            {"timestamp": stamp, "type": "event_msg", "payload": {
+                "type": "token_count", "info": {"total_token_usage": {
+                    "input_tokens": 10, "cached_input_tokens": 3,
+                    "cache_write_input_tokens": 0, "output_tokens": 5,
+                    "reasoning_output_tokens": 2, "total_tokens": 15,
+                }}, "rate_limits": rate_limits}},
+            {"timestamp": stamp, "type": "event_msg", "payload": {
+                "type": "token_count", "info": {"total_token_usage": {
+                    "input_tokens": 20, "cached_input_tokens": 4,
+                    "cache_write_input_tokens": 1, "output_tokens": 6,
+                    "reasoning_output_tokens": 2, "total_tokens": 26,
+                }}, "rate_limits": rate_limits}},
+            {"timestamp": stamp, "type": "response_item",
+             "payload": {"type": "message", "content": "must not be parsed"}},
+        ]
+        session.write_text("\n".join(json.dumps(row) for row in records), encoding="utf-8")
+
+        usage = dashboard_app.load_codex_usage()
+
+        self.assertTrue(usage["available"])
+        self.assertEqual(usage["sessions"], 1)
+        self.assertEqual(usage["requests"], 2)
+        self.assertEqual(usage["totals"]["input_tokens"], 20)
+        self.assertEqual(usage["totals"]["output_tokens"], 6)
+        self.assertEqual(usage["totals"]["cached_input_tokens"], 4)
+        self.assertEqual(usage["totals"]["cache_write_input_tokens"], 1)
+        self.assertEqual(usage["totals"]["total_tokens"], 26)
+        self.assertEqual(usage["today"]["total"], 26)
+        self.assertEqual(usage["by_model"][0]["model"], "gpt-5.6-sol")
+        self.assertEqual(usage["rate_limits"]["plan_type"], "plus")
+        self.assertEqual(
+            [row["label"] for row in usage["rate_limits"]["windows"]],
+            ["5-hour limit", "Weekly limit"],
+        )
+
+    def test_missing_codex_session_directory_is_unavailable(self):
+        dashboard_app.CODEX_SESSIONS_DIR = Path(self.tmp.name) / "missing"
+        self.assertFalse(dashboard_app.load_codex_usage()["available"])
 
 
 class VersionCompareTests(unittest.TestCase):
@@ -150,6 +219,57 @@ class BrowseTraversalTests(unittest.TestCase):
         # backslashes are normalized to '/', then resolved — must still be caught.
         r = self.client.get("/api/browse?path=..\\..\\..\\Windows")
         self.assertIn(r.status_code, (400, 404))
+
+
+class BrowseUploadTests(unittest.TestCase):
+    """Dropping/uploading a file into the vault stays inside it and refuses junk."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = dashboard_app.app.test_client()
+        cls.root = dashboard_app.VAULT_ROOT.resolve()
+
+    def _upload(self, path, filename, data=b"hello"):
+        import io
+        return self.client.post(
+            "/api/browse/upload",
+            data={"path": path, "file": (io.BytesIO(data), filename)},
+            content_type="multipart/form-data",
+        )
+
+    def test_parent_escape_rejected(self):
+        r = self._upload("../..", "pwn.txt")
+        self.assertEqual(r.status_code, 400)
+
+    def test_upload_into_ignored_folder_rejected(self):
+        # dashboard/ is an ignored dir — must never accept a drop.
+        r = self._upload("dashboard", "pwn.txt")
+        self.assertEqual(r.status_code, 400)
+
+    def test_disallowed_extension_rejected(self):
+        r = self._upload("", "malware.exe", data=b"MZ")
+        self.assertEqual(r.status_code, 400)
+
+    def test_empty_file_rejected(self):
+        r = self._upload("", "empty.txt", data=b"")
+        self.assertEqual(r.status_code, 400)
+
+    def test_successful_upload_lands_in_target_and_no_clobber(self):
+        import shutil
+        folder = self.root / "_smoke_upload_tmp"
+        folder.mkdir(exist_ok=True)
+        try:
+            r1 = self._upload("_smoke_upload_tmp", "note.txt", data=b"one")
+            self.assertEqual(r1.status_code, 200)
+            self.assertEqual(r1.get_json()["path"], "_smoke_upload_tmp/note.txt")
+            self.assertTrue((folder / "note.txt").is_file())
+            # Same name again gets a -1 suffix rather than overwriting.
+            r2 = self._upload("_smoke_upload_tmp", "note.txt", data=b"two")
+            self.assertEqual(r2.status_code, 200)
+            self.assertEqual(r2.get_json()["path"], "_smoke_upload_tmp/note-1.txt")
+            self.assertEqual((folder / "note.txt").read_bytes(), b"one")
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 class VaultMapTests(unittest.TestCase):
@@ -1428,6 +1548,16 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("available", d["chatgpt"])
         self.assertIn("auth_state", d["chatgpt"])
         self.assertIn("auth_reason", d["chatgpt"])
+        self.assertEqual(d["gemini"]["backend"], "gemini")
+        self.assertEqual(d["google"]["backend"], "gemini-cli")
+        self.assertIn("auth_state", d["google"])
+
+    def test_agent_model_catalog_includes_current_chatgpt_family(self):
+        models = self.client.get("/api/agent/models").get_json()["tiers"]["chatgpt"]["models"]
+        self.assertEqual(
+            models[-3:],
+            ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        )
 
     def test_openai_key_from_store_flips_availability(self):
         import os
@@ -1713,6 +1843,7 @@ class ChatGptAccountTierTests(unittest.TestCase):
         self.assertEqual(res["reply"], "hello from chatgpt")
         self.assertEqual(seen["cmd"][:2], ["codex", "exec"])
         self.assertIn("read-only", seen["cmd"])
+        self.assertEqual(seen["cmd"][seen["cmd"].index("-C") + 1], seen["cwd"])
         self.assertIn("--skip-git-repo-check", seen["cmd"])
         self.assertIn("--ignore-user-config", seen["cmd"])
         self.assertIn("--ignore-rules", seen["cmd"])
@@ -1720,11 +1851,52 @@ class ChatGptAccountTierTests(unittest.TestCase):
         self.assertEqual(seen["cmd"][seen["cmd"].index("-m") + 1], "gpt-test")
         self.assertNotIn("--ask-for-approval", seen["cmd"])
         self.assertTrue(seen["input"].startswith("System instructions:"))
+        self.assertIn("Regalia Edit mode is OFF", seen["input"])
         for name in secret_names:
             self.assertNotIn(name, seen["env"])
         self.assertTrue(seen["cwd"])
         self.assertEqual(seen["staged"].parent, seen["add_dir"])
         self.assertFalse(seen["add_dir"].exists())
+
+    def test_chatgpt_edit_mode_sets_writable_root_and_instructs_model(self):
+        import tempfile
+
+        seen = {}
+        original_path = router._codex_cli_path
+        original_run = router.subprocess.run
+        original_cwd = router.CODEX_CLI_CWD
+
+        class FakeProc:
+            returncode = 0
+            stdout = "edited"
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["input"] = kwargs.get("input")
+            seen["cwd"] = kwargs.get("cwd")
+            return FakeProc()
+
+        with tempfile.TemporaryDirectory() as cwd:
+            router._codex_cli_path = lambda: "codex"
+            router.subprocess.run = fake_run
+            router.CODEX_CLI_CWD = cwd
+            try:
+                router.chat(
+                    [{"role": "user", "content": "Update notes/today.md"}],
+                    tier="chatgpt",
+                    allow_write=True,
+                )
+            finally:
+                router._codex_cli_path = original_path
+                router.subprocess.run = original_run
+                router.CODEX_CLI_CWD = original_cwd
+
+        cmd = seen["cmd"]
+        self.assertEqual(cmd[cmd.index("--sandbox") + 1], "workspace-write")
+        self.assertEqual(cmd[cmd.index("-C") + 1], seen["cwd"])
+        self.assertIn("Regalia Edit mode is ON", seen["input"])
+        self.assertIn("Carry out requested edits", seen["input"])
 
     def test_health_rejects_api_key_login_and_marks_tier_unavailable(self):
         import tempfile
@@ -1813,6 +1985,373 @@ class ChatGptAccountTierTests(unittest.TestCase):
             router.chat_tools([{"role": "user", "content": "hi"}], [],
                               tier="chatgpt")
         self.assertEqual(ctx.exception.status, 400)
+
+
+class GeminiApiTierTests(unittest.TestCase):
+    """`gemini` tier — key-billed Gemini REST, including its wire translation."""
+
+    def test_gemini_is_a_tool_capable_tier(self):
+        self.assertIn("gemini", router.TIERS)
+        self.assertIn("gemini", agent.AGENT_TIERS)
+
+    def _capture_request(self, response, tier_call):
+        """Run a router call with urlopen faked; return (Request, result)."""
+        seen = {}
+
+        class FakeResponse:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+            def read(self_inner):
+                return json.dumps(response).encode("utf-8")
+
+        def fake_urlopen(req, **kwargs):
+            seen["request"] = req
+            return FakeResponse()
+
+        original = router.urllib.request.urlopen
+        router.urllib.request.urlopen = fake_urlopen
+        try:
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+                result = tier_call()
+        finally:
+            router.urllib.request.urlopen = original
+        return seen["request"], result
+
+    def test_key_travels_in_a_header_never_in_the_url(self):
+        # A key in the query string leaks into proxy/server logs; a header doesn't.
+        req, result = self._capture_request(
+            {"candidates": [{"content": {"parts": [{"text": "hi there"}]},
+                             "finishReason": "STOP"}],
+             "modelVersion": "gemini-test-001"},
+            lambda: router.chat([{"role": "user", "content": "hi"}], tier="gemini"),
+        )
+        self.assertEqual(req.headers.get("X-goog-api-key"), "test-key")
+        self.assertNotIn("test-key", req.full_url)
+        self.assertIn(":generateContent", req.full_url)
+        self.assertEqual(result["reply"], "hi there")
+        self.assertEqual(result["tier"], "gemini")
+        self.assertEqual(result["model"], "gemini-test-001")
+
+    def test_missing_key_is_a_401_not_a_crash(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GEMINI_API_KEY", None)
+            os.environ.pop("GOOGLE_API_KEY", None)
+            with mock.patch.object(router._config, "load", return_value={}):
+                with self.assertRaises(router.RouterError) as ctx:
+                    router.chat([{"role": "user", "content": "hi"}], tier="gemini")
+        self.assertEqual(ctx.exception.status, 401)
+        self.assertIn("Gemini API key", ctx.exception.message)
+
+    def test_history_translates_to_gemini_roles_and_function_parts(self):
+        contents = router._to_gemini_contents([
+            {"role": "user", "content": "list notes"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Looking."},
+                {"type": "tool_use", "id": "tu_1", "name": "list_notes",
+                 "input": {"folder": "projects"}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "a.md"},
+            ]},
+        ])
+        self.assertEqual([c["role"] for c in contents], ["user", "model", "user"])
+        self.assertEqual(contents[1]["parts"][1]["functionCall"]["name"], "list_notes")
+        # Gemini pairs results to calls by NAME (there are no call ids), so the
+        # tool_use_id must be resolved back to the function name.
+        response = contents[2]["parts"][0]["functionResponse"]
+        self.assertEqual(response["name"], "list_notes")
+        self.assertEqual(response["response"], {"result": "a.md"})
+
+    def test_tool_schemas_are_reduced_to_geminis_accepted_subset(self):
+        tools = router._to_gemini_tools([
+            {"name": "read_note", "description": "d", "input_schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"path": {"type": "string"},
+                               "tags": {"type": "array", "items": {"type": "string"}}},
+                "required": ["path"],
+            }},
+            {"name": "ping", "description": "no args",
+             "input_schema": {"type": "object", "properties": {}}},
+        ])
+        decls = tools[0]["functionDeclarations"]
+        params = decls[0]["parameters"]
+        self.assertNotIn("$schema", params)
+        self.assertNotIn("additionalProperties", params)
+        self.assertEqual(params["type"], "OBJECT")           # enum is upper-case
+        self.assertEqual(params["properties"]["path"]["type"], "STRING")
+        self.assertEqual(params["properties"]["tags"]["items"]["type"], "STRING")
+        # A parameterless tool must omit `parameters` — an empty object is rejected.
+        self.assertNotIn("parameters", decls[1])
+
+    def test_function_calls_are_normalized_for_the_agent_loop(self):
+        payload = {"candidates": [{"content": {"parts": [
+            {"text": "Reading."},
+            {"functionCall": {"name": "read_note", "args": {"path": "a.md"}}},
+        ]}, "finishReason": "STOP"}]}
+        with mock.patch.object(router, "_gemini_request", return_value=payload):
+            out = router.chat_tools([{"role": "user", "content": "read a.md"}],
+                                    [{"name": "read_note", "description": "d",
+                                      "input_schema": {"type": "object", "properties": {}}}],
+                                    tier="gemini")
+        self.assertEqual(out["stop_reason"], "tool_use")
+        self.assertEqual(out["text"], "Reading.")
+        self.assertEqual(len(out["tool_calls"]), 1)
+        call = out["tool_calls"][0]
+        self.assertEqual(call["name"], "read_note")
+        self.assertEqual(call["input"], {"path": "a.md"})
+        self.assertTrue(call["id"])  # synthesized: Gemini supplies no call ids
+
+    def test_empty_response_explains_itself(self):
+        blocked = {"promptFeedback": {"blockReason": "SAFETY"}, "candidates": []}
+        with mock.patch.object(router, "_gemini_request", return_value=blocked):
+            out = router.chat([{"role": "user", "content": "hi"}], tier="gemini")
+        self.assertIn("SAFETY", out["reply"])
+
+    def test_rejected_key_surfaces_as_401(self):
+        # Held and closed explicitly: an HTTPError left to the collector emits a
+        # ResourceWarning that would pollute every later test run.
+        http_error = router.urllib.error.HTTPError(
+            "https://example.invalid", 403, "Forbidden", {},
+            io.BytesIO(b'{"error": {"message": "bad key"}}'))
+
+        def raise_403(req, **kwargs):
+            raise http_error
+
+        original = router.urllib.request.urlopen
+        router.urllib.request.urlopen = raise_403
+        try:
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "nope"}):
+                with self.assertRaises(router.RouterError) as ctx:
+                    router.chat([{"role": "user", "content": "hi"}], tier="gemini")
+        finally:
+            router.urllib.request.urlopen = original
+            http_error.close()
+        self.assertEqual(ctx.exception.status, 401)
+
+
+class GoogleAccountTierTests(unittest.TestCase):
+    """`google` tier — Gemini CLI on a Google sign-in, never an API key."""
+
+    def _run_cli(self, allow_write=False, model=None, stdout="hi from gemini",
+                 returncode=0, stderr=""):
+        import tempfile
+
+        seen = {}
+
+        class FakeProc:
+            pass
+
+        FakeProc.returncode = returncode
+        FakeProc.stdout = stdout
+        FakeProc.stderr = stderr
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["input"] = kwargs.get("input")
+            seen["env"] = kwargs.get("env") or {}
+            seen["cwd"] = kwargs.get("cwd")
+            return FakeProc()
+
+        original_path = router._gemini_cli_path
+        original_run = router.subprocess.run
+        original_cwd = router.GEMINI_CLI_CWD
+        with tempfile.TemporaryDirectory() as cwd:
+            router._gemini_cli_path = lambda: "gemini"
+            router.subprocess.run = fake_run
+            router.GEMINI_CLI_CWD = cwd
+            try:
+                result = router.chat([{"role": "user", "content": "hi"}], tier="google",
+                                     system="be terse", model=model,
+                                     allow_write=allow_write)
+            finally:
+                router._gemini_cli_path = original_path
+                router.subprocess.run = original_run
+                router.GEMINI_CLI_CWD = original_cwd
+        return seen, result
+
+    def test_api_keys_are_kept_out_of_the_cli_environment(self):
+        # Load-bearing: the Gemini CLI prefers an API key when it finds one in
+        # its environment. Inheriting these would silently bill the "Google
+        # account" tier to a key, which is the one thing it exists to avoid.
+        secret_names = (
+            "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY",
+        )
+        with mock.patch.dict(os.environ,
+                             {name: f"sentinel-{name.lower()}" for name in secret_names}):
+            seen, result = self._run_cli()
+        for name in secret_names:
+            self.assertNotIn(name, seen["env"])
+        self.assertNotIn("sentinel", json.dumps(seen["env"]).lower())
+        self.assertEqual(result["tier"], "google")
+        self.assertEqual(result["reply"], "hi from gemini")
+
+    def test_prompt_is_piped_and_states_the_edit_policy(self):
+        seen, _ = self._run_cli()
+        self.assertEqual(seen["cmd"], ["gemini"])       # no prompt on argv
+        self.assertIn("be terse", seen["input"])
+        self.assertIn("Edit mode is OFF", seen["input"])
+        self.assertNotIn("--yolo", seen["cmd"])
+
+    def test_edit_mode_auto_approves_and_says_so(self):
+        seen, _ = self._run_cli(allow_write=True, model="gemini-test")
+        self.assertIn("--yolo", seen["cmd"])
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--model") + 1], "gemini-test")
+        self.assertIn("Edit mode is ON", seen["input"])
+
+    def test_signed_out_failure_is_reported_as_401(self):
+        with self.assertRaises(router.RouterError) as ctx:
+            self._run_cli(stdout="", returncode=1,
+                          stderr="Error: no valid credentials, please login")
+        self.assertEqual(ctx.exception.status, 401)
+
+    def _health(self, auth_type=None, oauth=True, returncode=0, stdout="0.1.0"):
+        import tempfile
+
+        class FakeProc:
+            pass
+
+        FakeProc.returncode = returncode
+        FakeProc.stdout = stdout
+        FakeProc.stderr = ""
+
+        original_path = router._gemini_cli_path
+        original_run = router.subprocess.run
+        original_home = router._gemini_cli_home
+        original_cwd = router.GEMINI_CLI_CWD
+        original_health = dict(router._GEMINI_HEALTH)
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as cwd:
+            if auth_type is not None:
+                (Path(home) / "settings.json").write_text(
+                    json.dumps({"selectedAuthType": auth_type}), encoding="utf-8")
+            if oauth:
+                (Path(home) / "oauth_creds.json").write_text("{}", encoding="utf-8")
+            router._gemini_cli_path = lambda: "gemini"
+            router.subprocess.run = lambda *a, **k: FakeProc()
+            router._gemini_cli_home = lambda: Path(home)
+            router.GEMINI_CLI_CWD = cwd
+            try:
+                ok, reason = router.gemini_cli_health()
+                status = router.status_for("google")
+            finally:
+                router._gemini_cli_path = original_path
+                router.subprocess.run = original_run
+                router._gemini_cli_home = original_home
+                router.GEMINI_CLI_CWD = original_cwd
+                router._GEMINI_HEALTH.clear()
+                router._GEMINI_HEALTH.update(original_health)
+        return ok, reason, status
+
+    def test_health_confirms_a_google_account_login(self):
+        ok, reason, status = self._health(auth_type="oauth-personal")
+        self.assertTrue(ok)
+        self.assertIn("Google account", reason)
+        self.assertEqual(status["auth_state"], "google")
+        self.assertTrue(status["available"])
+
+    def test_health_rejects_an_api_key_login(self):
+        # Signed in, but on the wrong door — that's the `gemini` tier's job.
+        ok, reason, status = self._health(auth_type="gemini-api-key")
+        self.assertFalse(ok)
+        self.assertIn("API key", reason)
+        self.assertEqual(status["auth_state"], "wrong_method")
+        self.assertFalse(status["available"])
+
+    def test_health_reports_a_missing_sign_in(self):
+        ok, reason, status = self._health(auth_type=None, oauth=False)
+        self.assertFalse(ok)
+        self.assertIn("Login with Google", reason)
+        self.assertEqual(status["auth_state"], "signed_out")
+        self.assertFalse(status["available"])
+
+    def test_google_uses_cli_agents_but_not_the_in_process_tool_loop(self):
+        self.assertIn("google", router.TIERS)
+        self.assertIn("google", agent.AGENT_TIERS)
+        with self.assertRaises(router.RouterError) as ctx:
+            router.chat_tools([{"role": "user", "content": "hi"}], [], tier="google")
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_streaming_agent_uses_account_safe_jsonl_mode(self):
+        import tempfile
+
+        seen = {}
+
+        class FakeInput:
+            def write(self, value):
+                seen["input"] = value
+
+            def close(self):
+                pass
+
+        class FakeProc:
+            def __init__(self):
+                self.stdin = FakeInput()
+                self.stdout = iter([
+                    json.dumps({"type": "init", "model": "gemini-test"}) + "\n",
+                    json.dumps({"type": "message", "role": "assistant",
+                                "content": "Done.", "delta": True}) + "\n",
+                    json.dumps({"type": "result", "status": "success"}) + "\n",
+                ])
+                self.stderr = iter([])
+                self.returncode = 0
+
+            def wait(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        def fake_popen(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["env"] = kwargs.get("env") or {}
+            seen["cwd"] = kwargs.get("cwd")
+            return FakeProc()
+
+        with tempfile.TemporaryDirectory() as cwd, \
+                mock.patch.object(router, "_gemini_cli_path", return_value="gemini"), \
+                mock.patch.object(router.subprocess, "Popen", side_effect=fake_popen), \
+                mock.patch.dict(os.environ, {"GEMINI_API_KEY": "must-not-leak"}):
+            events = list(router.gemini_agent_stream(
+                "Do the work", system="Be concise", model="gemini-test",
+                cwd=cwd, allow_write=True,
+            ))
+
+        self.assertEqual([event["type"] for event in events], ["init", "message", "result"])
+        self.assertIn("stream-json", seen["cmd"])
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--approval-mode") + 1], "yolo")
+        self.assertEqual(seen["cmd"][seen["cmd"].index("--model") + 1], "gemini-test")
+        self.assertNotIn("GEMINI_API_KEY", seen["env"])
+        self.assertIn("Be concise", seen["input"])
+        self.assertIn("Do the work", seen["input"])
+
+    def test_google_agent_maps_stream_events_to_regalia_steps(self):
+        stream = [
+            {"type": "init", "model": "gemini-test"},
+            {"type": "tool_use", "tool_name": "read_file", "tool_id": "t1",
+             "parameters": {"path": "README.md"}},
+            {"type": "tool_result", "tool_id": "t1", "status": "success",
+             "output": "contents"},
+            {"type": "message", "role": "assistant", "content": "Finished.",
+             "delta": True},
+            {"type": "result", "status": "success"},
+        ]
+        emitted = []
+        with mock.patch.object(router, "gemini_agent_stream", return_value=iter(stream)):
+            result = agent.run_agent(
+                "summarizer", "Summarize the vault", tier="google", emit=emitted.append,
+            )
+
+        self.assertEqual(result["tier"], "google")
+        self.assertEqual(result["model"], "gemini-test")
+        self.assertEqual(result["reply"], "Finished.")
+        self.assertEqual(result["steps"][0]["tool"], "read_file")
+        self.assertTrue(any(event.get("type") == "tool_result" for event in emitted))
 
 
 class BackendRegressionTests(unittest.TestCase):
@@ -1960,10 +2499,70 @@ class BackendRegressionTests(unittest.TestCase):
         self.assertEqual(by_target["_run_worker"][5], "sonnet")
         self.assertEqual(by_target["_chat_stream_worker"][3], "opus")
 
+    def test_chatgpt_stream_tier_and_model_reach_worker(self):
+        original_thread = dashboard_app.threading.Thread
+        launched = []
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                launched.append(kwargs)
+
+            def start(self):
+                pass
+
+        dashboard_app.threading.Thread = FakeThread
+        run_id = None
+        try:
+            response = self.client.post("/api/chat/stream", json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "tier": "chatgpt", "model": "gpt-5.6-terra",
+            })
+            run_id = response.get_json().get("run_id")
+        finally:
+            dashboard_app.threading.Thread = original_thread
+            if run_id:
+                with dashboard_app._CHAT_STREAMS_LOCK:
+                    dashboard_app._CHAT_STREAMS.pop(run_id, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(launched[0]["target"], dashboard_app._chat_stream_worker)
+        self.assertEqual(launched[0]["args"][3], "gpt-5.6-terra")
+        self.assertEqual(launched[0]["args"][6], "chatgpt")
+
+    def test_chatgpt_agent_model_override_reaches_worker(self):
+        original_thread = dashboard_app.threading.Thread
+        launched = []
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                launched.append(kwargs)
+
+            def start(self):
+                pass
+
+        dashboard_app.threading.Thread = FakeThread
+        run_id = None
+        try:
+            response = self.client.post(
+                "/api/agent/run",
+                json={"agent": "summarizer", "task": "Summarize", "tier": "chatgpt",
+                      "model": "gpt-5.6-terra"},
+            )
+            run_id = response.get_json().get("run_id")
+        finally:
+            dashboard_app.threading.Thread = original_thread
+            if run_id:
+                with dashboard_app._RUNS_LOCK:
+                    dashboard_app._RUNS.pop(run_id, None)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(launched[0]["args"][3], "chatgpt")
+        self.assertEqual(launched[0]["args"][5], "gpt-5.6-terra")
+
     def test_unsupported_agent_tier_is_explicit_error(self):
         response = self.client.post(
             "/api/agent/run",
-            json={"agent": "summarizer", "task": "Summarize", "tier": "chatgpt"},
+            json={"agent": "summarizer", "task": "Summarize", "tier": "mystery"},
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("cannot run agents", response.get_json()["error"])
@@ -2056,6 +2655,194 @@ class ProjectScaffoldTests(unittest.TestCase):
         dashboard_app.create_project_core("App", "Side Quests")
         names = [f["name"] for f in self.client.get("/api/browse").get_json()["folders"]]
         self.assertIn("Side Quests", names)
+
+
+class ChatStreamPresentationTests(unittest.TestCase):
+    """What the Chat panel is told about streamed account-model runs.
+
+    Two things used to come out wrong: the reply was labelled with whatever
+    `modelUsage` listed first — usually the cheap model Claude Code uses for
+    background work, so an opus run rendered as haiku — and tool-call markup the
+    model emitted as plain *text* was passed straight through, which is what
+    filled the bubble with thousands of orphan closing tags.
+
+    Offline: router.claude_code_chat_stream is stubbed with canned CLI events.
+    """
+
+    LEAKED_TEXT = (
+        'Let me look.\n'
+        '<invoke name="Read">\n'
+        '<parameter name="file_path">C:\\Vault\\Study_Guide.md</parameter>\n'
+        '</invoke>\n'
+        '</invoke>\n</parameter>\n</invoke>'
+    )
+    STREAM = [
+        {"type": "system", "subtype": "init", "model": "claude-opus-4-5-20251101"},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": LEAKED_TEXT},
+            {"type": "tool_use", "id": "t1", "name": "Read"},
+        ]}},
+        {"type": "result", "is_error": False,
+         "result": "Here is the guide.\n</invoke>\n</parameter>",
+         "modelUsage": {"claude-haiku-4-5-20251001": {"outputTokens": 30},
+                        "claude-opus-4-5-20251101": {"outputTokens": 900}}},
+    ]
+
+    def _run(self, stream):
+        original = router.claude_code_chat_stream
+        router.claude_code_chat_stream = lambda *a, **k: iter(stream)
+        run_id = "smoke-chat-stream"
+        with dashboard_app._CHAT_STREAMS_LOCK:
+            dashboard_app._CHAT_STREAMS[run_id] = {
+                "id": run_id, "status": "running", "steps": [],
+                "reply": "", "model": "", "error": None, "started": "now",
+            }
+        try:
+            dashboard_app._chat_stream_worker(
+                run_id, [{"role": "user", "content": "hi"}], None, None, [], False)
+        finally:
+            router.claude_code_chat_stream = original
+        with dashboard_app._CHAT_STREAMS_LOCK:
+            return dashboard_app._CHAT_STREAMS.pop(run_id)
+
+    def _run_chatgpt(self, stream, model="gpt-5.6-sol"):
+        original = router.codex_chat_stream
+        router.codex_chat_stream = lambda *a, **k: iter(stream)
+        run_id = "smoke-chatgpt-stream"
+        with dashboard_app._CHAT_STREAMS_LOCK:
+            dashboard_app._CHAT_STREAMS[run_id] = {
+                "id": run_id, "status": "running", "steps": [],
+                "reply": "", "model": "", "error": None, "started": "now",
+            }
+        try:
+            dashboard_app._chat_stream_worker(
+                run_id, [{"role": "user", "content": "hi"}],
+                None, model, [], False, "chatgpt",
+            )
+        finally:
+            router.codex_chat_stream = original
+        with dashboard_app._CHAT_STREAMS_LOCK:
+            return dashboard_app._CHAT_STREAMS.pop(run_id)
+
+    def test_reply_is_labelled_with_the_session_model(self):
+        run = self._run(self.STREAM)
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(run["model"], "claude-opus-4-5-20251101")
+
+    def test_leaked_tool_markup_never_reaches_the_transcript(self):
+        run = self._run(self.STREAM)
+        self.assertEqual(run["reply"], "Here is the guide.")
+        texts = [s["text"] for s in run["steps"] if s["type"] in ("text", "think")]
+        self.assertEqual(texts, ["Let me look."])
+        for blob in texts + [run["reply"]]:
+            self.assertNotIn("invoke", blob)
+            self.assertNotIn("parameter", blob)
+
+    def test_model_falls_back_to_the_heaviest_usage_entry(self):
+        # No init event: pick the model that produced the output, not the first key.
+        run = self._run([e for e in self.STREAM if e["type"] != "system"])
+        self.assertEqual(run["model"], "claude-opus-4-5-20251101")
+
+    def test_ordinary_text_with_angle_brackets_survives(self):
+        keep = "use 2 < 3 and <b>bold</b> here"
+        self.assertEqual(dashboard_app._strip_tool_markup(keep), keep)
+
+    def test_primary_model_handles_junk_usage_maps(self):
+        self.assertEqual(router.primary_model(None, "fallback"), "fallback")
+        self.assertEqual(router.primary_model({"a": None, "b": {"outputTokens": 5}}), "b")
+
+    def test_chatgpt_stream_shows_safe_summary_activity_and_answer(self):
+        stream = [
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.started", "item": {
+                "id": "i1", "type": "reasoning", "status": "in_progress",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "i1", "type": "reasoning",
+                "summary": [{"text": "Checking the relevant files."}],
+                "content": [{"text": "RAW REASONING MUST STAY PRIVATE"}],
+            }},
+            {"type": "item.started", "item": {
+                "id": "i2", "type": "command_execution",
+                "command": "rg -n chat app.py", "status": "in_progress",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "i3", "type": "agent_message", "text": "Done.",
+            }},
+            {"type": "turn.completed", "usage": {"output_tokens": 3}},
+        ]
+
+        run = self._run_chatgpt(stream)
+
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(run["reply"], "Done.")
+        self.assertEqual(run["model"], "gpt-5.6-sol")
+        self.assertIn(
+            {"type": "think", "text": "Checking the relevant files."},
+            run["steps"],
+        )
+        self.assertIn(
+            {"type": "tool", "tool": "Command · rg -n chat app.py"},
+            run["steps"],
+        )
+        serialized = json.dumps(run)
+        self.assertNotIn("RAW REASONING MUST STAY PRIVATE", serialized)
+
+    def test_chatgpt_cli_text_reasoning_is_readable_summary(self):
+        run = self._run_chatgpt([
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "type": "reasoning", "text": "Reviewing the request.",
+                "content": "PRIVATE",
+            }},
+            {"type": "item.completed", "item": {
+                "type": "agent_message", "text": "Ready.",
+            }},
+        ])
+        self.assertIn(
+            {"type": "think", "text": "Reviewing the request."},
+            run["steps"],
+        )
+        self.assertNotIn("PRIVATE", json.dumps(run))
+
+    def test_chatgpt_failed_turn_becomes_stream_error(self):
+        run = self._run_chatgpt([
+            {"type": "turn.started"},
+            {"type": "turn.failed", "error": {"message": "limit reached"}},
+        ])
+        self.assertEqual(run["status"], "error")
+        self.assertIn("limit reached", run["error"])
+
+    def test_chatgpt_stream_stages_attachments_for_one_invocation(self):
+        import tempfile
+
+        captured = {}
+
+        def fake_codex_stream(prompt, **kwargs):
+            captured["prompt"] = prompt
+            captured.update(kwargs)
+            captured["exists_during"] = Path(kwargs["extra_dirs"][0]).is_dir()
+            yield {"type": "turn.completed"}
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            source = Path(source_dir) / "notes.txt"
+            source.write_text("hello", encoding="utf-8")
+            attachment = {
+                "path": str(source), "name": "notes.txt", "mime": "text/plain",
+            }
+            with mock.patch.object(router, "codex_agent_stream", fake_codex_stream):
+                events = list(router.codex_chat_stream(
+                    [{"role": "user", "content": "read this"}],
+                    attachments=[attachment], allow_write=True,
+                ))
+
+        staged_dir = Path(captured["extra_dirs"][0])
+        self.assertEqual(events, [{"type": "turn.completed"}])
+        self.assertTrue(captured["exists_during"])
+        self.assertFalse(staged_dir.exists())
+        self.assertIn(str(staged_dir), captured["prompt"])
+        self.assertTrue(captured["allow_write"])
 
 
 if __name__ == "__main__":

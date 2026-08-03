@@ -194,7 +194,7 @@
     border-color: var(--glass-border) !important;
   }
 
-  /* -- Claude usage -- */
+  /* -- AI account usage -- */
   .usage { padding: 20px var(--page-pad) 0; }
   .usage-panel {
     background: var(--glass);
@@ -229,6 +229,13 @@
   .model-tok { color: var(--muted); flex-shrink: 0; }
   .usage-foot { font-size: 10.5px; color: var(--faint); margin-top: 12px; }
   .usage.empty-state { color: var(--faint); font-size: 12.5px; }
+  .usage-stack { display: grid; gap: 12px; }
+  .rate-list { display: grid; gap: 10px; }
+  .rate-row { display: grid; gap: 5px; }
+  .rate-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: var(--muted); }
+  .rate-track { height: 7px; overflow: hidden; border-radius: 999px; background: var(--border); }
+  .rate-fill { height: 100%; min-width: 2px; border-radius: inherit; background: var(--amber); }
+  .rate-reset { font-size: 10px; color: var(--faint); }
 
   /* -- Briefing (tech news / social / jobs) -- */
   .news { padding: 20px var(--page-pad) 0; }
@@ -289,10 +296,14 @@
     border-top: 1px solid var(--border);
     display: grid;
     grid-template-columns: minmax(0, 1fr) clamp(290px, 28vw, 360px);
+    /* Pin the single row to the container height. Left as `auto` it grows to fit
+       an expanded file tree, which then gets clipped by overflow:hidden below
+       instead of scrolling inside .vault-tree. */
+    grid-template-rows: minmax(0, 1fr);
     background: color-mix(in srgb, var(--bg) 91%, transparent);
     overflow: hidden;
   }
-  .vault-graph-pane { position: relative; min-width: 0; overflow: hidden; }
+  .vault-graph-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
   .vault-toolbar {
     position: absolute; z-index: 6; top: 14px; left: 14px; right: 14px;
     display: flex; align-items: center; gap: 7px; pointer-events: none;
@@ -363,6 +374,17 @@
   .vault-legend i { width: 14px; height: 2px; background: var(--muted); display: inline-block; }
   .vault-legend i.link { background: var(--amber); opacity: .65; border-top: 1px dashed var(--bg); }
   .vault-status { position: absolute; z-index: 4; right: 16px; bottom: 14px; color: var(--faint); font: 10px var(--font-mono); }
+  /* File-drop overlay for the vault map — shown only while dragging a file over the pane. */
+  .vault-drop-hint {
+    position: absolute; inset: 8px; z-index: 9; display: none;
+    align-items: center; justify-content: center; pointer-events: none;
+    background: color-mix(in srgb, var(--amber) 10%, var(--bg)); opacity: .96;
+    border: 2px dashed var(--amber); border-radius: 14px;
+  }
+  .vault-graph-pane.drop-active .vault-drop-hint { display: flex; }
+  .vault-drop-inner { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--amber); text-align: center; padding: 0 20px; }
+  .vault-drop-icon { font-size: 30px; line-height: 1; }
+  #vault-drop-label { font-size: 14px; font-weight: 600; letter-spacing: .3px; }
   .vault-inspector {
     position: absolute; z-index: 7; left: 14px; bottom: 38px;
     width: min(430px, calc(100% - 28px)); max-height: min(48vh, 410px);
@@ -384,12 +406,12 @@
   .vi-preview img { display: block; max-width: 100%; max-height: 230px; border-radius: 7px; margin: 0 auto; }
   .vi-preview .md { font-size: 12px; max-height: 240px; overflow: auto; }
   .vi-loading { color: var(--faint); font-size: 11px; }
-  .vault-tree-panel { min-width: 0; border-left: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; }
-  .vault-tree-head { height: 48px; padding: 0 13px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .vault-tree-panel { min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; }
+  .vault-tree-head { flex: 0 0 auto; height: 48px; padding: 0 13px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
   .vault-tree-head strong { font-size: 11px; text-transform: uppercase; letter-spacing: .55px; }
   .vault-tree-count { margin-left: auto; color: var(--faint); font: 10px var(--font-mono); }
   .vault-tree-close { display: none; border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
-  .vault-tree { flex: 1; overflow: auto; padding: 8px 6px 18px; }
+  .vault-tree { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 8px 6px 18px; }
   .vault-tree-row { display: flex; align-items: center; min-width: 0; height: 27px; border-radius: 5px; }
   .vault-tree-row:hover { background: var(--gray-bg); }
   .vault-tree-row.selected { background: var(--amber-bg); }
@@ -818,12 +840,25 @@
     .chat-item { flex: 0 1 clamp(128px, 42vw, 180px); max-width: none; }
   }
   .chat-box {
+    position: relative;
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     display: flex; flex-direction: column; height: min(720px, calc(100vh - 280px)); min-height: 320px; overflow: hidden;
   }
+  .chat-box.drop-active { border-color: var(--accent); }
+  .chat-drop-hint {
+    position: absolute; inset: 0; z-index: 6; display: none;
+    align-items: center; justify-content: center; pointer-events: none;
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+    border: 2px dashed var(--accent); border-radius: 12px;
+    color: var(--accent); font-size: 15px; font-weight: 600; letter-spacing: .3px;
+  }
+  .chat-box.drop-active .chat-drop-hint { display: flex; }
   .chat-log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); }
   .chat-empty { color: var(--faint); font-size: 12.5px; margin: auto; text-align: center; max-width: min(100%, 360px); }
-  .chat-msg { font-size: 13.5px; line-height: 1.55; max-width: min(80%, 760px); }
+  /* overflow-wrap:anywhere (not break-word) so an unbroken blob — a Windows path,
+     a URL, a base64 line — also shrinks the bubble's min-content width instead of
+     spilling out of it. */
+  .chat-msg { font-size: 13.5px; line-height: 1.55; max-width: min(80%, 760px); min-width: 0; overflow-wrap: anywhere; }
   .chat-msg.user {
     align-self: flex-end; background: var(--accent); color: var(--accent-fg);
     padding: 9px 13px; border-radius: 12px 12px 3px 12px; white-space: pre-wrap; word-wrap: break-word;
@@ -834,26 +869,41 @@
   }
   .chat-msg.bot .who { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--faint); margin-bottom: 4px; font-weight: 600; }
   .chat-msg.bot .md p { margin: 4px 0; }
-  .chat-msg.bot .md ol, .chat-msg.bot .md ul { margin: 4px 0; padding-left: 20px; }
+  .chat-msg.bot .md ol, .chat-msg.bot .md ul { margin: 4px 0; padding-left: 20px; overflow-wrap: anywhere; }
+  /* A very long reply is collapsed to a readable height with a fade + toggle,
+     so one wall of text can't bury the rest of the conversation. */
+  .chat-msg.bot .md.clamped {
+    max-height: 340px; overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 76%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 76%, transparent 100%);
+  }
+  .md-toggle {
+    margin-top: 6px; padding: 0; border: none; background: none; cursor: pointer;
+    color: var(--accent); font-size: 11.5px; font-weight: 600; font-family: inherit;
+  }
+  .md-toggle:hover { text-decoration: underline; }
   .chat-msg.err {
     align-self: stretch; max-width: 100%; background: var(--err-bg); color: var(--red);
     border: 1px solid var(--err-border); padding: 9px 13px; border-radius: 8px; font-size: 12.5px;
   }
   .chat-typing { align-self: flex-start; color: var(--faint); font-size: 12px; font-style: italic; padding: 2px 4px; }
-  /* Live Claude thinking/tool stream — shown while busy, then replaced by the
-     final bot bubble. Deliberately quieter than a real message. */
+  /* Live account-model summary/activity stream — shown while busy, then
+     replaced by the final bot bubble. Deliberately quieter than a real message. */
   .chat-thinking {
-    align-self: flex-start; max-width: min(80%, 760px);
+    align-self: flex-start; max-width: min(80%, 760px); min-width: 0;
     background: var(--glass-inset); border: 1px solid var(--border);
     border-left: 2px solid var(--accent); border-radius: 10px;
     padding: 9px 13px; font-size: 12.5px; line-height: 1.5; color: var(--muted);
+    overflow-wrap: anywhere;
   }
+  .chat-thinking .ct-elided { color: var(--faint); font-size: 11px; font-style: italic; margin-bottom: 4px; }
   .chat-thinking .ct-head {
     font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px;
     color: var(--faint); font-weight: 600; margin-bottom: 6px;
   }
   .chat-thinking .ct-line { margin: 3px 0; }
   .chat-thinking .ct-line.think { color: var(--muted); font-style: italic; }
+  .chat-thinking .ct-line.status { color: var(--faint); font: 10.5px ui-monospace, monospace; }
   .chat-thinking .ct-line.text { color: var(--text); font-style: normal; }
   .chat-thinking .ct-line p { margin: 3px 0; }
   .chat-thinking .ct-line ol, .chat-thinking .ct-line ul { margin: 3px 0; padding-left: 18px; }
@@ -971,6 +1021,10 @@
     background:var(--bg); color:var(--text); padding:8px 9px; font:12px inherit; outline:none;
   }
   .dispatch-form textarea { min-height:90px; resize:vertical; }
+  .dispatch-attachment-field { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  .dispatch-attachment-field .dispatch-attachment-label { width:100%; color:var(--muted); font-size:11px; }
+  .dispatch-attachment-field .chat-attachments { flex:1 1 220px; padding:0; background:transparent; }
+  .dispatch-attachment-field .dispatch-secondary { display:inline-flex; align-items:center; width:auto; color:var(--text); }
   .dispatch-form input:focus, .dispatch-form textarea:focus, .dispatch-form select:focus,
   .dispatch-form .acx-trigger:focus-visible, .worker-edit .acx-trigger:focus-visible,
   .dispatch-chat textarea:focus { border-color:var(--border-hover); }
@@ -980,7 +1034,7 @@
   .dispatch-foot { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:12px; }
   .dispatch-msg { color:var(--muted); font-size:12px; margin-right:auto; }
   .dispatch-chat { display:flex; flex-direction:column; gap:8px; }
-  .dispatch-bubble { border:1px solid var(--border); border-radius:9px; padding:9px 11px; font-size:12.5px; line-height:1.5; }
+  .dispatch-bubble { border:1px solid var(--border); border-radius:9px; padding:9px 11px; font-size:12.5px; line-height:1.5; min-width:0; overflow-wrap:anywhere; }
   .dispatch-bubble.user { background:var(--amber-bg); margin-left:10%; }
   .dispatch-bubble.assistant { background:var(--bg); margin-right:10%; }
   .dispatch-chat-send { display:flex; gap:8px; }
@@ -1559,10 +1613,15 @@
               <button class="vault-tool-btn zoom-extra" type="button" onclick="vaultZoomBy(.8)" title="Zoom out" aria-label="Zoom out">−</button>
               <button class="vault-tool-btn" type="button" onclick="vaultFit()" title="Fit visible graph">Fit</button>
               <button class="vault-tool-btn" type="button" onclick="vaultReset()" title="Collapse back to Home">Home</button>
+              <input type="file" id="vault-upload-file" multiple hidden onchange="vaultPickUpload(event)">
+              <button class="vault-tool-btn" type="button" id="vault-upload-btn" onclick="document.getElementById('vault-upload-file').click()" title="Add a file to the selected folder">↑ Add file</button>
               <button class="vault-tool-btn vault-tree-toggle" type="button" onclick="vaultToggleTree(true)" title="Show file tree" aria-label="Show file tree">Tree</button>
             </div>
           </div>
           <svg class="vault-graph" id="vault-graph" role="img" aria-label="Interactive vault relationship graph"></svg>
+          <div class="vault-drop-hint" id="vault-drop-hint" aria-hidden="true">
+            <div class="vault-drop-inner"><span class="vault-drop-icon">↑</span><span id="vault-drop-label">Drop to add to the vault</span></div>
+          </div>
           <div class="vault-graph-state" id="vault-graph-state">Mapping the vault...</div>
           <div class="vault-legend" aria-hidden="true">
             <span><i></i>Folder structure</span><span><i class="link"></i>Authored link</span>
@@ -1584,7 +1643,7 @@
     <section class="view" data-view="chat" hidden>
       <div class="view-head">
         <h2>Chat</h2>
-        <p>Many chats, multiple backends. <b>Fast</b> runs locally on Ollama; <b>Smart</b> and <b>GPT API</b> use API credits; <b>ChatGPT</b> uses your signed-in Codex/ChatGPT account; <b>Claude</b> uses your Claude plan. Conversations persist and run in parallel.</p>
+        <p>Many chats, multiple backends. <b>Fast</b> runs locally on Ollama; <b>Smart</b>, <b>GPT API</b> and <b>Gemini API</b> use API credits; <b>ChatGPT</b> and <b>Google</b> use your signed-in ChatGPT / Google accounts; <b>Claude</b> uses your Claude plan. Conversations persist and run in parallel.</p>
       </div>
       <div class="panel-wrap chat-wrap">
         <div class="tier-bar">
@@ -1592,20 +1651,16 @@
             <button class="pill on" id="tier-fast"   onclick="setTier('fast')">⚡ Fast · local</button>
             <button class="pill"    id="tier-smart"  onclick="setTier('smart')">🧠 Smart · API</button>
             <button class="pill"    id="tier-openai" onclick="setTier('openai')">🤖 GPT · API</button>
+            <button class="pill"    id="tier-gemini" onclick="setTier('gemini')">✦ Gemini · API</button>
             <button class="pill"    id="tier-chatgpt" onclick="setTier('chatgpt')">● ChatGPT · account</button>
+            <button class="pill"    id="tier-google" onclick="setTier('google')">◈ Google · account</button>
             <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
           </div>
           <select class="model-select" id="model-select" onchange="setModel(this.value)" style="display:none;" title="Local model"></select>
           <select class="model-select" id="cli-model" onchange="setCliModel(this.value)" style="display:none;"
                   title="Claude model — Plan default uses your plan's model">
-            <option value="">Plan default</option>
-            <option value="opus">opus</option>
-            <option value="sonnet">sonnet</option>
-            <option value="haiku">haiku</option>
+            <option value="">Account default</option>
           </select>
-          <input class="model-select" id="cli-model-free" onchange="setCliModel(this.value)" oninput="setCliModel(this.value)"
-                 style="display:none;" autocomplete="off" placeholder="account default"
-                 title="Model — leave blank for the account default">
           <span class="tier-status" id="tier-status"></span>
           <button class="pill" id="chat-edit" onclick="toggleEdit()" title="Edit mode — let chat change vault notes">✏️ Edit: off</button>
           <button class="chat-clear" onclick="clearChat()" title="Clear this conversation's messages">Clear</button>
@@ -1615,7 +1670,8 @@
           <button class="chat-new" onclick="newChat()">＋ New chat</button>
           <div class="chat-list" id="chat-list"></div>
         </aside>
-        <div class="chat-box">
+        <div class="chat-box" id="chat-box">
+          <div class="chat-drop-hint">📎 Drop to attach</div>
           <div class="chat-log" id="chat-log">
             <div class="chat-empty">Pick a tier and say something. Fast keeps it local; ChatGPT and Claude use signed-in account CLIs. Attach files with 📎.</div>
           </div>
@@ -1767,7 +1823,9 @@
                   <option value="fast">⚡ Fast · local Ollama</option>
                   <option value="smart">🧠 Smart · Anthropic API</option>
                   <option value="openai">🤖 GPT · OpenAI API</option>
+                  <option value="gemini">✦ Gemini · Google API</option>
                   <option value="chatgpt">● ChatGPT · account</option>
+                  <option value="google">◈ Google · account</option>
                   <option value="claude">✨ Claude · subscription</option>
                 </select></label>
                 <label class="np-row" style="flex-direction:row; align-items:center; gap:8px; text-transform:none; letter-spacing:0; font-weight:400; color:var(--text); margin-top:10px">
@@ -1863,8 +1921,30 @@
 </div>
 
 <script>
+  // Models occasionally emit their tool-call syntax as plain text instead of a
+  // structured tool_use block; an interrupted call then trails thousands of
+  // orphan </invoke> lines. The server strips this from new replies — this is
+  // the render-side net, so transcripts saved before that fix draw clean too.
+  const TOOL_MARKUP_BLOCK = /<((?:antml:)?(?:function_calls|invoke|parameter))\b[\s\S]*?<\/\1>/gi;
+  const TOOL_MARKUP_TAG = /<\/?(?:antml:)?(?:function_calls|invoke|parameter)\b[^>]*>/gi;
+  function stripToolMarkup(src) {
+    let s = String(src == null ? '' : src);
+    if (!s.includes('<')) return s;
+    let prev;
+    do { prev = s; s = s.replace(TOOL_MARKUP_BLOCK, ''); } while (s !== prev);
+    return s.replace(TOOL_MARKUP_TAG, '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // Model ids carry a release date that says nothing useful in a bubble label:
+  // claude-opus-4-5-20251101 → claude-opus-4-5.
+  function modelLabel(name) {
+    const s = String(name == null ? '' : name).trim().replace(/[-_]?\d{8}$/, '');
+    return s.length > 44 ? s.slice(0, 43) + '…' : s;
+  }
+
   function renderMd(src) {
     // Render lightweight model replies: paragraphs, **bold**, and simple lists.
+    src = stripToolMarkup(src);
     let html = '', list = null;  // list = 'ol' | 'ul' | null
     const close = () => { if (list) { html += `</${list}>`; list = null; } };
     const inline = s => esc(s)
@@ -2121,6 +2201,7 @@
       vaultGraph.showLinks = e.target.checked;
       vaultRenderGraph();
     });
+    vaultInitDropzone();
   }
 
   function vaultResizeGraph() {
@@ -2572,6 +2653,84 @@
 
   function vaultToggleTree(open) { document.getElementById('vault-browser').classList.toggle('tree-open', open); }
 
+  /* ── Add files to the vault (drag-drop or the "Add file" button) ── */
+  // Destination = the selected folder. If a file is selected we use its parent
+  // folder; with nothing selected (or Home) files land at the vault root.
+  function vaultUploadTarget() {
+    const node = vaultGraph.nodes.get(vaultGraph.selected);
+    if (!node || node.kind === 'home') return { path: '', label: 'vault root' };
+    if (node.kind === 'folder') return { path: node.path, label: node.name };
+    const parent = node.parent ? vaultGraph.nodes.get(node.parent) : null;
+    if (parent && parent.kind === 'folder') return { path: parent.path, label: parent.name };
+    return { path: '', label: 'vault root' };
+  }
+
+  function vaultUpdateDropLabel() {
+    const label = document.getElementById('vault-drop-label');
+    const btn = document.getElementById('vault-upload-btn');
+    const t = vaultUploadTarget();
+    if (label) label.textContent = `Drop to add to ${t.label}`;
+    if (btn) btn.title = `Add a file to ${t.label}`;
+  }
+
+  function vaultUploadStatus(msg) {
+    const status = document.getElementById('vault-status');
+    if (status) status.textContent = msg;
+  }
+
+  function vaultPickUpload(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    vaultUploadFiles(files);
+  }
+
+  function vaultUploadFiles(files) {
+    if (!files.length) return;
+    const target = vaultUploadTarget();
+    let done = 0, failed = 0;
+    const total = files.length;
+    vaultUploadStatus(`Adding ${total} file${total === 1 ? '' : 's'} to ${target.label}…`);
+    Promise.all(files.map(file => {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('path', target.path);
+      return fetch('/api/browse/upload', { method: 'POST', body: fd })
+        .then(r => r.json().then(d => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => {
+          if (!ok || d.error) { failed++; if (d && d.error) vaultUploadStatus(d.error); }
+          else done++;
+        })
+        .catch(() => { failed++; });
+    })).then(() => {
+      if (done) {
+        vaultUploadStatus(`Added ${done} file${done === 1 ? '' : 's'} to ${target.label}${failed ? ` · ${failed} failed` : ''}.`);
+        vaultLoadMap(true);   // remap so the new files appear in the graph + tree
+      } else if (failed && !document.getElementById('vault-status').textContent.includes('Can')) {
+        vaultUploadStatus(`Couldn't add ${failed} file${failed === 1 ? '' : 's'}.`);
+      }
+    });
+  }
+
+  function vaultInitDropzone() {
+    const pane = document.getElementById('vault-graph-pane');
+    if (!pane || pane.dataset.dropWired) return;
+    pane.dataset.dropWired = '1';
+    let depth = 0;
+    const hasFiles = e => Array.from(e.dataTransfer && e.dataTransfer.types || []).includes('Files');
+    const clear = () => { depth = 0; pane.classList.remove('drop-active'); };
+    pane.addEventListener('dragenter', e => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); depth++; vaultUpdateDropLabel(); pane.classList.add('drop-active');
+    });
+    pane.addEventListener('dragover', e => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+    pane.addEventListener('dragleave', e => { if (hasFiles(e) && --depth <= 0) clear(); });
+    pane.addEventListener('drop', e => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); clear();
+      vaultUploadFiles(Array.from(e.dataTransfer.files || []));
+    });
+  }
+
   function renderRecentFolders(items) {
     const cols = [1, 2, 3].map(n => document.querySelector(`#parallax-grid .pcol[data-col="${n}"]`));
     cols.forEach(c => { if (c) c.innerHTML = ''; });
@@ -2686,7 +2845,7 @@
       ).join('');
   }
 
-  /* -- Claude usage -- */
+  /* -- AI account usage -- */
   function fmtTok(n) {
     n = n || 0;
     if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -2696,16 +2855,10 @@
   }
   function fmtCost(c) { return '$' + (c || 0).toFixed(2); }
 
-  function renderUsage(u) {
-    const el = document.getElementById('usage');
-    if (!u || !u.available) {
-      el.className = 'usage empty-state';
-      el.textContent = 'No Claude Code usage logs found (~/.claude/projects).';
-      return;
-    }
-    const t = u.totals;
-    const max = Math.max(1, ...u.by_day.map(d => d.total));
-    const bars = u.by_day.map(d => {
+  function usageBars(rows) {
+    rows = rows || [];
+    const max = Math.max(1, ...rows.map(d => d.total || 0));
+    return rows.map(d => {
       const h = d.total ? Math.max(2, Math.round((d.total / max) * 84)) : 0;
       const lbl = d.day.slice(5).replace('-', '/');
       return `<div class="bar-wrap" title="${d.day}: ${fmtTok(d.total)} tokens">
@@ -2713,14 +2866,21 @@
         <div class="bar-x">${lbl}</div>
       </div>`;
     }).join('');
-    const models = u.by_model.length
-      ? u.by_model.map(m => `<div class="model-row">
+  }
+
+  function usageModels(rows) {
+    return (rows || []).length
+      ? rows.map(m => `<div class="model-row">
           <span class="model-name">${esc(m.model)}</span>
           <span class="model-tok">${fmtTok(m.total)}${m.cost ? ' &middot; ' + fmtCost(m.cost) : ''}</span>
         </div>`).join('')
       : '<div class="no-ctx">No model data.</div>';
-    el.className = 'usage';
-    el.innerHTML = `<div class="usage-panel">
+  }
+
+  function renderClaudeUsage(u) {
+    if (!u || !u.available) return '';
+    const t = u.totals;
+    return `<div class="usage-panel">
       <div class="usage-head">
         <h2>Claude token usage</h2>
         <span class="sub">${u.sessions} session${u.sessions === 1 ? '' : 's'} &middot; ${u.messages.toLocaleString()} messages</span>
@@ -2734,15 +2894,74 @@
       <div class="usage-cols">
         <div>
           <div class="chart-title">Last ${u.by_day.length} days</div>
-          <div class="bars">${bars}</div>
+          <div class="bars">${usageBars(u.by_day)}</div>
         </div>
         <div>
           <div class="model-title">By model</div>
-          ${models}
+          ${usageModels(u.by_model)}
         </div>
       </div>
       <div class="usage-foot">In ${fmtTok(t.input)} &middot; Out ${fmtTok(t.output)} &middot; Cache write ${fmtTok(t.cache_creation)} &middot; Cache read ${fmtTok(t.cache_read)}. Cost is an estimate from public API list prices; subscription plans differ.</div>
     </div>`;
+  }
+
+  function fmtReset(epoch) {
+    if (!epoch) return 'Reset time unavailable';
+    const d = new Date(epoch * 1000);
+    return isNaN(d.getTime()) ? 'Reset time unavailable' : 'Resets ' + d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
+  function renderChatGptUsage(u) {
+    if (!u || !u.available) return '';
+    const t = u.totals || {};
+    const limits = u.rate_limits || {};
+    const plan = limits.plan_type ? limits.plan_type.charAt(0).toUpperCase() + limits.plan_type.slice(1) + ' plan' : 'ChatGPT account';
+    const windows = (limits.windows || []).length
+      ? `<div class="rate-list">${limits.windows.map(w => `<div class="rate-row">
+          <div class="rate-meta"><span>${esc(w.label)}</span><span>${Number(w.used_percent || 0).toFixed(0)}% used</span></div>
+          <div class="rate-track"><div class="rate-fill" style="width:${Math.max(0, Math.min(100, Number(w.used_percent || 0)))}%"></div></div>
+          <div class="rate-reset">${esc(fmtReset(w.resets_at))}</div>
+        </div>`).join('')}</div>`
+      : '<div class="no-ctx">No account-limit snapshot yet. Run Codex once while signed in with ChatGPT.</div>';
+    return `<div class="usage-panel">
+      <div class="usage-head">
+        <h2>ChatGPT account usage</h2>
+        <span class="sub">${esc(plan)} &middot; ${u.sessions} local session${u.sessions === 1 ? '' : 's'} &middot; ${Number(u.requests || 0).toLocaleString()} model request${u.requests === 1 ? '' : 's'}</span>
+      </div>
+      <div class="usage-cards">
+        <div class="u-card"><div class="num">${fmtTok(u.today && u.today.total)}</div><div class="lbl">Today</div></div>
+        <div class="u-card"><div class="num">${fmtTok(t.total_tokens)}</div><div class="lbl">Observed tokens</div></div>
+        <div class="u-card"><div class="num">${fmtTok(t.cached_input_tokens)}</div><div class="lbl">Cache reads</div></div>
+        <div class="u-card"><div class="num">${fmtTok(t.reasoning_output_tokens)}</div><div class="lbl">Reasoning tokens</div></div>
+      </div>
+      <div class="usage-cols">
+        <div>
+          <div class="chart-title">Last ${(u.by_day || []).length} days</div>
+          <div class="bars">${usageBars(u.by_day)}</div>
+        </div>
+        <div>
+          <div class="model-title">Account limits</div>
+          ${windows}
+          <div class="model-title" style="margin-top:14px">By model</div>
+          ${usageModels(u.by_model)}
+        </div>
+      </div>
+      <div class="usage-foot">Input ${fmtTok(t.input_tokens)} (including ${fmtTok(t.cached_input_tokens)} cached) &middot; Output ${fmtTok(t.output_tokens)} &middot; Cache write ${fmtTok(t.cache_write_input_tokens)}. Observed locally from Codex session logs; this is not billing data, and account-limit percentages come from the latest Codex response.</div>
+    </div>`;
+  }
+
+  function renderUsage(u) {
+    const el = document.getElementById('usage');
+    const claude = u && (u.claude || (!u.chatgpt ? u : null));
+    const chatgpt = u && u.chatgpt;
+    const panels = [renderChatGptUsage(chatgpt), renderClaudeUsage(claude)].filter(Boolean);
+    if (!panels.length) {
+      el.className = 'usage empty-state';
+      el.textContent = 'No local ChatGPT/Codex or Claude usage logs found yet.';
+      return;
+    }
+    el.className = 'usage';
+    el.innerHTML = `<div class="usage-stack">${panels.join('')}</div>`;
   }
 
   function newsCol(title, items, kind) {
@@ -2851,7 +3070,7 @@
       else { loadAgentFolders(); refreshRunningSide(); }
     }
     if (v === 'inbox'    && !loaded.inbox)    { loaded.inbox = true;     loadInboxes(); }
-    if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); initChats(); }
+    if (v === 'chat'     && !loaded.chat)     { loaded.chat = true;      loadRouterStatus(); loadOllamaModels(); loadAccountModels(); initChats(); }
     if (v === 'settings' && !loaded.settings) { loaded.settings = true;  stgLoad(); extLoad(); }
   }
 
@@ -3071,6 +3290,28 @@
           <label>API base URL<input id="con-openai-base" type="text" value="${v('openai_base')}" placeholder="https://api.openai.com/v1" autocomplete="off"></label>
         </div>
 
+        <div class="np-msg"><b id="con-dot-gemini"></b>Gemini API (Google) — billed to a Gemini API key. Get one at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Supports agent tool loops.</div>
+        <div class="np-row">
+          <label>API key<span class="np-row" style="gap:8px">
+            <input id="con-gemini" type="password" autocomplete="off" placeholder="${keyPh('gemini_api_key') || 'AIza…'}">
+            <button type="button" class="pill compact" onclick="stgSaveKey('gemini_api_key','con-gemini')">Save</button>
+            <button type="button" class="pill compact" onclick="stgClearKey('gemini_api_key')">Clear</button>
+            <button type="button" class="pill compact" onclick="stgCheckTier('gemini')" title="Check Gemini API">Check</button>
+          </span></label>
+          <label>Model<input id="con-gemini-model" type="text" value="${v('gemini_model')}" placeholder="(app default)" autocomplete="off"></label>
+          <label>API base URL<input id="con-gemini-base" type="text" value="${v('gemini_base')}" placeholder="https://generativelanguage.googleapis.com/v1beta" autocomplete="off"></label>
+        </div>
+
+        <div class="np-msg"><b id="con-dot-google"></b>Google account — uses Gemini CLI and your Google sign-in instead of an API key. <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Install Gemini CLI</a>, run <code>gemini</code> once and choose "Login with Google", then Check. Supports Chat, Agents, and Dispatches.</div>
+        <div class="np-row">
+          <label>CLI command/path<input id="con-gemini-cli" type="text" value="${v('gemini_cli')}" placeholder="gemini" autocomplete="off"></label>
+          <label>Model<input id="con-gemini-cli-model" type="text" value="${v('gemini_cli_model')}" placeholder="(account default)" autocomplete="off"></label>
+          <label>Timeout (s)<span class="np-row" style="gap:8px">
+            <input id="con-gemini-timeout" type="text" inputmode="numeric" value="${v('gemini_cli_timeout')}" placeholder="180" autocomplete="off">
+            <button type="button" class="pill compact" onclick="stgCheckTier('google')" title="Check Gemini CLI sign-in">Check</button>
+          </span></label>
+        </div>
+
         <div class="np-msg"><b id="con-dot-chatgpt"></b>ChatGPT account - uses Codex CLI and your ChatGPT sign-in. Run <code>codex login</code> once.</div>
         <div class="np-row">
           <label>CLI command/path<input id="con-codex-cli" type="text" value="${v('codex_cli')}" placeholder="codex" autocomplete="off"></label>
@@ -3180,6 +3421,9 @@
       ollama_host: 'con-ollama-host', ollama_model: 'con-ollama-model',
       anthropic_model: 'con-anthropic-model',
       openai_model: 'con-openai-model', openai_base: 'con-openai-base',
+      gemini_model: 'con-gemini-model', gemini_base: 'con-gemini-base',
+      gemini_cli: 'con-gemini-cli', gemini_cli_model: 'con-gemini-cli-model',
+      gemini_cli_timeout: 'con-gemini-timeout',
       codex_cli: 'con-codex-cli', codex_cli_model: 'con-codex-model',
       codex_cli_timeout: 'con-codex-timeout',
       claude_cli: 'con-claude-cli', claude_cli_model: 'con-claude-model',
@@ -3207,7 +3451,9 @@
             msg.textContent = st.detail || '';
             if (st.state === 'running') return;
             clearInterval(pullPoll);
-            if (st.state === 'done') { stgBackendDots(); loadRouterStatus(); }
+            // Refresh both the backend dots AND the chat model picker so the
+            // freshly pulled model is immediately selectable without a reload.
+            if (st.state === 'done') { stgBackendDots(); loadRouterStatus(); loadOllamaModels(); }
           }).catch(() => clearInterval(pullPoll));
         }, 1500);
       }).catch(() => { msg.textContent = 'Could not start the pull.'; });
@@ -3240,9 +3486,10 @@
     const dot = t => `<span class="dot-sm ${st[t] && st[t].available ? 'up' : 'down'}"></span>`;
     el.innerHTML =
       `${dot('fast')} Ollama (local) &nbsp; ${dot('smart')} Anthropic API &nbsp; ` +
-      `${dot('openai')} OpenAI API &nbsp; ${dot('chatgpt')} ChatGPT account &nbsp; ` +
+      `${dot('openai')} OpenAI API &nbsp; ${dot('gemini')} Gemini API &nbsp; ` +
+      `${dot('chatgpt')} ChatGPT account &nbsp; ${dot('google')} Google account &nbsp; ` +
       `${dot('claude')} Claude CLI (subscription)`;
-    for (const t of ['fast', 'smart', 'openai', 'chatgpt', 'claude']) {
+    for (const t of ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude']) {
       const detail = document.getElementById('con-dot-' + t);
       if (detail) detail.innerHTML = dot(t) + ' ';
     }
@@ -3252,7 +3499,8 @@
       if (input && st[t] && st[t].model) input.placeholder = st[t].model;
     };
     ph('con-ollama-model', 'fast'); ph('con-anthropic-model', 'smart');
-    ph('con-openai-model', 'openai'); ph('con-codex-model', 'chatgpt');
+    ph('con-openai-model', 'openai'); ph('con-gemini-model', 'gemini');
+    ph('con-codex-model', 'chatgpt'); ph('con-gemini-cli-model', 'google');
     ph('con-claude-model', 'claude');
   }
 
@@ -3267,7 +3515,8 @@
       if (!ok) { msg.textContent = d.error || 'Could not check that backend.'; return; }
       const model = d.status && d.status.model ? ` · ${d.status.model}` : '';
       const label = { fast: 'Ollama', smart: 'Anthropic API', openai: 'OpenAI API',
-                      chatgpt: 'ChatGPT account', claude: 'Claude CLI' }[d.tier] || d.tier;
+                      gemini: 'Gemini API', chatgpt: 'ChatGPT account',
+                      google: 'Google account', claude: 'Claude CLI' }[d.tier] || d.tier;
       msg.textContent = `${label}: ${d.reason || (d.ok ? 'ready' : 'not ready')}${model}`;
 
       // The check response already carries this tier's status. Reuse it instead
@@ -3473,14 +3722,30 @@
   let activeChat = null; // id of the conversation shown in the log
   let routerStatus = null;
   let routerStatusRequest = null;
-  let chatGptStatusRequest = null;
+  const accountStatusRequests = { chatgpt: null, google: null };  // in-flight sign-in probes
   let defaultModel = null;   // Ollama default from /api/ollama/models
   let ollamaModelsAvailable = false;
+  let accountModels = {};
+  let accountModelsRequest = null;
+  // Tiers backed by a signed-in account CLI rather than an API key: they get the
+  // per-conversation model picker and a sign-in state in the status line.
+  const ACCOUNT_CLI_TIERS = ['chatgpt', 'google', 'claude'];
+  // ChatGPT and Claude stream chat. Google account agents also stream JSONL,
+  // while ordinary Google chat keeps the simpler blocking /api/chat path.
+  const STREAMING_TIERS = ['chatgpt', 'claude'];
   const chatSaveQueues = new Map();  // cid -> serialized PUT/DELETE promise
   const chatSaveControllers = new Map();
   const deletedChats = new Set();    // tombstones block every later PUT for a deleted cid
 
   function chatConvo() { return chats[activeChat] || null; }
+
+  function modelChoiceLabel(tier, model) {
+    if (tier !== 'chatgpt') return model;
+    if (model === 'gpt-5.6-sol') return model + ' · best quality';
+    if (model === 'gpt-5.6-terra') return model + ' · balanced';
+    if (model === 'gpt-5.6-luna') return model + ' · fastest';
+    return model;
+  }
 
   function chatIsCurrent(cid, c, generation) {
     return !deletedChats.has(cid) && chats[cid] === c && c.generation === generation;
@@ -3504,6 +3769,7 @@
 
   function initChats() {
     updateSendDisabled();
+    chatInitDropzone();
     fetch('/api/chats').then(r => r.json()).then(d => {
       (d.chats || []).forEach(m => {
         if (chats[m.id]) return;
@@ -3695,13 +3961,28 @@
       if (c.stream && (c.stream.lines.length || c.stream.tools.length)) {
         const box = document.createElement('div');
         box.className = 'chat-thinking';
-        let html = `<div class="ct-head">✨ ${esc(chatThinker(c))} is working…</div>`;
-        for (const ln of c.stream.lines) {
-          html += `<div class="ct-line ${ln.kind === 'think' ? 'think' : 'text'}">${renderMd(ln.text)}</div>`;
+        const presenceIcon = c.tier === 'chatgpt' ? '●' : '✨';
+        let html = `<div class="ct-head">${presenceIcon} ${esc(modelLabel(chatThinker(c)))} is working…</div>`;
+        // A long agentic run emits far more narration than anyone reads while it
+        // scrolls past: keep the last few steps, each clipped, and say how many
+        // were folded away. The final reply is unaffected.
+        const CT_KEEP = 6, CT_CLIP = 500;
+        const lines = c.stream.lines.slice(-CT_KEEP);
+        const hidden = c.stream.lines.length - lines.length;
+        if (hidden > 0) html += `<div class="ct-elided">…${hidden} earlier step${hidden === 1 ? '' : 's'}</div>`;
+        for (const ln of lines) {
+          const t = stripToolMarkup(ln.text);
+          const clipped = t.length > CT_CLIP ? t.slice(0, CT_CLIP) + '…' : t;
+          if (clipped) html += `<div class="ct-line ${['think','status'].includes(ln.kind) ? ln.kind : 'text'}">${renderMd(clipped)}</div>`;
         }
         if (c.stream.tools.length) {
+          // Collapse repeats into one chip per tool ("🔧 Read ×12") — a run can
+          // fire the same tool dozens of times and each used to add a chip.
+          const counts = new Map();
+          for (const t of c.stream.tools) counts.set(t, (counts.get(t) || 0) + 1);
           html += '<div class="ct-tools">' +
-            c.stream.tools.map(t => `<span class="ct-tool">🔧 ${esc(t)}</span>`).join('') + '</div>';
+            [...counts].map(([t, n]) => `<span class="ct-tool">🔧 ${esc(t)}${n > 1 ? ' ×' + n : ''}</span>`).join('') +
+            '</div>';
         }
         box.innerHTML = html;
         log.appendChild(box);
@@ -3720,7 +4001,9 @@
     return c.tier === 'fast' ? (c.model || 'local model')
          : c.tier === 'smart' ? ((routerStatus && routerStatus.smart && routerStatus.smart.model) || 'Smart')
          : c.tier === 'openai' ? ((routerStatus && routerStatus.openai && routerStatus.openai.model) || 'GPT API')
+         : c.tier === 'gemini' ? ((routerStatus && routerStatus.gemini && routerStatus.gemini.model) || 'Gemini API')
          : c.tier === 'chatgpt' ? (cli.chatgpt || 'ChatGPT')
+         : c.tier === 'google' ? (cli.google || 'Gemini')
          : (cli.claude || 'Claude');
   }
 
@@ -3733,37 +4016,42 @@
     document.getElementById('chat-attach').disabled = !ready;
     document.querySelector('.chat-clear').disabled = !ready;
     document.getElementById('chat-edit').disabled = !ready;
-    for (const tier of ['fast', 'smart', 'openai', 'chatgpt', 'claude']) {
+    for (const tier of ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude']) {
       document.getElementById('tier-' + tier).disabled = !ready;
     }
     document.getElementById('model-select').disabled = !ready || !ollamaModelsAvailable;
     document.getElementById('cli-model').disabled = !ready;
-    document.getElementById('cli-model-free').disabled = !ready;
   }
 
   // Reflect the active conversation's tier/model/edit into the shared controls.
   function syncChatControls() {
     const c = chatConvo();
     const tier = c ? c.tier : 'fast';
-    document.getElementById('tier-fast').classList.toggle('on', tier === 'fast');
-    document.getElementById('tier-smart').classList.toggle('on', tier === 'smart');
-    document.getElementById('tier-openai').classList.toggle('on', tier === 'openai');
-    document.getElementById('tier-chatgpt').classList.toggle('on', tier === 'chatgpt');
-    document.getElementById('tier-claude').classList.toggle('on', tier === 'claude');
+    for (const t of ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude']) {
+      document.getElementById('tier-' + t).classList.toggle('on', tier === t);
+    }
     const sel = document.getElementById('model-select');
     sel.style.display = tier === 'fast' ? '' : 'none';
     if (c && !c.model && defaultModel) c.model = defaultModel;
     if (c && c.model && ollamaModelsAvailable) sel.value = c.model;
-    // Claude gets a fixed model dropdown (blank = plan default). ChatGPT keeps a
-    // free-text box (blank = account default) since its model set isn't enumerable.
+    // Both signed-in account tiers use the server's model catalog. Blank keeps
+    // the provider's account/plan default, which is safest across plan rollouts.
     const cliSel = document.getElementById('cli-model');
-    const cliFree = document.getElementById('cli-model-free');
-    cliSel.style.display = tier === 'claude' ? '' : 'none';
-    cliFree.style.display = tier === 'chatgpt' ? '' : 'none';
-    if (tier === 'claude' || tier === 'chatgpt') {
+    cliSel.style.display = ACCOUNT_CLI_TIERS.includes(tier) ? '' : 'none';
+    if (ACCOUNT_CLI_TIERS.includes(tier)) {
       if (c && !c.cliModel) c.cliModel = {};
       const stored = (c && c.cliModel && c.cliModel[tier]) || '';
-      if (tier === 'claude') cliSel.value = stored; else cliFree.value = stored;
+      const info = accountModels[tier] || {};
+      const choices = [...new Set(info.models || [])];
+      if (stored && !choices.includes(stored)) choices.unshift(stored);
+      const defaultLabel = tier === 'claude' ? 'Plan default' : 'Account default';
+      cliSel.innerHTML = `<option value="">${defaultLabel}</option>` +
+        choices.map(model => `<option value="${esc(model)}">${esc(modelChoiceLabel(tier, model))}</option>`).join('');
+      cliSel.value = stored;
+      cliSel.title = tier === 'chatgpt'
+        ? 'ChatGPT account model — availability can vary by plan'
+        : tier === 'google' ? 'Gemini CLI model — availability can vary by account'
+        : 'Claude plan model';
     }
     renderTierStatus();
     renderEditToggle();
@@ -3775,24 +4063,32 @@
     routerStatusRequest = fetch('/api/router/status').then(r => r.json()).then(s => {
       routerStatus = s;
       renderTierStatus();
-      // Executable presence is not enough for the account tier: Codex may be
+      // Executable presence is not enough for the account tiers: the CLI may be
       // logged out or using an API key. Probe once automatically so the Chat
       // view reports the real sign-in state without requiring Settings/Recheck.
-      const chatgpt = s && s.chatgpt;
-      const checkedAt = Number(chatgpt && chatgpt.auth_checked_at || 0);
-      const stale = !checkedAt || (Date.now() / 1000 - checkedAt) > 30;
-      if (chatgpt && chatgpt.installed &&
-          (!chatgpt.auth_state || chatgpt.auth_state === 'unchecked' || stale)) {
-        return checkChatGptStatus(false);
+      const pending = ['chatgpt', 'google'].filter(t => {
+        const info = s && s[t];
+        if (!info || !info.installed) return false;
+        const checkedAt = Number(info.auth_checked_at || 0);
+        const stale = !checkedAt || (Date.now() / 1000 - checkedAt) > 30;
+        return !info.auth_state || info.auth_state === 'unchecked' || stale;
+      });
+      if (pending.length) {
+        return Promise.all(pending.map(t => checkAccountStatus(t, false)))
+          .then(() => routerStatus);
       }
       return routerStatus;
     }).catch(() => null).finally(() => { routerStatusRequest = null; });
     return routerStatusRequest;
   }
 
-  function checkChatGptStatus(force) {
-    if (chatGptStatusRequest) return chatGptStatusRequest;
-    const current = routerStatus && routerStatus.chatgpt;
+  // Sign-in probe for an account-CLI tier. Both ChatGPT (Codex) and Google
+  // (Gemini CLI) need one: an installed binary says nothing about whether it's
+  // signed in, or signed in with the right method.
+  function checkAccountStatus(tier, force) {
+    if (accountStatusRequests[tier]) return accountStatusRequests[tier];
+    const label = tier === 'chatgpt' ? 'ChatGPT' : 'Google';
+    const current = routerStatus && routerStatus[tier];
     if (!current || !current.installed) return Promise.resolve(routerStatus);
     const checkedAt = Number(current.auth_checked_at || 0);
     const fresh = checkedAt && (Date.now() / 1000 - checkedAt) <= 30;
@@ -3802,31 +4098,31 @@
 
     routerStatus = {
       ...(routerStatus || {}),
-      chatgpt: { ...current, available: false, auth_state: 'checking',
-                 auth_reason: 'Checking ChatGPT sign-in…' },
+      [tier]: { ...current, available: false, auth_state: 'checking',
+                auth_reason: `Checking ${label} sign-in…` },
     };
     renderTierStatus();
-    chatGptStatusRequest = fetch('/api/router/check', {
+    accountStatusRequests[tier] = fetch('/api/router/check', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier: 'chatgpt' }),
+      body: JSON.stringify({ tier }),
     }).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
-      if (!ok || !d.status) throw new Error(d.error || 'Could not check ChatGPT sign-in.');
+      if (!ok || !d.status) throw new Error(d.error || `Could not check ${label} sign-in.`);
       const checked = { ...d.status, available: !!d.ok,
                         healthChecked: true, healthReason: d.reason || '' };
-      routerStatus = { ...(routerStatus || {}), chatgpt: checked };
-      stgRenderBackendDots({ chatgpt: checked });
+      routerStatus = { ...(routerStatus || {}), [tier]: checked };
+      stgRenderBackendDots({ [tier]: checked });
       renderTierStatus();
       return routerStatus;
     }).catch(err => {
-      const failed = { ...(routerStatus && routerStatus.chatgpt || current),
+      const failed = { ...(routerStatus && routerStatus[tier] || current),
                        available: false, authenticated: false,
                        auth_state: 'check_failed',
-                       auth_reason: err.message || 'Could not check ChatGPT sign-in.' };
-      routerStatus = { ...(routerStatus || {}), chatgpt: failed };
+                       auth_reason: err.message || `Could not check ${label} sign-in.` };
+      routerStatus = { ...(routerStatus || {}), [tier]: failed };
       renderTierStatus();
       return routerStatus;
-    }).finally(() => { chatGptStatusRequest = null; });
-    return chatGptStatusRequest;
+    }).finally(() => { accountStatusRequests[tier] = null; });
+    return accountStatusRequests[tier];
   }
 
   // Populate the local-model picker from whatever Ollama has pulled.
@@ -3849,19 +4145,29 @@
     }).catch(() => {});
   }
 
+  function loadAccountModels() {
+    if (accountModelsRequest) return accountModelsRequest;
+    accountModelsRequest = fetch('/api/agent/models').then(r => r.json()).then(d => {
+      accountModels = (d && d.tiers) || {};
+      syncChatControls();
+      return accountModels;
+    }).catch(() => accountModels).finally(() => { accountModelsRequest = null; });
+    return accountModelsRequest;
+  }
+
   function setModel(m) {
     const c = chatConvo();
     if (c && c.loaded) { c.model = m; saveChat(activeChat); }
     renderTierStatus();
   }
 
-  // Per-conversation model for the account-CLI tiers (claude, chatgpt). Stored
-  // per tier so switching tiers doesn't cross model names between backends.
+  // Per-conversation model for the account-CLI tiers (chatgpt, google, claude).
+  // Stored per tier so switching tiers doesn't cross model names between backends.
   function setCliModel(v) {
     const c = chatConvo();
     if (!c || !c.loaded) return;
     const tier = c.tier;
-    if (tier !== 'claude' && tier !== 'chatgpt') return;
+    if (!ACCOUNT_CLI_TIERS.includes(tier)) return;
     if (!c.cliModel) c.cliModel = {};
     c.cliModel[tier] = (v || '').trim();
     renderTierStatus();
@@ -3869,10 +4175,12 @@
   }
 
   // The model to send on the blocking /api/chat path. Fast uses the Ollama model;
-  // chatgpt uses its per-conversation override; claude streams separately.
+  // chatgpt and google use their per-conversation override (google runs blocking,
+  // chatgpt only lands here as a fallback); claude streams separately.
   function chatSendModel(c) {
     if (c.tier === 'fast') return c.model;
     if (c.tier === 'chatgpt') return (c.cliModel && c.cliModel.chatgpt) || null;
+    if (c.tier === 'google') return (c.cliModel && c.cliModel.google) || null;
     return null;
   }
 
@@ -3884,17 +4192,23 @@
     if (!t) { document.getElementById('tier-status').textContent = ''; return; }
     const cls = t.available ? 'up' : 'down';
     let state;
-    if (tier === 'chatgpt') {
-      const authState = t.auth_state || (t.authenticated === true ? 'chatgpt'
+    if (tier === 'chatgpt' || tier === 'google') {
+      const signedIn = tier === 'chatgpt' ? 'chatgpt' : 'google';
+      const authState = t.auth_state || (t.authenticated === true ? signedIn
         : t.authenticated === false ? 'signed_out' : 'unchecked');
       const reason = t.auth_reason || t.healthReason || '';
-      state = authState === 'chatgpt' ? 'signed in with ChatGPT'
+      const cliName = tier === 'chatgpt' ? 'Codex CLI' : 'Gemini CLI';
+      state = authState === signedIn
+          ? (tier === 'chatgpt' ? 'signed in with ChatGPT' : 'signed in with Google')
         : authState === 'checking' ? 'checking sign-in…'
-        : authState === 'wrong_method' ? 'API-key login · ChatGPT sign-in required'
-        : authState === 'signed_out' ? 'not signed in · run codex login'
-        : authState === 'not_installed' ? 'Codex CLI not found'
+        : authState === 'wrong_method'
+          ? 'API-key login · account sign-in required'
+        : authState === 'signed_out'
+          ? (tier === 'chatgpt' ? 'not signed in · run codex login'
+                                : 'not signed in · run gemini and pick Login with Google')
+        : authState === 'not_installed' ? `${cliName} not found`
         : authState === 'unchecked' ? 'CLI found · checking sign-in…'
-        : (reason || 'could not confirm ChatGPT sign-in');
+        : (reason || 'could not confirm account sign-in');
     } else {
       state = t.available ? 'ready'
         : (tier === 'fast' ? 'Ollama offline' : tier === 'claude' ? 'Claude CLI not found'
@@ -3902,7 +4216,7 @@
     }
     let model = t.model;
     if (tier === 'fast' && c && c.model) model = c.model;
-    else if ((tier === 'claude' || tier === 'chatgpt') && c && c.cliModel && c.cliModel[tier]) model = c.cliModel[tier];
+    else if (ACCOUNT_CLI_TIERS.includes(tier) && c && c.cliModel && c.cliModel[tier]) model = c.cliModel[tier];
     document.getElementById('tier-status').innerHTML =
       `<span class="dot-sm ${cls}"></span>${esc(model)} · ${esc(state)}`;
   }
@@ -3915,7 +4229,7 @@
     saveChat(activeChat);
     // Recheck on selection as well, so logging in from a terminal is reflected
     // immediately without restarting or visiting Settings.
-    if (tier === 'chatgpt') checkChatGptStatus(true);
+    if (tier === 'chatgpt' || tier === 'google') checkAccountStatus(tier, true);
   }
 
   // Edit mode lets chat change vault notes: API tiers use the write tool loop;
@@ -3990,12 +4304,18 @@
   }
 
   function chatPickFiles(e) {
-    const cid = activeChat;
-    const c = chatConvo();   // uploads belong to the conversation active at pick time
-    if (!c || !c.loaded) return;
-    const generation = c.generation;
     const files = Array.from(e.target.files || []);
     e.target.value = '';   // let the same file be picked again later
+    chatUploadFiles(files);
+  }
+
+  // Shared by the 📎 picker and drag-and-drop onto the chat box. Uploads belong
+  // to the conversation active when the files arrive.
+  function chatUploadFiles(files) {
+    const cid = activeChat;
+    const c = chatConvo();
+    if (!c || !c.loaded || !files.length) return;
+    const generation = c.generation;
     files.forEach(file => {
       const controller = new AbortController();
       const entry = { name: file.name, mime: file.type, pending: true, controller };
@@ -4024,6 +4344,29 @@
     });
   }
 
+  // Drag a file anywhere onto the chat box to attach it (same path as 📎).
+  // A counter tracks nested dragenter/leave so the overlay doesn't flicker as
+  // the cursor crosses child elements.
+  function chatInitDropzone() {
+    const box = document.getElementById('chat-box');
+    if (!box || box.dataset.dropWired) return;
+    box.dataset.dropWired = '1';
+    let depth = 0;
+    const hasFiles = e => Array.from(e.dataTransfer && e.dataTransfer.types || []).includes('Files');
+    const clear = () => { depth = 0; box.classList.remove('drop-active'); };
+    box.addEventListener('dragenter', e => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); depth++; box.classList.add('drop-active');
+    });
+    box.addEventListener('dragover', e => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+    box.addEventListener('dragleave', e => { if (hasFiles(e) && --depth <= 0) clear(); });
+    box.addEventListener('drop', e => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); clear();
+      chatUploadFiles(Array.from(e.dataTransfer.files || []));
+    });
+  }
+
   function chatAutogrow() {
     const t = document.getElementById('chat-text');
     t.style.height = 'auto';
@@ -4034,6 +4377,12 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
   }
 
+  function toggleMdClamp(btn) {
+    const md = btn.previousElementSibling;
+    const clamped = md.classList.toggle('clamped');
+    btn.textContent = clamped ? 'Show more' : 'Show less';
+  }
+
   function addChatBubble(kind, text, who, attachments) {
     const log = document.getElementById('chat-log');
     const empty = log.querySelector('.chat-empty');
@@ -4041,7 +4390,12 @@
     const div = document.createElement('div');
     div.className = 'chat-msg ' + kind;
     if (kind === 'bot') {
-      div.innerHTML = (who ? `<div class="who">${esc(who)}</div>` : '') + '<div class="md">' + renderMd(text) + '</div>';
+      const body = stripToolMarkup(text);
+      const long = body.length > 1400;   // collapse walls of text behind a toggle
+      div.innerHTML =
+        (who ? `<div class="who">${esc(modelLabel(who))}</div>` : '') +
+        `<div class="md${long ? ' clamped' : ''}">${renderMd(body)}</div>` +
+        (long ? '<button class="md-toggle" onclick="toggleMdClamp(this)">Show more</button>' : '');
     } else {
       if (text) div.textContent = text;
       if (attachments && attachments.length) {
@@ -4087,10 +4441,13 @@
     renderChatSidebar();
     updateSendDisabled();
 
-    // Claude runs the CLI's own agentic loop — stream it live (thinking + tool
-    // steps + text) instead of blocking on one response. Other tiers are quick,
-    // so they keep the simple blocking request below.
-    if (c.tier === 'claude') { chatStreamSend(cid, c, generation, atts); return; }
+    // Codex and Claude run their CLI loops live so long turns show reasoning
+    // summaries, activity, and answer text instead of a frozen spinner. The
+    // Google account agent runs stream JSONL; ordinary chat remains blocking.
+    if (STREAMING_TIERS.includes(c.tier)) {
+      chatStreamSend(cid, c, generation, atts);
+      return;
+    }
 
     fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4131,7 +4488,7 @@
       });
   }
 
-  // Claude tier: start a live stream, then poll it. Thinking/tool/text events
+  // Account tier: start a live stream, then poll it. Summary/activity/text events
   // paint under the typing indicator as they arrive (transient — never saved);
   // only the final reply lands in the transcript. Follows the same closure
   // discipline as chatSend: `cid`/`generation` gate every DOM/state touch, so a
@@ -4146,13 +4503,15 @@
     fetch('/api/chat/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
-      body: JSON.stringify({ messages: msgs, attachments: atts, edit: c.edit,
-                             model: (c.cliModel && c.cliModel.claude) || null }),
+      body: JSON.stringify({
+        messages: msgs, attachments: atts, edit: c.edit, tier: c.tier,
+        model: (c.cliModel && c.cliModel[c.tier]) || null,
+      }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
         if (!chatIsCurrent(cid, c, generation)) return;
-        if (!ok || d.error || !d.run_id) throw new Error(d.error || 'Could not start Claude.');
+        if (!ok || d.error || !d.run_id) throw new Error(d.error || `Could not start ${chatThinker(c)}.`);
         c.streamRun = d.run_id;
         pollChatStream(cid, c, generation, d.run_id, 0);
       })
@@ -4171,7 +4530,9 @@
         c._streamMisses = 0;
         const steps = d.steps || [];
         for (const s of steps) {
-          if (s.type === 'think' || s.type === 'text') c.stream.lines.push({ kind: s.type, text: s.text });
+          if (s.type === 'think' || s.type === 'text' || s.type === 'status') {
+            c.stream.lines.push({ kind: s.type, text: s.text });
+          }
           else if (s.type === 'tool') c.stream.tools.push(s.tool);
         }
         const nextSince = (typeof d.total === 'number') ? d.total : since + steps.length;
@@ -4183,7 +4544,7 @@
           saveChat(cid);
           finishChatStream(cid, c, generation);
         } else {
-          finishChatStreamError(cid, c, generation, d.error || 'Claude stopped unexpectedly.');
+          finishChatStreamError(cid, c, generation, d.error || `${chatThinker(c)} stopped unexpectedly.`);
         }
       })
       .catch(() => {
@@ -4398,6 +4759,7 @@
   let dispatchHistory = [];
   let activeDispatchId = null;
   let dispatchPollTimer = null;
+  let dispatchAttachments = [];
   const CAP_LABELS = {
     vault_read: 'Vault read', vault_write: 'Vault write', code_read: 'Code read',
     code_write: 'Code write', run_checks: 'Run approved checks', web: 'Web research',
@@ -4422,12 +4784,28 @@
   }
 
   function dispatchTierOptions(selected) {
-    const names = {fast:'⚡ Local', smart:'🧠 Anthropic API', openai:'🤖 OpenAI API', chatgpt:'● ChatGPT account', claude:'✨ Claude plan'};
+    const names = {fast:'⚡ Local', smart:'🧠 Anthropic API', openai:'🤖 OpenAI API', gemini:'✦ Gemini API', chatgpt:'● ChatGPT account', google:'◈ Google account', claude:'✨ Claude plan'};
     return Object.keys(names).map(t => {
       const info = dispatchModels.tiers && dispatchModels.tiers[t];
       const ready = info && info.available;
       return `<option value="${t}" ${t === selected ? 'selected' : ''}>${names[t]}${ready ? '' : ' · unavailable'}</option>`;
     }).join('');
+  }
+
+  function agentModelOptions(tier, selected) {
+    const info = dispatchModels.tiers && dispatchModels.tiers[tier];
+    const choices = [...new Set((info && info.models) || [])];
+    if (selected && !choices.includes(selected)) choices.unshift(selected);
+    const label = (tier === 'chatgpt' || tier === 'google') ? 'account default'
+                : tier === 'claude' ? 'plan default' : 'configured default';
+    return `<option value="">${label}</option>` +
+      choices.map(model => `<option value="${esc(model)}" ${model === selected ? 'selected' : ''}>${esc(modelChoiceLabel(tier, model))}</option>`).join('');
+  }
+
+  function agentTierHasModelPicker(tier) {
+    if (tier === 'chatgpt' || tier === 'google' || tier === 'claude') return true;
+    const info = dispatchModels.tiers && dispatchModels.tiers[tier];
+    return !!(info && (info.models || []).length > 1);
   }
 
   function capabilityChecks(selected) {
@@ -4439,12 +4817,16 @@
 
   function closeDispatchStudio() {
     const el = document.getElementById('dispatch-studio');
+    dispatchAttachments.forEach(a => { if (a.controller) a.controller.abort(); });
+    dispatchAttachments = [];
     el.hidden = true; el.innerHTML = '';
   }
 
   function openDispatchStudio(mode, presetId, scopeOverride) {
     const el = document.getElementById('dispatch-studio');
     el.hidden = false;
+    dispatchAttachments.forEach(a => { if (a.controller) a.controller.abort(); });
+    dispatchAttachments = [];
     if (mode === 'agent') return renderAgentEditor(presetId);
     const group = mode === 'group';
     const selectedAgent = customAgents.find(a => a.id === presetId);
@@ -4470,11 +4852,70 @@
           <label>Model<input id="dispatch-model" value="${esc(selectedAgent && selectedAgent.model || '')}" placeholder="tier default"></label>
           <label class="full">Agent instructions<textarea id="dispatch-instructions" placeholder="How should this agent approach the work?">${esc(selectedAgent && selectedAgent.instructions || '')}</textarea></label>
           <div class="full cap-grid" id="dispatch-caps">${capabilityChecks(selectedAgent && selectedAgent.capabilities || PROFILE_CAPS.research)}</div>`}
+        <div class="full dispatch-attachment-field">
+          <span class="dispatch-attachment-label">Attachments · up to 10 files, 25 MB each</span>
+          <div class="chat-attachments" id="dispatch-attachments" hidden></div>
+          <label class="dispatch-secondary">Attach files<input type="file" multiple hidden onchange="dispatchPickFiles(event)"></label>
+        </div>
       </div>
       <div class="dispatch-foot"><span class="dispatch-msg" id="dispatch-form-msg">${group ? 'The planner will ask questions before proposing workers.' : 'Write-capable work stays staged until you approve it.'}</span>
         <button class="dispatch-primary" onclick="createDispatch('${group ? 'group' : 'single'}')">${group ? 'Start planning' : 'Dispatch agent'}</button></div>`;
     if (!group && selectedAgent) document.getElementById('dispatch-profile').value = selectedAgent.profile || 'research';
+    renderDispatchAttachments();
     el.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+
+  function renderDispatchAttachments() {
+    const wrap = document.getElementById('dispatch-attachments');
+    if (!wrap) return;
+    wrap.hidden = !dispatchAttachments.length;
+    wrap.innerHTML = dispatchAttachments.map((a, i) =>
+      `<span class="attach-chip"><span>${a.pending ? '⏳' : '📄'}</span>` +
+      `<span class="nm">${esc(a.name)}</span>` +
+      `<button type="button" onclick="removeDispatchAttachment(${i})" title="Remove">×</button></span>`
+    ).join('');
+  }
+
+  function removeDispatchAttachment(index) {
+    const [removed] = dispatchAttachments.splice(index, 1);
+    if (removed && removed.controller) removed.controller.abort();
+    renderDispatchAttachments();
+  }
+
+  function dispatchPickFiles(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    const msg = document.getElementById('dispatch-form-msg');
+    if (dispatchAttachments.length + files.length > 10) {
+      msg.textContent = 'Attach no more than 10 files.';
+      return;
+    }
+    files.forEach(file => {
+      const controller = new AbortController();
+      const entry = {name:file.name, mime:file.type, pending:true, controller};
+      dispatchAttachments.push(entry);
+      renderDispatchAttachments();
+      const form = new FormData();
+      form.append('file', file);
+      fetch('/api/dispatches/upload', {method:'POST', body:form, signal:controller.signal})
+        .then(r => r.json().then(d => ({ok:r.ok, d})))
+        .then(({ok,d}) => {
+          if (!dispatchAttachments.includes(entry)) return;
+          if (!ok || d.error) {
+            dispatchAttachments = dispatchAttachments.filter(a => a !== entry);
+            msg.textContent = d.error || `Couldn't upload ${file.name}.`;
+          } else {
+            Object.assign(entry, d, {pending:false, controller:null});
+          }
+          renderDispatchAttachments();
+        })
+        .catch(error => {
+          if (error.name === 'AbortError' || !dispatchAttachments.includes(entry)) return;
+          dispatchAttachments = dispatchAttachments.filter(a => a !== entry);
+          msg.textContent = `Couldn't upload ${file.name}.`;
+          renderDispatchAttachments();
+        });
+    });
   }
 
   function dispatchProfileChanged() {
@@ -4555,7 +4996,10 @@
     const scope = document.getElementById('dispatch-scope').value;
     const msg = document.getElementById('dispatch-form-msg');
     if (!goal || !priority) { msg.textContent = 'Describe the goal and choose Fast, Balanced, or Best.'; return; }
-    const payload = { kind, goal, priority, scope, planner:{tier:document.getElementById('dispatch-tier').value, model:document.getElementById('dispatch-model').value.trim()} };
+    if (dispatchAttachments.some(a => a.pending)) { msg.textContent = 'Wait for attachments to finish uploading.'; return; }
+    const payload = { kind, goal, priority, scope,
+      attachments:dispatchAttachments.map(({id,name,mime,size}) => ({id,name,mime,size})),
+      planner:{tier:document.getElementById('dispatch-tier').value, model:document.getElementById('dispatch-model').value.trim()} };
     if (kind === 'single') {
       const selected = customAgents.find(a => a.id === document.getElementById('dispatch-agent').value);
       payload.agent_id = selected && selected.id;
@@ -4605,6 +5049,7 @@
     if (!d || d.error && !d.id) { el.innerHTML = ''; return; }
     const messages = (d.messages || []).map(m => `<div class="dispatch-bubble ${m.role === 'user' ? 'user' : 'assistant'}">${renderMd(m.content || '')}</div>`).join('');
     let body = `<div class="dispatch-studio"><div class="dispatch-title"><h3>${esc(d.goal)}</h3><span class="tier ${d.priority==='fast'?'fast':'claude'}">${esc(d.priority)}</span><span class="run-state ${esc(d.state)}">${esc(d.state)}</span></div>`;
+    if ((d.attachments || []).length) body += `<div class="bubble-attachments">${d.attachments.map(a => `<span class="attach-chip mini">📄 ${esc(a.name)}</span>`).join('')}</div>`;
     if (d.kind === 'group' && messages) body += `<div class="dispatch-chat">${messages}</div>`;
     if (d.state === 'clarifying') body += `<div class="dispatch-chat-send"><textarea id="planner-reply" placeholder="Answer the planner…"></textarea><button class="dispatch-primary" onclick="sendPlannerMessage('${d.id}')">Send</button></div>`;
     if (d.state === 'planning') body += '<div class="dispatch-msg">Planner is preparing the team and model assignments…</div>';
@@ -4683,7 +5128,7 @@
       fetch('/api/agent/models').then(r=>r.json()), fetch('/api/agent-definitions').then(r=>r.json()), fetch('/api/dispatches').then(r=>r.json()),
     ]).then(([models,agentsData,history]) => {
       dispatchModels = models || {tiers:{}}; customAgents = agentsData.agents || []; dispatchHistory = history.dispatches || [];
-      renderCustomAgents(); renderDispatchHistory();
+      renderCustomAgents(); renderDispatchHistory(); renderAgents();
       const live = dispatchHistory.find(d => ['planning','running','awaiting_apply'].includes(d.state));
       if (live) openDispatch(live.id);
     }).catch(() => {});
@@ -4736,14 +5181,14 @@
             <option value="fast"   ${a.tier === 'fast'   ? 'selected' : ''}>⚡ fast · local</option>
             <option value="smart"  ${a.tier === 'smart'  ? 'selected' : ''}>🧠 smart · API</option>
             <option value="openai" ${a.tier === 'openai' ? 'selected' : ''}>🤖 gpt · API</option>
+            <option value="gemini" ${a.tier === 'gemini' ? 'selected' : ''}>✦ gemini · API</option>
+            <option value="chatgpt" ${a.tier === 'chatgpt' ? 'selected' : ''}>● chatgpt · account</option>
+            <option value="google" ${a.tier === 'google' ? 'selected' : ''}>◈ google · account</option>
             <option value="claude" ${a.tier === 'claude' ? 'selected' : ''}>✨ claude · plan</option>
           </select>
-          <select id="model-${esc(a.id)}" class="agent-tier-select" title="Claude model — Plan default uses the plan's model"
-                  style="display:${a.tier === 'claude' ? '' : 'none'}; max-width:140px;">
-            <option value="">plan default</option>
-            <option value="opus">opus</option>
-            <option value="sonnet">sonnet</option>
-            <option value="haiku">haiku</option>
+          <select id="model-${esc(a.id)}" class="agent-tier-select" title="Model for this run"
+                  style="display:${agentTierHasModelPicker(a.tier) ? '' : 'none'}; max-width:160px;">
+            ${agentModelOptions(a.tier, '')}
           </select>
         </div>
         <div class="agent-desc">${esc(a.desc)}</div>
@@ -4773,19 +5218,27 @@
         if (k.tier) document.getElementById('tier-' + a.id).value = k.tier;
         const f = document.getElementById('folder-' + a.id);
         if (f && k.folder && [...f.options].some(o => o.value === k.folder)) f.value = k.folder;
-        const m = document.getElementById('model-' + a.id);
-        if (m && k.model) m.value = k.model;
       }
-      agentTierChanged(a.id);
+      agentTierChanged(a.id, k && k.model);
       if (agentBusy[a.id]) setAgentBusy(a.id, true);
     });
   }
 
-  // Show the Claude model box only when this agent's tier is the claude CLI.
-  function agentTierChanged(id) {
+  // Account tiers always show a choice; local shows one when multiple models
+  // are installed. API tiers stay on their Settings-configured model.
+  function agentTierChanged(id, selectedModel) {
     const tierSel = document.getElementById('tier-' + id);
     const model = document.getElementById('model-' + id);
-    if (tierSel && model) model.style.display = tierSel.value === 'claude' ? '' : 'none';
+    if (!tierSel || !model) return;
+    const tier = tierSel.value;
+    model.innerHTML = agentModelOptions(tier, selectedModel || '');
+    model.style.display = agentTierHasModelPicker(tier) ? '' : 'none';
+    model.title = tier === 'chatgpt'
+      ? 'ChatGPT account model — availability can vary by plan'
+      : tier === 'google' ? 'Gemini CLI model — availability can vary by account'
+      : tier === 'claude' ? 'Claude plan model'
+      : tier === 'gemini' ? 'Gemini model — the list comes from your API key'
+      : 'Local model';
   }
 
   function applyPreset(id, sel) {
@@ -4825,7 +5278,7 @@
     const folderSel = document.getElementById('folder-' + id);
     const folder = folderSel ? folderSel.value : '';
     const modelEl = document.getElementById('model-' + id);
-    const model = (tier === 'claude' && modelEl) ? modelEl.value.trim() : '';
+    const model = (modelEl && modelEl.style.display !== 'none') ? modelEl.value.trim() : '';
 
     setAgentBusy(id, true);
     const log = document.getElementById('activity-log');
@@ -5066,7 +5519,7 @@
      via /api/onboard/vault. A backend connection is required before the vault
      step so a fresh install is never left with a vault but no way to work it. */
   const wiz = { mode: 'existing', path: '', name: '', busy: false, status: {} };
-  const WIZ_TIERS = ['fast', 'smart', 'openai', 'chatgpt', 'claude'];
+  const WIZ_TIERS = ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude'];
 
   function wizMaybeShow() {
     if ((window.__settings || {}).onboarded === true) return;
@@ -5104,11 +5557,20 @@
           </div>
         </div>
         <div class="wiz-setup">
+          <div class="ws-row" style="gap:7px"><span class="dot-sm down" id="wiz-dot-gemini"></span>
+            <b style="color:var(--text)">Gemini API</b><span class="wt-sub" style="margin:0">Google — gemini tier</span></div>
+          <div class="ws-row">
+            <input id="wiz-gemini" type="password" autocomplete="off" placeholder="AIza… paste API key">
+            <button type="button" class="pill" onclick="wizSaveKey('gemini_api_key','wiz-gemini')">Save</button>
+          </div>
+        </div>
+        <div class="wiz-setup">
           <div class="wiz-msg" style="margin:0">Installed a local or CLI backend? These light up when detected:</div>
           <div class="ws-row" style="gap:14px; flex-wrap:wrap">
             <span><span class="dot-sm down" id="wiz-dot-fast"></span> Ollama <span class="wt-sub" style="margin:0">local, free</span></span>
             <span><span class="dot-sm down" id="wiz-dot-claude"></span> Claude CLI</span>
             <span><span class="dot-sm down" id="wiz-dot-chatgpt"></span> ChatGPT (Codex)</span>
+            <span><span class="dot-sm down" id="wiz-dot-google"></span> Google (Gemini CLI)</span>
             <button type="button" class="pill" onclick="wizAIStatus(true)">Recheck</button>
           </div>
         </div>
@@ -5124,12 +5586,12 @@
   }
 
   function wizAIStatus(announce) {
-    // Codex readiness needs an auth-aware health probe; a plain status can report
-    // it "not authenticated" until then. Nudge it, then read the full status.
-    fetch('/api/router/check', {
+    // Account-CLI readiness needs an auth-aware health probe; a plain status can
+    // report "not authenticated" until then. Nudge both, then read full status.
+    Promise.all(['chatgpt', 'google'].map(tier => fetch('/api/router/check', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier: 'chatgpt' }),
-    }).catch(() => {}).finally(() => {
+      body: JSON.stringify({ tier }),
+    }).catch(() => {}))).finally(() => {
       fetch('/api/router/status').then(r => r.json()).then(st => {
         wiz.status = st || {};
         for (const t of WIZ_TIERS) {

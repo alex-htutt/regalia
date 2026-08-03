@@ -1,4 +1,4 @@
-"""Model router — one chat() over five backends.
+"""Model router — one chat() over seven backends.
 
 This is the core primitive of the self-hosted workspace: every model call in the
 app goes through chat(), which picks a backend by tier.
@@ -6,10 +6,16 @@ app goes through chat(), which picks a backend by tier.
     tier="fast"   -> Ollama, local HTTP on :11434  (no API cost, needs Ollama)
     tier="smart"  -> Anthropic, cloud              (needs an Anthropic API key)
     tier="openai" -> OpenAI, cloud                 (needs an OpenAI API key)
+    tier="gemini" -> Google Gemini, cloud          (needs a Gemini API key)
     tier="chatgpt"-> Codex CLI, subprocess         (uses your ChatGPT/Codex login)
+    tier="google" -> Gemini CLI, subprocess        (uses your signed-in Google
+                                                    account instead of an API key)
     tier="claude" -> Claude Code CLI, subprocess   (bills your Claude subscription,
                                                     not API credits; needs `claude`
                                                     installed and signed in)
+
+Google gets the same two-door treatment as OpenAI: `gemini` bills a Gemini API
+key, `google` shells out to the Gemini CLI and rides your Google sign-in.
 
 API keys come from the environment OR the Settings store (config.secret — env
 wins). chat() returns {"reply", "model", "tier"} on success, or raises
@@ -69,6 +75,37 @@ def _openai_model() -> str:
     return _config.value("openai_model", "OPENAI_MODEL", "gpt-5.6-terra")
 
 
+def _gemini_base() -> str:
+    """Google Gemini runtime — plain REST over stdlib urllib; no SDK dep."""
+    return _config.value(
+        "gemini_base", "GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta"
+    ).rstrip("/")
+
+
+def _gemini_model() -> str:
+    # A long-lived GA id is the safe default: model availability differs per key
+    # and per project, so the picker below lists what the key can actually reach
+    # (ListModels) and Settings → Models overrides this outright.
+    return _config.value("gemini_model", "GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def _gemini_cli() -> str:
+    """Google account runtime via Gemini CLI."""
+    return _config.value("gemini_cli", "GEMINI_CLI", "gemini")
+
+
+def _gemini_cli_model() -> str:
+    """Empty string lets the CLI choose the signed-in account default."""
+    return _config.value("gemini_cli_model", "GEMINI_CLI_MODEL", "")
+
+
+def _gemini_cli_timeout() -> int:
+    try:
+        return int(_config.value("gemini_cli_timeout", "GEMINI_CLI_TIMEOUT", "180"))
+    except ValueError:
+        return 180
+
+
 def _codex_cli() -> str:
     """ChatGPT account runtime via Codex CLI."""
     return _config.value("codex_cli", "CODEX_CLI", "codex")
@@ -77,6 +114,22 @@ def _codex_cli() -> str:
 def _codex_cli_model() -> str:
     """Empty string lets Codex choose the signed-in account default."""
     return _config.value("codex_cli_model", "CODEX_CLI_MODEL", "")
+
+
+# Current GPT-5.6 family roles from the official model guide. Availability can
+# vary by ChatGPT plan/rollout, so the account default remains the safe first
+# choice and Codex surfaces a clear error if a selected model is unavailable.
+CHATGPT_ACCOUNT_MODELS = (
+    "gpt-5.6-sol",    # frontier capability / hardest work
+    "gpt-5.6-terra",  # balanced quality and speed
+    "gpt-5.6-luna",   # efficient, high-volume work
+)
+
+
+def chatgpt_model_choices() -> list[str]:
+    """Suggested Codex/ChatGPT-account models, including a configured override."""
+    configured = _codex_cli_model()
+    return list(dict.fromkeys(([configured] if configured else []) + list(CHATGPT_ACCOUNT_MODELS)))
 
 
 def _codex_cli_timeout() -> int:
@@ -126,14 +179,26 @@ else:
     VAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CODEX_CLI_CWD = os.environ.get("CODEX_CLI_CWD", VAULT_ROOT)
 CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
+GEMINI_CLI_CWD = os.environ.get("GEMINI_CLI_CWD", VAULT_ROOT)
 
-TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
+TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
 
 # ``status()`` stays cheap: it reports executable presence plus the most recent
 # explicit login check. The browser performs that check automatically when the
 # ChatGPT tier becomes relevant. The cache is keyed by the resolved executable
 # so changing the CLI setting cannot attach stale auth state to another binary.
 _CODEX_HEALTH = {
+    "exe": None,
+    "ok": None,
+    "state": "unchecked",
+    "reason": "",
+    "checked_at": None,
+}
+
+# Same contract for the Gemini CLI (`google` tier). Unlike Codex, that CLI has no
+# `login status` command, so the check reads its own on-disk auth state — see
+# gemini_cli_health() for exactly what is (and isn't) proven by it.
+_GEMINI_HEALTH = {
     "exe": None,
     "ok": None,
     "state": "unchecked",
@@ -191,6 +256,14 @@ def _openai_key() -> str:
     return _config.secret("openai_api_key", "OPENAI_API_KEY")
 
 
+def _gemini_key() -> str:
+    """GEMINI_API_KEY is the name Google's own tooling uses; GOOGLE_API_KEY is
+    accepted as the older alias so an existing shell doesn't need re-exporting."""
+    return _config.secret("gemini_api_key", "GEMINI_API_KEY") or os.environ.get(
+        "GOOGLE_API_KEY", ""
+    )
+
+
 def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attachments=None,
          allow_write=False) -> dict:
     """Run a chat completion on the chosen tier.
@@ -211,8 +284,12 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attach
         return _anthropic_chat(messages, system, max_tokens, model, atts)
     if tier == "openai":
         return _openai_chat(messages, system, max_tokens, model, atts)
+    if tier == "gemini":
+        return _gemini_chat(messages, system, max_tokens, model, atts)
     if tier == "chatgpt":
         return _codex_exec_chat(messages, system, max_tokens, model, atts, allow_write)
+    if tier == "google":
+        return _gemini_cli_chat(messages, system, max_tokens, model, atts, allow_write)
     if tier == "claude":
         return _claude_code_chat(messages, system, max_tokens, model, atts, allow_write)
     return _ollama_chat(messages, system, max_tokens, model, atts)
@@ -242,11 +319,20 @@ def chat_tools(messages, tools, tier="smart", system=None, max_tokens=2048, mode
         return _ollama_chat_tools(messages, tools, system, max_tokens, model)
     if tier == "openai":
         return _openai_chat_tools(messages, tools, system, max_tokens, model)
+    if tier == "gemini":
+        return _gemini_chat_tools(messages, tools, system, max_tokens, model)
     if tier == "chatgpt":
         raise RouterError(
             "The ChatGPT account tier runs through Codex CLI and cannot use this "
             "app's in-process tool loop. Use Chat for ChatGPT account runs, or "
-            "pick Fast, Smart, or OpenAI API for custom tools.",
+            "pick Fast, Smart, OpenAI API, or Gemini API for custom tools.",
+            400,
+        )
+    if tier == "google":
+        raise RouterError(
+            "The Google account tier runs through Gemini CLI and cannot use this "
+            "app's in-process tool loop. Use Chat for Google account runs, or pick "
+            "Gemini API (an API key) for custom tools.",
             400,
         )
     return _anthropic_chat_tools(messages, tools, system, max_tokens, model)
@@ -267,6 +353,29 @@ def status_for(tier: str) -> dict:
             "backend": "openai",
             "model": _openai_model(),
             "available": bool(_openai_key()),
+        }
+    if tier == "gemini":
+        return {
+            "backend": "gemini",
+            "model": _gemini_model(),
+            "available": bool(_gemini_key()),
+        }
+    if tier == "google":
+        exe = _gemini_cli_path()
+        checked = _GEMINI_HEALTH["exe"] == exe
+        auth = _GEMINI_HEALTH.get("ok") if checked else None
+        auth_state = _GEMINI_HEALTH.get("state", "unchecked") if checked else "unchecked"
+        return {
+            "backend": "gemini-cli",
+            "model": _gemini_cli_model() or "Google account default",
+            "installed": exe is not None,
+            "authenticated": auth,
+            "auth_state": auth_state,
+            "auth_reason": _GEMINI_HEALTH.get("reason", "") if checked else "",
+            "auth_checked_at": _GEMINI_HEALTH.get("checked_at") if checked else None,
+            # As with Codex: an installed CLI that is logged out, or logged in
+            # with an API key rather than a Google account, is not ready.
+            "available": exe is not None and auth is True,
         }
     if tier == "chatgpt":
         exe = _codex_cli_path()
@@ -572,6 +681,282 @@ def _openai_chat_tools(messages, tools, system, max_tokens, model) -> dict:
     }
 
 
+# ── Cloud: Google Gemini ─────────────────────────────────────────────────────
+# The Gemini REST API is close enough to the others to share this file's shape,
+# but its wire format differs in three ways worth naming up front:
+#   * roles are "user"/"model" (not "assistant"), and the system prompt is its
+#     own top-level `systemInstruction` rather than a message;
+#   * tool calls/results are *parts* inside normal contents (functionCall /
+#     functionResponse), keyed by function **name** — there are no call ids, so
+#     tool_use ids from our canonical history are resolved back to names here;
+#   * declaration schemas are an OpenAPI subset with an upper-case type enum, so
+#     tool schemas are sanitized before they go out (_to_gemini_tools).
+
+
+def _gemini_request(model: str, payload: dict, path: str = "generateContent") -> dict:
+    key = _gemini_key()
+    if not key:
+        raise RouterError(
+            "No Gemini API key found. Set GEMINI_API_KEY in your environment or add "
+            "a key in Settings → Connections (get one at aistudio.google.com/apikey).",
+            401,
+        )
+    # The key rides a header, never the query string: URLs land in proxy and
+    # server logs in a way headers do not.
+    req = urllib.request.Request(
+        f"{_gemini_base()}/models/{model}:{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "x-goog-api-key": key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = (json.loads(e.read().decode("utf-8")).get("error") or {}).get("message", "")
+        except Exception:  # noqa: BLE001
+            pass
+        if e.code in (401, 403):
+            raise RouterError(
+                "Google rejected the Gemini API key. Check it in Settings → Connections.",
+                401,
+            )
+        if e.code == 404:
+            raise RouterError(
+                f"Gemini model '{model}' wasn't found for this key. Pick one your key "
+                "can use in Settings → Models (see ai.google.dev/gemini-api/docs/models).",
+                503,
+            )
+        if e.code == 429:
+            raise RouterError(
+                "Gemini rate limit or quota reached. Wait a moment, or check your quota "
+                "at aistudio.google.com.",
+                429,
+            )
+        raise RouterError(f"Gemini error: {detail or e}", 502)
+    except (urllib.error.URLError, OSError) as e:
+        raise RouterError(f"Couldn't reach Gemini: {e}", 503)
+
+
+def _gemini_tool_names(messages) -> dict:
+    """Map tool_use id → function name, so tool_results can name their call."""
+    names = {}
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                names[b.get("id")] = b.get("name")
+    return names
+
+
+def _to_gemini_contents(messages, atts=None) -> list:
+    """Translate canonical (Anthropic-shaped) history into Gemini `contents`.
+
+    Assistant turns become role "model"; tool results go back as functionResponse
+    parts on a "user" turn, which is the shape the API documents. Image
+    attachments are inlined as inlineData on the latest user turn (other file
+    types are skipped — the app inlines small text files itself before calling).
+    """
+    names = _gemini_tool_names(messages)
+    out = []
+    for m in messages:
+        role, content = m.get("role"), m.get("content")
+        gem_role = "model" if role == "assistant" else "user"
+        if isinstance(content, str):
+            if content:
+                out.append({"role": gem_role, "parts": [{"text": content}]})
+            continue
+        parts = []
+        for b in content or []:
+            if not isinstance(b, dict):
+                continue
+            btype = b.get("type")
+            if btype == "text" and b.get("text"):
+                parts.append({"text": b["text"]})
+            elif btype == "tool_use":
+                parts.append({"functionCall": {"name": b.get("name"),
+                                               "args": b.get("input") or {}}})
+            elif btype == "tool_result":
+                parts.append({"functionResponse": {
+                    "name": names.get(b.get("tool_use_id")) or "tool",
+                    # A functionResponse payload must be an object, so plain
+                    # string results are wrapped rather than sent bare.
+                    "response": {"result": _result_to_str(b.get("content"))},
+                }})
+        if parts:
+            out.append({"role": gem_role, "parts": parts})
+
+    images = [a for a in (atts or []) if a["mime"].startswith("image/")]
+    if images:
+        for i in range(len(out) - 1, -1, -1):
+            if out[i].get("role") == "user":
+                for a in images:
+                    b64 = _read_b64(a["path"])
+                    if b64:
+                        out[i]["parts"].append(
+                            {"inlineData": {"mimeType": a["mime"], "data": b64}}
+                        )
+                break
+    return out
+
+
+# Fields Gemini's OpenAPI-subset schema validator accepts. Anything else in a
+# tool's input_schema (``$schema``, ``additionalProperties``, ``default``, …) is
+# dropped rather than passed through — the API rejects the whole request on an
+# unknown field, which would break every tool at once.
+_GEMINI_SCHEMA_KEYS = frozenset({
+    "type", "format", "description", "nullable", "enum", "items", "properties",
+    "required",
+})
+
+
+def _to_gemini_schema(schema):
+    """Reduce a JSON Schema to Gemini's accepted subset (types upper-cased)."""
+    if not isinstance(schema, dict):
+        return {}
+    out = {}
+    for key, val in schema.items():
+        if key not in _GEMINI_SCHEMA_KEYS:
+            continue
+        if key == "type" and isinstance(val, str):
+            out[key] = val.upper()
+        elif key == "items":
+            out[key] = _to_gemini_schema(val)
+        elif key == "properties" and isinstance(val, dict):
+            out[key] = {k: _to_gemini_schema(v) for k, v in val.items()}
+        else:
+            out[key] = val
+    return out
+
+
+def _to_gemini_tools(tools) -> list:
+    """Anthropic-style tool defs → one Gemini tool with functionDeclarations."""
+    decls = []
+    for t in tools:
+        decl = {"name": t["name"], "description": t.get("description", "")}
+        schema = _to_gemini_schema(t.get("input_schema") or {})
+        # A parameterless tool must omit `parameters` entirely; an empty
+        # properties object is rejected.
+        if schema.get("properties"):
+            decl["parameters"] = schema
+        decls.append(decl)
+    return [{"functionDeclarations": decls}] if decls else []
+
+
+def _gemini_parts(data: dict) -> list:
+    """The parts of the first candidate, or [] if the model returned nothing."""
+    candidate = (data.get("candidates") or [{}])[0]
+    return (candidate.get("content") or {}).get("parts") or []
+
+
+def _gemini_blocked_reason(data: dict) -> str:
+    """A user-facing explanation when a response carries no usable content."""
+    feedback = data.get("promptFeedback") or {}
+    if feedback.get("blockReason"):
+        return f"Gemini blocked the prompt ({feedback['blockReason']})."
+    finish = ((data.get("candidates") or [{}])[0]).get("finishReason") or ""
+    if finish == "MAX_TOKENS":
+        return "Gemini hit the output limit before writing an answer."
+    if finish and finish not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+        return f"Gemini stopped early ({finish})."
+    return ""
+
+
+def _gemini_payload(messages, system, max_tokens, atts=None) -> dict:
+    payload = {
+        "contents": _to_gemini_contents(messages, atts),
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }
+    sys_text = _flatten_system(system)
+    if sys_text:
+        payload["systemInstruction"] = {"parts": [{"text": sys_text}]}
+    return payload
+
+
+def _gemini_chat(messages, system, max_tokens, model, attachments=None) -> dict:
+    mdl = model or _gemini_model()
+    data = _gemini_request(mdl, _gemini_payload(messages, system, max_tokens, attachments))
+    reply = "\n".join(p["text"] for p in _gemini_parts(data) if p.get("text")).strip()
+    if not reply:
+        reply = _gemini_blocked_reason(data) or "…(the model went quiet — try again)"
+    return {"reply": reply, "model": data.get("modelVersion") or mdl, "tier": "gemini"}
+
+
+def _gemini_chat_tools(messages, tools, system, max_tokens, model) -> dict:
+    mdl = model or _gemini_model()
+    payload = _gemini_payload(messages, system, max_tokens)
+    gem_tools = _to_gemini_tools(tools)
+    if gem_tools:
+        payload["tools"] = gem_tools
+    data = _gemini_request(mdl, payload)
+    texts, tool_calls = [], []
+    for i, part in enumerate(_gemini_parts(data)):
+        if part.get("text"):
+            texts.append(part["text"])
+        call = part.get("functionCall")
+        if isinstance(call, dict) and call.get("name"):
+            # Gemini has no call ids; the loop only needs them to pair results
+            # back up, so synthesize a stable one per call.
+            tool_calls.append({
+                "id": f"gemini_{i}_{call['name']}",
+                "name": call["name"],
+                "input": call.get("args") if isinstance(call.get("args"), dict) else {},
+            })
+    finish = ((data.get("candidates") or [{}])[0]).get("finishReason") or ""
+    return {
+        "text": "\n".join(texts).strip(),
+        "tool_calls": tool_calls,
+        "stop_reason": "tool_use" if tool_calls else (finish.lower() or "end_turn"),
+        "model": data.get("modelVersion") or mdl,
+        "tier": "gemini",
+    }
+
+
+# Model lists are per-key (and change faster than any hard-coded list here), so
+# the picker asks the API. Cached briefly: the catalog is rebuilt on every Agents
+# render and this is a network round trip, unlike the local Ollama probe.
+_GEMINI_MODELS_CACHE: dict = {"key": None, "models": [], "at": 0.0}
+_GEMINI_MODELS_TTL = 300.0
+
+
+def list_gemini_models() -> list:
+    """Gemini models this key can call generateContent on. [] if unavailable."""
+    key = _gemini_key()
+    if not key:
+        return []
+    now = time.time()
+    if (_GEMINI_MODELS_CACHE["key"] == key
+            and now - _GEMINI_MODELS_CACHE["at"] < _GEMINI_MODELS_TTL):
+        return list(_GEMINI_MODELS_CACHE["models"])
+    req = urllib.request.Request(
+        f"{_gemini_base()}/models?pageSize=200", headers={"x-goog-api-key": key}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return []  # the picker falls back to the configured model
+    models = []
+    for m in data.get("models") or []:
+        methods = m.get("supportedGenerationMethods") or []
+        name = str(m.get("name") or "")
+        if name.startswith("models/") and "generateContent" in methods:
+            models.append(name[len("models/"):])
+    models.sort()
+    _GEMINI_MODELS_CACHE.update(key=key, models=models, at=now)
+    return models
+
+
+def gemini_model_choices() -> list[str]:
+    """Models for the picker: whatever the key exposes, else the configured one."""
+    configured = _gemini_model()
+    live = list_gemini_models()
+    return list(dict.fromkeys(([configured] if configured else []) + live))
+
+
 # ── Account: ChatGPT via Codex CLI ───────────────────────────────────────────
 
 def _codex_cli_path():
@@ -701,17 +1086,35 @@ def _stage_cli_attachments(attachments, directory: str) -> list[dict]:
     return staged
 
 
-def _codex_prompt(messages, system, attachments=None) -> str:
+def _codex_prompt(messages, system, attachments=None, allow_write=False) -> str:
     """Build one stdin prompt for `codex exec -`.
 
     Codex exec already persists/reuses its ChatGPT login; the app persists chat
     history separately, so each subprocess receives the relevant transcript.
+    State Regalia's edit policy explicitly as well as enforcing it with the CLI
+    sandbox: otherwise the model can describe itself as read-only even when the
+    workspace-write sandbox was selected.
     """
-    parts = []
     sys_text = _flatten_system(system)
+    convo = _flatten_conversation(messages)
+    if not sys_text and not convo.strip() and not attachments:
+        return ""
+
+    parts = []
     if sys_text:
         parts.append("System instructions:\n" + sys_text)
-    convo = _flatten_conversation(messages)
+    if allow_write:
+        parts.append(
+            "Regalia Edit mode is ON. You may create, modify, rename, or delete "
+            "files inside the current working root when the user requests it. "
+            "Carry out requested edits with your tools instead of only describing "
+            "them."
+        )
+    else:
+        parts.append(
+            "Regalia Edit mode is OFF. Treat the workspace as read-only: do not "
+            "create, modify, rename, or delete files."
+        )
     if convo.strip():
         parts.append("Conversation:\n" + convo)
     if attachments:
@@ -746,7 +1149,7 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
     staged_dir = tempfile.TemporaryDirectory(prefix="regalia-codex-") if attachments else None
     try:
         staged = _stage_cli_attachments(attachments, staged_dir.name) if staged_dir else []
-        prompt = _codex_prompt(messages, system, staged)
+        prompt = _codex_prompt(messages, system, staged, allow_write=allow_write)
         if not prompt:
             raise RouterError("Nothing to send to ChatGPT.", 400)
 
@@ -758,6 +1161,7 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
             "--ignore-rules",
             "--skip-git-repo-check",
             "--sandbox", sandbox,
+            "-C", CODEX_CLI_CWD,
             "-c", 'forced_login_method="chatgpt"',
         ]
         if staged_dir:
@@ -823,7 +1227,7 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
 
 
 def codex_agent_stream(prompt, system=None, model=None, cwd=None, allow_write=False,
-                       timeout=None, cancel_event=None):
+                       timeout=None, cancel_event=None, extra_dirs=None):
     """Run a scoped Codex account agent and yield its JSONL execution events.
 
     Unlike chat_tools(), Codex drives its own file/shell loop. It runs in an
@@ -851,6 +1255,9 @@ def codex_agent_stream(prompt, system=None, model=None, cwd=None, allow_write=Fa
         "--sandbox", "workspace-write" if allow_write else "read-only",
         "-C", active_cwd, "-c", 'forced_login_method="chatgpt"',
     ]
+    for directory in extra_dirs or ():
+        if directory and os.path.isdir(directory):
+            cmd += ["--add-dir", str(directory)]
     mdl = model or _codex_cli_model()
     if mdl:
         cmd += ["-m", mdl]
@@ -946,7 +1353,410 @@ def codex_agent_stream(prompt, system=None, model=None, cwd=None, allow_write=Fa
     )
 
 
+def codex_chat_stream(messages, system=None, model=None, attachments=None,
+                      allow_write=False):
+    """Stream a ChatGPT-account chat turn as Codex JSONL events.
+
+    The final answer and user-safe activity events come from `codex exec
+    --json`. Attachments use the same disposable staging boundary as blocking
+    account chat and remain readable only for this invocation.
+    """
+    staged_dir = tempfile.TemporaryDirectory(prefix="regalia-codex-") if attachments else None
+    try:
+        staged = _stage_cli_attachments(attachments, staged_dir.name) if staged_dir else []
+        prompt = _codex_prompt(messages, system, staged, allow_write=allow_write)
+        if not prompt:
+            raise RouterError("Nothing to send to ChatGPT.", 400)
+        yield from codex_agent_stream(
+            prompt,
+            model=model,
+            cwd=CODEX_CLI_CWD,
+            allow_write=allow_write,
+            extra_dirs=[staged_dir.name] if staged_dir else None,
+        )
+    finally:
+        if staged_dir:
+            staged_dir.cleanup()
+
+
+# ── Account: Google via Gemini CLI ───────────────────────────────────────────
+# The point of this tier is that it runs on a *Google account sign-in* rather
+# than an API key — if you have a key, the `gemini` tier above is the better
+# path (structured tool use, no subprocess). Chat is driven non-interactively
+# with the conversation on stdin; account agents use stream-json headless mode.
+
+
+def _gemini_cli_path():
+    """Resolve the `gemini` executable on PATH, or None if it isn't installed."""
+    return shutil.which(_gemini_cli())
+
+
+_GEMINI_ENV_KEYS = frozenset({
+    # Executable/runtime discovery and per-user Gemini CLI auth storage.
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
+    "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME", "USER", "USERNAME", "LOGNAME", "SHELL",
+    # Temporary files, locale, and corporate proxies/CAs.
+    "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "HTTP_PROXY", "HTTPS_PROXY",
+    "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+})
+# Deliberately absent, and load-bearing: GEMINI_API_KEY / GOOGLE_API_KEY /
+# GOOGLE_APPLICATION_CREDENTIALS. The Gemini CLI prefers a key when it finds one
+# in its environment, so inheriting those would silently bill this tier to the
+# key it exists to avoid. The allowlist is what keeps "Google account" honest.
+
+
+def _gemini_env() -> dict:
+    """Minimal child environment: enough for the CLI and its OAuth store, no
+    API keys and no unrelated secrets. Case-insensitive for Windows."""
+    return {k: v for k, v in os.environ.items() if k.upper() in _GEMINI_ENV_KEYS}
+
+
+def _gemini_cli_home() -> Path:
+    """Where the Gemini CLI keeps its settings and OAuth credentials."""
+    return Path(os.path.expanduser("~")) / ".gemini"
+
+
+def _gemini_auth_type() -> str:
+    """The CLI's recorded auth method, or "" when it hasn't been set."""
+    try:
+        data = json.loads((_gemini_cli_home() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    # The key has lived at the top level and under a "security.auth" group
+    # depending on CLI version; check both rather than assume one layout.
+    selected = data.get("selectedAuthType")
+    if not selected:
+        auth = ((data.get("security") or {}).get("auth")
+                if isinstance(data.get("security"), dict) else None)
+        selected = (auth or {}).get("selectedType") if isinstance(auth, dict) else None
+    return str(selected or "")
+
+
+def gemini_cli_health() -> tuple[bool, str]:
+    """Check that the Gemini CLI is installed and using a Google account login.
+
+    The CLI has no `login status` command, so this proves what it can: the
+    binary runs (`--version`), and its own auth store says the selected method
+    is personal OAuth with saved credentials. It does not prove the token is
+    still valid — an expired sign-in surfaces on the first real request.
+    """
+    exe = _gemini_cli_path()
+
+    def finish(ok: bool, reason: str, state: str) -> tuple[bool, str]:
+        _GEMINI_HEALTH.update(
+            exe=exe, ok=ok, state=state, reason=reason, checked_at=time.time()
+        )
+        return ok, reason
+
+    if exe is None:
+        return finish(False, "Gemini CLI was not found on PATH.", "not_installed")
+    if not os.path.isdir(GEMINI_CLI_CWD):
+        return finish(
+            False, f"Gemini working folder does not exist: {GEMINI_CLI_CWD}", "check_failed"
+        )
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        proc = subprocess.run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            env=_gemini_env(),
+            cwd=GEMINI_CLI_CWD,
+            creationflags=creationflags,
+        )
+    except FileNotFoundError:
+        return finish(False, "Gemini CLI vanished mid-check.", "not_installed")
+    except PermissionError as e:
+        return finish(False, f"Couldn't start Gemini CLI: {e}", "check_failed")
+    except subprocess.TimeoutExpired:
+        return finish(False, "Gemini CLI version check timed out.", "timed_out")
+    except OSError as e:
+        return finish(False, f"Couldn't check Gemini CLI: {e}", "check_failed")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        return finish(False, detail[:300] or "Gemini CLI did not run.", "check_failed")
+
+    version = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
+    auth_type = _gemini_auth_type().lower()
+    has_oauth = (_gemini_cli_home() / "oauth_creds.json").is_file()
+    if "api" in auth_type and "key" in auth_type:
+        return finish(
+            False,
+            "Gemini CLI is signed in with an API key, not a Google account. Use the "
+            "Gemini API tier for key billing, or run `gemini` → /auth and choose "
+            "'Login with Google'.",
+            "wrong_method",
+        )
+    if "vertex" in auth_type:
+        return finish(
+            False,
+            "Gemini CLI is configured for Vertex AI, not a personal Google account. "
+            "Run `gemini` → /auth and choose 'Login with Google'.",
+            "wrong_method",
+        )
+    if has_oauth:
+        label = f"Gemini CLI is signed in with a Google account{f' ({version})' if version else ''}."
+        return finish(True, label, "google")
+    if auth_type:
+        return finish(
+            False,
+            f"Gemini CLI reports auth type '{auth_type}' with no saved Google sign-in. "
+            "Run `gemini` → /auth and choose 'Login with Google'.",
+            "signed_out",
+        )
+    return finish(
+        False,
+        "Gemini CLI is installed, but no Google sign-in was found. Run `gemini` once "
+        "and choose 'Login with Google', then use Recheck.",
+        "signed_out",
+    )
+
+
+def _gemini_cli_prompt(messages, system, attachments=None, allow_write=False) -> str:
+    """Build the single stdin prompt for a non-interactive Gemini CLI run.
+
+    Mirrors _codex_prompt: the app owns chat history, so each invocation gets the
+    relevant transcript, and the edit policy is stated in words as well as being
+    enforced by the CLI's approval mode.
+    """
+    sys_text = _flatten_system(system)
+    convo = _flatten_conversation(messages)
+    if not sys_text and not convo.strip() and not attachments:
+        return ""
+    parts = []
+    if sys_text:
+        parts.append("System instructions:\n" + sys_text)
+    if allow_write:
+        parts.append(
+            "Regalia Edit mode is ON. You may create, modify, rename, or delete "
+            "files inside the current working root when the user requests it. "
+            "Carry out requested edits with your tools instead of only describing "
+            "them."
+        )
+    else:
+        parts.append(
+            "Regalia Edit mode is OFF. Treat the workspace as read-only: do not "
+            "create, modify, rename, or delete files."
+        )
+    if convo.strip():
+        parts.append("Conversation:\n" + convo)
+    if attachments:
+        listing = "\n".join(f"- {a['path']}" for a in attachments)
+        parts.append(
+            "The user attached these file(s). Read them before answering:\n" + listing
+        )
+    return "\n\n".join(parts).strip()
+
+
+def _gemini_cli_chat(messages, system, max_tokens, model, attachments=None,
+                     allow_write=False) -> dict:
+    """Run a chat turn through the Gemini CLI on the signed-in Google account.
+
+    max_tokens is accepted for signature parity but not forwarded; the CLI
+    manages its own output budget. Read-only runs leave approvals at the CLI
+    default (so a write would have to be confirmed, which cannot happen in a
+    non-interactive run); Edit mode passes --yolo to auto-approve tool use.
+    """
+    exe = _gemini_cli_path()
+    if exe is None:
+        raise RouterError(
+            "The Gemini CLI isn't installed or isn't on PATH. Install it "
+            "(`npm install -g @google/gemini-cli`), run `gemini` once and sign in "
+            "with your Google account, then restart the dashboard.",
+            503,
+        )
+    staged_dir = tempfile.TemporaryDirectory(prefix="regalia-gemini-") if attachments else None
+    try:
+        staged = _stage_cli_attachments(attachments, staged_dir.name) if staged_dir else []
+        prompt = _gemini_cli_prompt(messages, system, staged, allow_write=allow_write)
+        if not prompt:
+            raise RouterError("Nothing to send to Gemini.", 400)
+        mdl = model or _gemini_cli_model()
+        cmd = [exe]
+        if mdl:
+            cmd += ["--model", mdl]
+        if allow_write:
+            cmd.append("--yolo")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,          # non-interactive: the prompt is piped in
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_gemini_cli_timeout(),
+                env=_gemini_env(),
+                cwd=GEMINI_CLI_CWD,
+                creationflags=creationflags,
+            )
+        except subprocess.TimeoutExpired:
+            raise RouterError(
+                f"Gemini CLI timed out after {_gemini_cli_timeout()}s. Raise the timeout "
+                "in Settings → Connections, or ask something smaller.",
+                504,
+            )
+        except OSError as e:
+            raise RouterError(f"Couldn't run the Gemini CLI: {e}", 502)
+        reply = (proc.stdout or "").strip()
+        if proc.returncode != 0 and not reply:
+            detail = (proc.stderr or "").strip()
+            low = detail.lower()
+            if "auth" in low or "login" in low or "credential" in low:
+                raise RouterError(
+                    "The Gemini CLI isn't signed in. Run `gemini` once, choose 'Login "
+                    "with Google', then use Recheck in Settings.",
+                    401,
+                )
+            raise RouterError(f"Gemini CLI failed: {detail[:500] or 'unknown error'}", 502)
+        return {
+            "reply": reply or "…(the model went quiet — try again)",
+            "model": mdl or "Google account default",
+            "tier": "google",
+        }
+    finally:
+        if staged_dir:
+            staged_dir.cleanup()
+
+
 # ── Subscription: Claude Code CLI ────────────────────────────────────────────
+
+def gemini_agent_stream(prompt, system=None, model=None, cwd=None, allow_write=False,
+                        timeout=None, cancel_event=None):
+    """Run a scoped Google-account agent and yield Gemini CLI JSONL events.
+
+    Gemini CLI drives its own tool loop. Read-only workers keep the CLI's
+    default approval policy and receive an explicit no-write instruction;
+    write-capable workers use headless YOLO approval so edits do not stall on
+    an impossible interactive prompt. _gemini_env() strips API credentials so
+    this path cannot silently switch away from Google-account billing.
+    """
+    exe = _gemini_cli_path()
+    if exe is None:
+        raise RouterError(
+            "The Gemini CLI isn't installed or isn't on PATH. Install it and "
+            "sign in with your Google account first.", 503,
+        )
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise RouterError("Nothing to send to the Gemini agent.", 400)
+    active_cwd = str(cwd or GEMINI_CLI_CWD)
+    if not os.path.isdir(active_cwd):
+        raise RouterError(f"Gemini working folder does not exist: {active_cwd}", 503)
+    sys_text = _flatten_system(system)
+    policy = (
+        "You may create, modify, rename, or delete files only inside the current "
+        "working root when the task requires it."
+        if allow_write else
+        "Treat the current working root as read-only. Do not create, modify, "
+        "rename, or delete files."
+    )
+    prompt = (("System instructions:\n" + sys_text + "\n\n") if sys_text else "") + \
+             "Workspace policy:\n" + policy + "\n\nTask:\n" + prompt
+    cmd = [exe, "--output-format", "stream-json"]
+    if allow_write:
+        cmd += ["--approval-mode", "yolo"]
+    mdl = model or _gemini_cli_model()
+    if mdl:
+        cmd += ["--model", mdl]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", env=_gemini_env(),
+            cwd=active_cwd, creationflags=creationflags,
+        )
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        raise RouterError(f"Couldn't start the Gemini agent: {e}", 503)
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr():
+        try:
+            for line in proc.stderr:
+                stderr_chunks.append(line)
+        except (OSError, ValueError):
+            pass
+
+    threading.Thread(target=_drain_stderr, daemon=True).start()
+    stdout_lines: queue.Queue = queue.Queue()
+
+    def _read_stdout():
+        try:
+            for output_line in proc.stdout:
+                stdout_lines.put(output_line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            stdout_lines.put(None)
+
+    threading.Thread(target=_read_stdout, daemon=True).start()
+    idle_limit = timeout or _gemini_cli_timeout()
+    last_output = time.monotonic()
+    cancelled = False
+    timed_out = False
+    stream_closed = False
+    try:
+        while not stream_closed:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                proc.kill()
+                break
+            try:
+                line = stdout_lines.get(timeout=0.1)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                stream_closed = True
+            elif line:
+                last_output = time.monotonic()
+                try:
+                    yield json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            elif time.monotonic() - last_output > idle_limit:
+                timed_out = True
+                proc.kill()
+                break
+        while not stdout_lines.empty():
+            line = stdout_lines.get_nowait()
+            if line is None:
+                continue
+            try:
+                yield json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                pass
+    finally:
+        proc.wait()
+    if cancelled:
+        raise RouterError("The Gemini agent was cancelled.", 409)
+    if timed_out:
+        raise RouterError(f"The Gemini agent was silent for over {idle_limit}s and was stopped.", 504)
+    if proc.returncode:
+        detail = "".join(stderr_chunks).strip()
+        low = detail.lower()
+        if "login" in low or "auth" in low or "credential" in low:
+            _GEMINI_HEALTH.update(
+                exe=exe, ok=False, state="signed_out", reason=detail,
+                checked_at=time.time(),
+            )
+        raise RouterError(f"The Gemini agent failed: {detail or 'unknown error'}", 502)
+    _GEMINI_HEALTH.update(
+        exe=exe, ok=True, state="google",
+        reason="Gemini CLI is signed in with a Google account.", checked_at=time.time(),
+    )
+
 
 def _claude_cli_path():
     """Resolve the `claude` executable on PATH, or None if it isn't installed."""
@@ -998,6 +1808,29 @@ def _claude_absolute_rule(tool: str, directory: str) -> str:
     if re.match(r"^[A-Za-z]:/", normalized):
         normalized = "/" + normalized[0].lower() + normalized[2:]
     return f"{tool}(/{normalized.rstrip('/')}/**)"
+
+
+def primary_model(usage, fallback: str = "") -> str:
+    """Pick the model that actually answered out of a CLI `modelUsage` map.
+
+    Claude Code bills its own side work (titles, small background calls) to a
+    cheaper model, so `modelUsage` is a *multi-model* map and its first key is
+    often haiku even on an opus run — labelling the reply with it is simply
+    wrong. Rank by output tokens instead: the model that wrote the answer
+    dominates them. Callers that already know the session model (the stream
+    `init` event) should prefer that and use this only as a fallback.
+    """
+    best, best_out = "", -1
+    for name, entry in (usage or {}).items():
+        raw = entry.get("outputTokens", entry.get("output_tokens", 0)) \
+            if isinstance(entry, dict) else 0
+        try:
+            out = int(raw)
+        except (TypeError, ValueError):
+            out = 0
+        if out > best_out:
+            best, best_out = str(name), out
+    return best or fallback
 
 
 def _claude_code_chat(messages, system, max_tokens, model, attachments=None,
@@ -1115,7 +1948,7 @@ def _claude_code_chat_inner(messages, system, max_tokens, model, attachments=Non
         raise RouterError(f"The Claude CLI returned an error: {why}", 502)
 
     reply = (data.get("result") or "").strip()
-    used_model = next(iter(data.get("modelUsage") or {}), None) or mdl or "claude (plan)"
+    used_model = primary_model(data.get("modelUsage")) or mdl or "claude (plan)"
     return {
         "reply": reply or "…(the model went quiet — try again)",
         "model": used_model,

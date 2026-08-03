@@ -30,6 +30,9 @@ import paths
 
 CHATS_DIR = paths.data_dir() / ".chats"
 DEFAULT_TITLE = "New chat"
+# Mirrors router.TIERS. Kept as a literal so this store stays importable on its
+# own (no router/config dependency) — keep the two in sync when adding a tier.
+VALID_TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
 TITLE_MAX_CHARS = 40
 
 # Conversation ids are minted by create_chat() and must match exactly — the
@@ -150,7 +153,7 @@ def create_chat(tier: str = "fast") -> dict:
         "title": DEFAULT_TITLE,
         "created": now,
         "updated": now,
-        "tier": tier if tier in ("fast", "smart", "openai", "chatgpt", "claude") else "fast",
+        "tier": tier if tier in VALID_TIERS else "fast",
         "model": None,
         "cliModel": {},
         "edit": False,

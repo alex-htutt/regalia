@@ -61,12 +61,18 @@ DEFAULTS: dict = {
     "vault_path": "",          # vault root override; empty = repo root (restart to apply)
     "anthropic_api_key": "",   # secret — masked by the API
     "openai_api_key": "",      # secret — masked by the API
+    "gemini_api_key": "",      # secret — masked by the API
     # ── backends (env var of the same upper-cased name wins; "" = unset) ──
     "ollama_host": "",         # e.g. http://localhost:11434
     "ollama_model": "",        # e.g. llama3.2
     "anthropic_model": "",     # smart-tier model id
     "openai_model": "",        # openai-tier model id
     "openai_base": "",         # OpenAI-compatible API base URL
+    "gemini_model": "",        # gemini-tier model id
+    "gemini_base": "",         # Gemini API base URL
+    "gemini_cli": "",          # gemini binary name/path (google tier)
+    "gemini_cli_model": "",    # empty = Google account default
+    "gemini_cli_timeout": "",  # seconds (stored as string; "" = default)
     "codex_cli": "",           # codex binary name/path
     "codex_cli_model": "",     # empty = ChatGPT account default
     "codex_cli_timeout": "",   # seconds (stored as string; "" = default)
@@ -81,17 +87,19 @@ DEFAULTS: dict = {
     "gmail_oauth_client_json": "",  # secret — pasted client_secret.json contents
 }
 
-SECRET_KEYS = frozenset({"anthropic_api_key", "openai_api_key", "gmail_oauth_client_json"})
+SECRET_KEYS = frozenset({
+    "anthropic_api_key", "openai_api_key", "gemini_api_key", "gmail_oauth_client_json",
+})
 
 _VALID_THEMES = ("dark", "light")
-_VALID_TIERS = ("fast", "smart", "openai", "chatgpt", "claude")
+_VALID_TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
 
 # Store keys that are plain booleans (coerced from any truthy value, never
 # string-stripped like the rest).
 _BOOL_KEYS = ("landing_enabled", "autoupdate", "onboarded")
 
 # Store keys that must parse as a positive integer when non-empty.
-_INT_KEYS = ("codex_cli_timeout", "claude_cli_timeout", "news_ttl")
+_INT_KEYS = ("codex_cli_timeout", "claude_cli_timeout", "gemini_cli_timeout", "news_ttl")
 
 # Store keys whose value is a structured dict, not a string/bool. Validated by a
 # dedicated cleaner and skipped by the generic string-strip pass in update().
@@ -249,7 +257,7 @@ def update(changes: dict) -> dict:
                 raise ValueError(
                     f"{k} must be 1 to 86400 whole seconds (or empty)"
                 )
-    for k in ("ollama_host", "openai_base"):
+    for k in ("ollama_host", "openai_base", "gemini_base"):
         if changes.get(k) and not changes[k].lower().startswith(("http://", "https://")):
             raise ValueError(f"{k} must be an http(s):// URL (or empty)")
     # A pasted ollama.com model link is normalized to the bare pullable name so

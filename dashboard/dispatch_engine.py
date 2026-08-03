@@ -38,7 +38,10 @@ def model_catalog() -> dict:
         "fast": {**status["fast"], "models": ollama or [status["fast"]["model"]]},
         "smart": {**status["smart"], "models": [status["smart"]["model"]]},
         "openai": {**status["openai"], "models": [status["openai"]["model"]]},
-        "chatgpt": {**status["chatgpt"], "models": [status["chatgpt"]["model"]]},
+        "gemini": {**status["gemini"], "models": router.gemini_model_choices()},
+        "chatgpt": {**status["chatgpt"], "models": router.chatgpt_model_choices()},
+        "google": {**status["google"], "models": [status["google"]["model"]]
+                   if "default" not in status["google"]["model"].lower() else []},
         "claude": {**status["claude"], "models": ["haiku", "sonnet", "opus"]},
     }
     return {"tiers": entries, "priorities": list(dispatches.PRIORITIES)}
@@ -57,7 +60,7 @@ def _planner_choice(priority: str, requested: dict | None = None) -> tuple[str, 
     model = str(requested.get("model") or "").strip()
     if tier in agent.AGENT_TIERS and _tier_available(tier):
         return tier, model
-    order = ("claude", "smart", "openai", "chatgpt", "fast")
+    order = ("claude", "smart", "openai", "gemini", "chatgpt", "google", "fast")
     for candidate in order:
         if _tier_available(candidate):
             if candidate == "claude":
@@ -84,9 +87,9 @@ def _choose_worker_tier(complexity: str, priority: str) -> str:
     if complexity == "simple" and _tier_available("fast"):
         return "fast"
     if priority == "fast":
-        order = ("claude", "openai", "smart", "chatgpt", "fast")
+        order = ("claude", "openai", "gemini", "smart", "chatgpt", "google", "fast")
     else:
-        order = ("claude", "smart", "openai", "chatgpt", "fast")
+        order = ("claude", "smart", "openai", "gemini", "chatgpt", "google", "fast")
     return next((tier for tier in order if _tier_available(tier)), "fast")
 
 
@@ -268,9 +271,13 @@ def _planner_worker(dispatch_id: str) -> None:
         for m in obj.get("messages") or [] if m.get("role") in ("user", "assistant")
     ]
     try:
+        attachment_note = ""
+        if obj.get("attachments"):
+            names = ", ".join(str(a.get("name") or "attachment") for a in obj["attachments"])
+            attachment_note = f" Attached input files available to filesystem-capable workers: {names}."
         result = router.chat(
             messages, tier=obj["planner"]["tier"], model=obj["planner"].get("model") or None,
-            system=PLANNER_SYSTEM + f"\nDispatch priority: {obj['priority']}. Scope: {obj.get('scope') or 'vault root'}.",
+            system=PLANNER_SYSTEM + f"\nDispatch priority: {obj['priority']}. Scope: {obj.get('scope') or 'vault root'}.{attachment_note}",
             max_tokens=4096,
         )
         parsed = _json_object(result.get("reply"))
@@ -363,11 +370,11 @@ def launch(dispatch_id: str) -> dict:
                 f"{worker.get('title') or worker.get('id')} is assigned to unavailable tier '{tier}'. "
                 "Connect it or choose another tier before launch.", 503,
             )
-        if tier == "chatgpt" and any(
+        if tier in ("chatgpt", "google") and any(
                 cap.startswith("inbox_") for cap in worker.get("capabilities") or []):
             raise DispatchError(
-                "ChatGPT-account workers cannot access connected inboxes yet; choose Claude, "
-                "Local, Anthropic API, or OpenAI API for that worker.", 409,
+                "Account-CLI workers cannot access connected inboxes yet; choose Claude, "
+                "Local, Anthropic API, OpenAI API, or Gemini API for that worker.", 409,
             )
         scope = agent.resolve_scope(worker.get("scope") or "")
         if FILE_WRITE_CAPS.intersection(worker.get("capabilities") or []):
@@ -424,17 +431,20 @@ def _set_worker(dispatch_id: str, worker_id: str, **changes) -> dict:
 
 
 def _run_worker(dispatch_id: str, worker: dict, cancel: threading.Event,
-                dependency_artifacts: list[dict]) -> tuple[dict, dict | None]:
+                dependency_artifacts: list[dict], attachments: list[dict] | None = None) -> tuple[dict, dict | None]:
     _set_worker(dispatch_id, worker["id"], status="running")
     dispatches.append_event(dispatch_id, {
         "type": "worker_started", "worker": worker["id"], "title": worker["title"],
         "tier": worker["tier"], "model": worker.get("model") or "default",
     })
     scope = agent.resolve_scope(worker.get("scope") or "")
-    writes = bool(WRITE_CAPS.intersection(worker["capabilities"]))
+    file_writes = bool(FILE_WRITE_CAPS.intersection(worker["capabilities"]))
+    file_access = bool({"vault_read", "vault_write", "code_read", "code_write", "run_checks"}
+                       .intersection(worker["capabilities"]))
     workspace = None
     run_scope = scope
-    if writes and not any(c.startswith("inbox_") for c in worker["capabilities"]):
+    if (file_writes
+            or (attachments and file_access)):
         dep_paths = [a["path"] for a in dependency_artifacts
                      if a and a.get("kind") == "git" and a.get("has_changes")]
         workspace = dispatch_workspace.prepare_worker(
@@ -475,11 +485,26 @@ def _run_worker(dispatch_id: str, worker: dict, cancel: threading.Event,
             payload["input"] = tool_input
         dispatches.append_event(dispatch_id, {**payload, "worker": worker["id"]})
 
-    result = agent.run_agent(
-        worker["id"], worker["objective"], tier=worker["tier"], model=worker.get("model") or "",
-        emit=emit, spec_override=spec, scope_override=run_scope, cancel_event=cancel,
-    )
-    artifact = dispatch_workspace.collect_artifact(workspace) if workspace else None
+    staged = []
+    try:
+        staged = dispatch_workspace.stage_attachments(workspace, attachments or []) if workspace else []
+        task = worker["objective"]
+        if staged:
+            listing = "\n".join(f"- {path}" for path in staged)
+            task += (
+                "\n\nThe user attached these read-only input files. Inspect them when relevant "
+                "and do not modify or include them in your output changes:\n" + listing
+            )
+        result = agent.run_agent(
+            worker["id"], task, tier=worker["tier"], model=worker.get("model") or "",
+            emit=emit, spec_override=spec, scope_override=run_scope, cancel_event=cancel,
+        )
+    finally:
+        if workspace and staged:
+            dispatch_workspace.remove_staged_attachments(workspace)
+        if workspace and not file_writes:
+            dispatch_workspace.cleanup_worker(workspace)
+    artifact = dispatch_workspace.collect_artifact(workspace) if workspace and file_writes else None
     staged_drafts = [
         dict(step.get("input") or {}) for step in result.get("steps") or []
         if step.get("tool") in ("stage_email_draft", "mcp__mailbox__stage_email_draft")
@@ -529,7 +554,10 @@ def _orchestrate(dispatch_id: str, cancel: threading.Event) -> None:
                 for wid in ready[:max(0, concurrency - len(running))]:
                     pending.remove(wid)
                     deps = [artifacts.get(dep) for dep in workers[wid]["depends_on"] if artifacts.get(dep)]
-                    running[pool.submit(_run_worker, dispatch_id, workers[wid], cancel, deps)] = wid
+                    running[pool.submit(
+                        _run_worker, dispatch_id, workers[wid], cancel, deps,
+                        obj.get("attachments") or [],
+                    )] = wid
                 if not running:
                     if pending:
                         raise DispatchError("No runnable workers remain; check the dependency plan.")
@@ -688,6 +716,8 @@ def public_dispatch(obj: dict) -> dict:
     if not obj:
         return obj
     clean = json.loads(json.dumps(obj))
+    for attachment in clean.get("attachments") or []:
+        attachment.pop("path", None)
     for artifact in clean.get("artifacts") or []:
         artifact.pop("path", None)
         artifact.pop("source_root", None)
