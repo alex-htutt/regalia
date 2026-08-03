@@ -12,4 +12,5 @@ msal>=1.28.0                 # Microsoft (Outlook) OAuth + token cache
 
 # MCP bridge: lets the claude tier (subscription-billed) reach the mailbox. Only
 # imported by mail_mcp.py — a subprocess the Claude CLI spawns — never by the app.
-mcp>=1.0
+# FastMCP's v1 import path is used here; MCP v2 is a breaking API migration.
+mcp>=1.27,<2

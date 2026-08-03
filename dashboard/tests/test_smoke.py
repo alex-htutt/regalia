@@ -1088,6 +1088,12 @@ class MailboxMcpBridgeTests(unittest.TestCase):
         self.assertFalse(hasattr(mail_mcp, "send_email"))
         self.assertFalse(hasattr(mail_mcp, "send"))
 
+    def test_requirements_keep_the_fastmcp_v1_api_bound(self):
+        requirements = (Path(__file__).parents[1] / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(requirements, r"(?m)^mcp>=1\.27,<2$")
+
 
 class ClaudeCommandSafetyTests(unittest.TestCase):
     """Automated Claude runs expose an exact tool/config boundary."""
