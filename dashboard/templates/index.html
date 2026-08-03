@@ -722,15 +722,19 @@
     background: var(--glass-inset); padding: 1px 4px; border-radius: 4px;
   }
   .stg-chips { display: flex; flex-wrap: wrap; gap: 7px; }
-  .stg-chip {
-    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  /* `.bento-card label { flex: 1 }` (above) outranks a bare `.stg-chip`, so the
+     interest chips need this label-qualified selector to size to content and
+     wrap — otherwise they share the row equally and their labels overflow. */
+  .bento-card label.stg-chip {
+    display: inline-flex; flex: 0 0 auto; flex-direction: row;
+    align-items: center; gap: 6px; cursor: pointer;
     padding: 5px 11px; border-radius: 999px; font-size: 12px; user-select: none;
-    color: var(--muted); background: var(--glass-inset);
+    white-space: nowrap; color: var(--muted); background: var(--glass-inset);
     border: 1px solid var(--glass-border); transition: all .15s ease;
   }
-  .stg-chip:hover { color: var(--text); border-color: var(--amber); }
+  .bento-card label.stg-chip:hover { color: var(--text); border-color: var(--amber); }
   .stg-chip input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .stg-chip.on {
+  .bento-card label.stg-chip.on {
     color: var(--amber-fg); background: var(--amber-bg);
     border-color: var(--amber); font-weight: 600;
   }
@@ -953,9 +957,15 @@
     border-radius: 10px; padding: 14px 16px;
     display: flex; flex-direction: column; gap: 8px;
   }
-  .agent-top { display: flex; align-items: center; gap: 8px; }
+  .agent-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px; }
   .agent-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
-  .agent-name { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; }
+  .agent-name {
+    font-size: 13.5px; font-weight: 600; flex: 1 1 auto; min-width: 72px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Header dropdowns keep their size and wrap to a new row instead of
+     squeezing the title to zero width (which made long names overlap them). */
+  .agent-top .agent-tier-select { flex-shrink: 0; }
   .tier {
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700;
     padding: 2px 7px; border-radius: 4px;
