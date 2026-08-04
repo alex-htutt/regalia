@@ -13,4 +13,12 @@ this template.
 
 ---
 
-No unreleased changes yet.
+## Manual vault refresh
+
+- The Overview now has a **Refresh** action that re-reads tasks and recent-folder
+  tiles from disk without reloading Regalia.
+- Browse gained its own **Refresh** action. It remaps the vault and file tree
+  with cache bypassing while preserving expanded folders and the selected file
+  when those nodes still exist.
+- Both controls show refreshing, success, and retry states. The initial Overview
+  load uses the same refresh path, so manual and startup behavior cannot drift.

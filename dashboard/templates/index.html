@@ -524,6 +524,7 @@
   }
   .filter-group { display: flex; gap: 4px; }
   .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; align-self: center; }
+  .overview-refresh { margin-left: auto; min-width: 92px; }
   .pill {
     padding: 4px 12px;
     border-radius: 20px;
@@ -1568,6 +1569,8 @@
           <div class="sep"></div>
           <div class="filter-group" id="fg-course"></div>
         </div>
+        <button class="pill overview-refresh" id="overview-refresh" type="button"
+                onclick="refreshOverview(this)" title="Re-read tasks and recent folders from disk">&#8635; Refresh</button>
       </div>
       <div class="task-list" id="task-list"><div class="empty">Loading…</div></div>
     </section>
@@ -1613,6 +1616,8 @@
               <button class="vault-tool-btn zoom-extra" type="button" onclick="vaultZoomBy(.8)" title="Zoom out" aria-label="Zoom out">−</button>
               <button class="vault-tool-btn" type="button" onclick="vaultFit()" title="Fit visible graph">Fit</button>
               <button class="vault-tool-btn" type="button" onclick="vaultReset()" title="Collapse back to Home">Home</button>
+              <button class="vault-tool-btn" type="button" id="vault-refresh-btn"
+                      onclick="refreshBrowse(this)" title="Re-read the vault from disk">&#8635; Refresh</button>
               <input type="file" id="vault-upload-file" multiple hidden onchange="vaultPickUpload(event)">
               <button class="vault-tool-btn" type="button" id="vault-upload-btn" onclick="document.getElementById('vault-upload-file').click()" title="Add a file to the selected folder">↑ Add file</button>
               <button class="vault-tool-btn vault-tree-toggle" type="button" onclick="vaultToggleTree(true)" title="Show file tree" aria-label="Show file tree">Tree</button>
@@ -2126,14 +2131,17 @@
   function vaultLoadMap(force = false) {
     if (vaultGraph.loading || (vaultGraph.data && !force)) {
       if (vaultGraph.data) vaultRenderAll();
-      return;
+      return Promise.resolve(Boolean(vaultGraph.data));
     }
+    const previousExpanded = new Set(vaultGraph.expanded);
+    const previousTreeExpanded = new Set(vaultGraph.treeExpanded);
+    const previousSelected = vaultGraph.selected;
     vaultGraph.loading = true;
     const state = document.getElementById('vault-graph-state');
     if (state) { state.hidden = false; state.textContent = 'Mapping the vault...'; }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
-    fetch('/api/vault-map', { signal: controller.signal }).then(r => r.json().then(d => ({ ok: r.ok, d })))
+    return fetch('/api/vault-map', { signal: controller.signal, cache: 'no-store' }).then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
         if (!ok || d.error) throw new Error(d.error || 'Could not map the vault.');
         vaultGraph.data = d;
@@ -2149,22 +2157,34 @@
           const ka = na.kind === 'folder' ? 0 : 1, kb = nb.kind === 'folder' ? 0 : 1;
           return ka - kb || na.name.localeCompare(nb.name, undefined, { sensitivity: 'base' });
         }));
-        vaultGraph.expanded = new Set([d.root]);
-        vaultGraph.treeExpanded = new Set([d.root]);
-        vaultGraph.selected = '';
+        // A manual refresh should update the files without throwing the user
+        // back to Home. Keep expansion and selection for nodes that still exist.
+        vaultGraph.expanded = new Set([...previousExpanded].filter(id => vaultGraph.nodes.has(id)));
+        vaultGraph.treeExpanded = new Set([...previousTreeExpanded].filter(id => vaultGraph.nodes.has(id)));
+        vaultGraph.expanded.add(d.root);
+        vaultGraph.treeExpanded.add(d.root);
+        vaultGraph.selected = vaultGraph.nodes.has(previousSelected) ? previousSelected : '';
         vaultGraph.loading = false;
         if (state) state.hidden = true;
         const count = document.getElementById('vault-tree-count');
         if (count) count.textContent = `${d.nodes.length} items`;
         vaultInitGraph();
         vaultRenderAll();
+        const refreshedSelection = vaultGraph.nodes.get(vaultGraph.selected);
+        if (force && refreshedSelection && !['folder', 'home'].includes(refreshedSelection.kind)) {
+          vaultShowInspector(refreshedSelection);
+        } else if (force && previousSelected && !refreshedSelection) {
+          vaultCloseInspector();
+        }
         vaultStartActivityPolling();
-        setTimeout(vaultFit, 650);
+        if (!force || !previousExpanded.size) setTimeout(vaultFit, 650);
+        return true;
       })
       .catch(err => {
         vaultGraph.loading = false;
         const message = err.name === 'AbortError' ? 'Vault mapping timed out. Try refreshing the map.' : (err.message || 'Could not map the vault.');
         if (state) { state.hidden = false; state.textContent = message; }
+        return false;
       })
       .finally(() => clearTimeout(timeout));
   }
@@ -2587,13 +2607,13 @@
     }
     if (node.preview_kind === 'image') {
       const img = document.createElement('img'); img.alt = `Preview of ${node.name}`;
-      img.src = '/api/vault-preview?path=' + encodeURIComponent(node.path);
+      img.src = '/api/vault-preview?path=' + encodeURIComponent(node.path) + '&v=' + encodeURIComponent(node.modified || 0);
       img.addEventListener('error', () => { preview.innerHTML = '<span class="vi-loading">Preview unavailable.</span>'; });
       preview.appendChild(img); return;
     }
     const token = ++vaultGraph.previewToken;
     preview.innerHTML = '<span class="vi-loading">Loading preview...</span>';
-    fetch('/api/vault-preview?path=' + encodeURIComponent(node.path)).then(r => {
+    fetch('/api/vault-preview?path=' + encodeURIComponent(node.path), { cache: 'no-store' }).then(r => {
       if (!r.ok) throw new Error();
       const truncated = r.headers.get('X-Preview-Truncated') === '1';
       return r.text().then(text => ({ text, truncated }));
@@ -3045,8 +3065,59 @@
     fetch('/api/news?refresh=1').then(r => r.json()).then(renderNews).catch(() => {});
   }
 
-  fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildAreaPills(); buildCoursePills(); render(); });
-  fetch('/api/recent-folders').then(r => r.json()).then(renderRecentFolders).catch(() => {});
+  function vaultFetchJson(url) {
+    return fetch(url, { cache: 'no-store' }).then(r =>
+      r.json().then(d => {
+        if (!r.ok || (d && d.error)) throw new Error((d && d.error) || 'Refresh failed.');
+        return d;
+      })
+    );
+  }
+
+  function loadOverviewData() {
+    return Promise.all([
+      vaultFetchJson('/api/tasks').then(data => {
+        all = data;
+        buildAreaPills();
+        buildCoursePills();
+        render();
+      }),
+      vaultFetchJson('/api/recent-folders').then(renderRecentFolders),
+    ]);
+  }
+
+  function refreshButton(btn, work) {
+    if (!btn || btn.disabled) return Promise.resolve(false);
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Refreshing...';
+    return Promise.resolve().then(work).then(ok => {
+      if (ok === false) throw new Error('Refresh failed.');
+      btn.textContent = 'Refreshed';
+      return true;
+    }).catch(() => {
+      btn.textContent = 'Try again';
+      return false;
+    }).finally(() => {
+      window.setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = original;
+      }, 1400);
+    });
+  }
+
+  function refreshOverview(btn) {
+    return refreshButton(btn, loadOverviewData);
+  }
+
+  function refreshBrowse(btn) {
+    return refreshButton(btn, () => vaultLoadMap(true));
+  }
+
+  loadOverviewData().catch(() => {
+    document.getElementById('task-list').innerHTML =
+      '<div class="empty">Could not load the vault. Use Refresh to try again.</div>';
+  });
   fetch('/api/usage').then(r => r.json()).then(renderUsage).catch(() => {});
   fetch('/api/news').then(r => r.json()).then(renderNews).catch(() => {});
   const initialFolder = new URLSearchParams(location.search).get('folder');

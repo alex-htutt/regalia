@@ -75,6 +75,20 @@ class RouteSmokeTests(unittest.TestCase):
             self.assertEqual(asset.status_code, 200)
             asset.close()
 
+    def test_index_includes_manual_vault_refresh_controls(self):
+        body = self.client.get("/").get_data(as_text=True)
+        for marker in (
+            'onclick="refreshOverview(this)"',
+            'onclick="refreshBrowse(this)"',
+            "vaultFetchJson('/api/tasks')",
+            "vaultFetchJson('/api/recent-folders')",
+            "cache: 'no-store'",
+            "vaultLoadMap(true)",
+            "previousExpanded",
+            "previousSelected",
+        ):
+            self.assertIn(marker, body)
+
     def test_api_tasks_returns_list(self):
         r = self.client.get("/api/tasks")
         self.assertEqual(r.status_code, 200)
