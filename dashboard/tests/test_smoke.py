@@ -98,6 +98,41 @@ class RouteSmokeTests(unittest.TestCase):
         ):
             self.assertIn(marker, body)
 
+    def test_index_wires_live_vault_sync(self):
+        # Without these the UI is back to needing a restart (or a manual
+        # Refresh) to notice a completed or edited note.
+        body = self.client.get("/").get_data(as_text=True)
+        for marker in (
+            "fetch('/api/vault-revision', { cache: 'no-store' })",
+            "vaultSyncSchedule(vaultSync.pollMs)",
+            "if (notesMoved) work.push(loadOverviewData()",
+            "document.addEventListener('visibilitychange'",
+        ):
+            self.assertIn(marker, body)
+
+    def test_live_sync_idles_while_the_window_is_hidden(self):
+        # A backgrounded tab (or a closed desktop window) must stop polling —
+        # both the scheduler and the tick itself refuse to run when hidden.
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn("if (document.hidden) return;", body)
+        self.assertIn("if (vaultSync.busy || document.hidden) return;", body)
+
+    def test_live_sync_defers_the_expensive_remap_until_browse_is_visible(self):
+        # /api/vault-map costs ~10x the fingerprint; rebuilding a graph nobody
+        # is looking at is pure waste, so a hidden Browse is marked stale and
+        # remapped on the next visit instead.
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn("if (treeMoved && loaded.browse) vaultSync.treeStale = true;", body)
+        self.assertIn("if (vaultSync.treeStale && browseIsVisible()", body)
+        self.assertIn("else if (vaultSync.treeStale) { vaultSync.treeStale = false; vaultLoadMap(true); }", body)
+
+    def test_course_pills_reflect_the_active_filter(self):
+        # Rebuilt on every (now automatic) data load. Hardcoding "All courses"
+        # as selected made the pills contradict a live course filter.
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn("""<button class="pill ${filters.course === 'all' ? 'on' : ''}" data-k="course\"""", body)
+        self.assertNotIn("""<button class="pill on" data-k="course\"""", body)
+
     def test_api_tasks_returns_list(self):
         r = self.client.get("/api/tasks")
         self.assertEqual(r.status_code, 200)
@@ -442,6 +477,96 @@ class VaultMapTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), dashboard_app.BROWSER_PREVIEW_BYTES)
         self.assertEqual(response.headers["X-Preview-Truncated"], "1")
+
+
+class VaultRevisionTests(unittest.TestCase):
+    """The live-sync fingerprint moves on real edits and only on real edits.
+
+    This is what lets an open Regalia window reflect a note being completed or
+    edited without a restart: the UI polls this hash pair instead of refetching
+    /api/tasks and /api/vault-map on a timer.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        self._orig_root = dashboard_app.VAULT_ROOT
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        dashboard_app.VAULT_ROOT = root
+        (root / "Notes").mkdir()
+        (root / ".hidden").mkdir()
+        (root / "dashboard").mkdir()
+        self.note = root / "Notes" / "task.md"
+        self.note.write_text(
+            "---\ndate: 2026-08-10\ntags: [area/projects]\nstatus: active\n---\n# Task\n",
+            encoding="utf-8")
+
+    def tearDown(self):
+        dashboard_app.VAULT_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def _revision(self) -> dict:
+        # Drop the shared-walk memo so each read reflects the filesystem now.
+        dashboard_app._REVISION_CACHE.update(at=0.0, value=None)
+        return dashboard_app._vault_revision()
+
+    def test_route_shape(self):
+        r = self.client.get("/api/vault-revision")
+        self.assertEqual(r.status_code, 200)
+        d = r.get_json()
+        for key in ("notes", "tree", "note_files", "tree_files", "poll_ms"):
+            self.assertIn(key, d)
+        self.assertGreater(d["poll_ms"], 0)
+
+    def test_unchanged_vault_keeps_the_same_revision(self):
+        # A stable hash is the whole point — otherwise the client refetches
+        # (and re-renders over the user) on every poll.
+        self.assertEqual(self._revision()["notes"], self._revision()["notes"])
+
+    def test_status_edit_moves_the_notes_revision(self):
+        before = self._revision()
+        self.note.write_text(
+            "---\ndate: 2026-08-10\ntags: [area/projects]\nstatus: complete\n---\n# Task\n",
+            encoding="utf-8")
+        self.assertNotEqual(self._revision()["notes"], before["notes"])
+
+    def test_added_and_deleted_notes_move_the_revision(self):
+        before = self._revision()
+        extra = Path(self._tmp.name) / "Notes" / "extra.md"
+        extra.write_text("---\nstatus: active\n---\n# Extra\n", encoding="utf-8")
+        added = self._revision()
+        self.assertNotEqual(added["notes"], before["notes"])
+        self.assertEqual(added["note_files"], before["note_files"] + 1)
+        extra.unlink()
+        self.assertEqual(self._revision()["notes"], before["notes"])
+
+    def test_ignored_and_hidden_trees_never_move_the_revision(self):
+        # Pruning these is what keeps the walk cheap enough to poll. Agent
+        # scratch under dashboard/ and .git/ churn constantly; if they counted,
+        # the UI would rebuild itself every few seconds for no reason.
+        before = self._revision()
+        (Path(self._tmp.name) / "dashboard" / "app.py").write_text("x", encoding="utf-8")
+        (Path(self._tmp.name) / ".hidden" / "note.md").write_text("# Hidden", encoding="utf-8")
+        self.assertEqual(self._revision(), before)
+
+    def test_non_markdown_moves_only_the_tree_revision(self):
+        # The overview reads .md only, so a dropped PNG must not make it
+        # refetch tasks — but Browse lists that file and does need remapping.
+        before = self._revision()
+        (Path(self._tmp.name) / "Notes" / "diagram.png").write_bytes(b"\x89PNG\r\n")
+        after = self._revision()
+        self.assertEqual(after["notes"], before["notes"])
+        self.assertNotEqual(after["tree"], before["tree"])
+
+    def test_reads_do_not_move_the_revision(self):
+        before = self._revision()
+        self.note.read_text(encoding="utf-8")
+        self.assertEqual(self._revision(), before)
 
 
 class VaultActivityTests(unittest.TestCase):
@@ -1816,6 +1941,48 @@ class UiConfigTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("accent: stgAccentValue,", html)
         self.assertNotIn("getElementById('stg-accent').value,", html)
+
+    # ── Calendar view ──
+    def test_calendar_view_is_wired_up(self):
+        # Nav button, view section, and the setView hook must all agree on the
+        # same view name, or the tab renders a blank pane.
+        html = (Path(dashboard_app.__file__).parent / "templates" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn("""data-view="calendar" onclick="setView('calendar')""", html)
+        self.assertIn("""<section class="view" data-view="calendar" hidden>""", html)
+        self.assertIn("if (v === 'calendar') renderCalendar();", html)
+        self.assertIn('id="cal-grid"', html)
+
+    def test_calendar_dates_are_integer_ordinals_not_parsed_dates(self):
+        # new Date('2026-08-10') is UTC midnight, so a local-time round trip
+        # drops every deadline one cell early for west-of-UTC users. Every
+        # comparison must run on Date.UTC(y, m, d) day ordinals instead, and a
+        # value that isn't a plain ISO date must be rejected, not guessed at.
+        html = (Path(dashboard_app.__file__).parent / "templates" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn("function calOrd(y, m, d) { return Date.UTC(y, m, d) / 86400000; }", html)
+        self.assertIn("const p = /^(\\d{4})-(\\d{2})-(\\d{2})/.exec(String(s || ''));", html)
+        self.assertIn("return p ? calOrd(+p[1], +p[2] - 1, +p[3]) : null;", html)
+
+    def test_calendar_spans_creation_date_through_deadline(self):
+        # An assignment occupies every day from its `date:` to its `deadline:`,
+        # so open work shows on today's column rather than only on its due day.
+        # A missing/backwards `date:` collapses to a single day on the deadline.
+        html = (Path(dashboard_app.__file__).parent / "templates" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn("const start = calParseOrd(t.date);", html)
+        self.assertIn("start: (start === null || start > end) ? end : start", html)
+        # repeat(0, ...) is invalid CSS and would drop the whole track list.
+        self.assertIn("const tracks = rows ? `auto repeat(${rows}, auto)` : 'auto';", html)
+
+    def test_tasks_expose_both_dates_for_the_calendar(self):
+        # The calendar has no endpoint of its own — it reads /api/tasks, and now
+        # needs `date` (span start) as well as `deadline` (span end).
+        for t in self.client.get("/api/tasks").get_json():
+            self.assertIn("deadline", t)
+            self.assertIn("date", t)
+            self.assertIsInstance(t["deadline"], str)
+            self.assertIsInstance(t["date"], str)
 
     # ── Personalization (v1.33) ──
     def test_personalization_defaults_and_catalog(self):

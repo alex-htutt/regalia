@@ -620,6 +620,58 @@
 
   .filepath { font-size: 11px; color: var(--faint); font-family: ui-monospace, monospace; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+  /* ── Calendar view ── */
+  .cal-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 0 var(--page-pad) 12px; }
+  .cal-month { font-size: 15px; font-weight: 500; flex: 1 1 auto; }
+  .cal-count { font-size: 11px; color: var(--muted); }
+  .cal-grid { display: flex; flex-direction: column; gap: 4px; padding: 0 var(--page-pad) 24px; }
+  /* A calendar is genuinely seven columns wide — this is the one grid that does
+     NOT use the minmax(min(100%,Npx),1fr) card idiom (UI_STANDARDS §3.1), since
+     collapsing to fewer columns would stop it being a week grid. minmax(0,1fr)
+     lets the cells shrink instead of overflowing on narrow screens.
+
+     Each week is its own grid so a task can span days: the day cells sit in
+     row 1/-1 as the background, the date numbers in row 1, and each task's bar
+     spans `grid-column: start / span N` on a lane row beneath them. That
+     column-spanning is the whole reason a week is a grid rather than 7 boxes
+     with items nested inside — a nested item cannot cross its cell. */
+  .cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); column-gap: 4px; row-gap: 2px; }
+  .cal-dow-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); column-gap: 4px; }
+  .cal-dow {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--muted); text-align: center; padding-bottom: 2px;
+  }
+  .cal-cell {
+    grid-row: 1 / -1; min-height: 92px; border-radius: 8px;
+    background: var(--glass); backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    min-width: 0; z-index: 0;
+  }
+  .cal-cell.out { opacity: 0.4; }
+  .cal-cell.today { border-color: var(--amber); }
+  .cal-num {
+    grid-row: 1; position: relative; z-index: 1;
+    font-size: 11px; color: var(--muted); padding: 5px 7px 3px;
+  }
+  .cal-num.out { opacity: 0.4; }
+  .cal-num.today { color: var(--amber-fg); font-weight: 600; }
+  /* The bar is inset 4px at each end so it reads as starting inside its first
+     day and ending inside its last; a segment continuing past the week edge
+     drops that inset and flattens its radius so it runs to the edge instead. */
+  .cal-span {
+    position: relative; z-index: 1; margin: 0 4px; padding: 2px 6px;
+    font-size: 11px; line-height: 1.35; border-radius: 4px;
+    background: var(--glass-inset); border-left: 2px solid var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  .cal-span.overdue { border-left-color: var(--red); }
+  .cal-span.soon    { border-left-color: var(--amber); }
+  .cal-span.done    { color: var(--faint); text-decoration: line-through; }
+  .cal-span.cont-l  { margin-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+  .cal-span.cont-r  { margin-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .cal-more { position: relative; z-index: 1; font-size: 10px; color: var(--faint); padding: 0 7px; }
+
   /* ── Empty / loading ── */
   .empty { text-align: center; padding: 56px 0; color: var(--faint); font-size: 13px; }
 
@@ -786,6 +838,10 @@
     display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
     color: var(--amber-fg); font-size: 12px; font-weight: 600;
   }
+  /* The rule above beats the UA's `[hidden] { display: none }`, so without this
+     the badge stayed lit from page load and stgSetDirty(false) did nothing
+     visible. Any class that sets `display` needs its own [hidden] escape. */
+  .stg-dirty[hidden] { display: none; }
   .stg-dirty::before {
     content: ''; width: 7px; height: 7px; border-radius: 50%;
     background: var(--amber); animation: stg-dirty-pulse 1.8s ease-in-out infinite;
@@ -1659,6 +1715,7 @@
 <div class="app">
   <nav class="sidebar">
     <button class="nav on" data-view="overview" onclick="setView('overview')">📋 Overview</button>
+    <button class="nav"    data-view="calendar" onclick="setView('calendar')">📅 Calendar</button>
     <button class="nav"    data-view="projects" onclick="setView('projects')">📁 Projects</button>
     <button class="nav"    data-view="browse"   onclick="setView('browse')">🗂️ Browse</button>
     <button class="nav"    data-view="chat"     onclick="setView('chat')">💬 Chat</button>
@@ -1700,10 +1757,25 @@
       <div class="task-list" id="task-list"><div class="empty">Loading…</div></div>
     </section>
 
+    <section class="view" data-view="calendar" hidden>
+      <div class="view-head">
+        <h2>Calendar</h2>
+        <p>Each note runs from the day it was created to its deadline, so what's open right now is visible, not just what's due.</p>
+      </div>
+      <div class="cal-bar">
+        <div class="cal-month" id="cal-month">&nbsp;</div>
+        <span class="cal-count" id="cal-count"></span>
+        <button class="pill compact" type="button" onclick="calShift(-1)" title="Previous month">&#8249; Prev</button>
+        <button class="pill compact" type="button" onclick="calToday()" title="Jump to the current month">Today</button>
+        <button class="pill compact" type="button" onclick="calShift(1)" title="Next month">Next &#8250;</button>
+      </div>
+      <div class="cal-grid" id="cal-grid"></div>
+    </section>
+
     <section class="view" data-view="projects" hidden>
       <div class="view-head">
         <h2>Projects</h2>
-        <p>Spin up a new project folder — correct structure and frontmatter, linked into Home.</p>
+        <p>Create a project folder.</p>
       </div>
       <div class="panel-wrap">
         <form class="np-form" id="np-form" onsubmit="createProject(event)">
@@ -1727,7 +1799,7 @@
     <section class="view" data-view="browse" hidden>
       <div class="view-head">
         <h2>Vault map</h2>
-        <p>Follow the structure from Home, then trace the links your files make between branches.</p>
+        <p>Folders, notes, and the links between them.</p>
       </div>
       <div class="vault-browser" id="vault-browser">
         <div class="vault-graph-pane" id="vault-graph-pane">
@@ -1773,7 +1845,7 @@
     <section class="view" data-view="chat" hidden>
       <div class="view-head">
         <h2>Chat</h2>
-        <p>Many chats, multiple backends. <b>Fast</b> runs locally on Ollama; <b>Smart</b>, <b>GPT API</b> and <b>Gemini API</b> use API credits; <b>ChatGPT</b> and <b>Google</b> use your signed-in ChatGPT / Google accounts; <b>Claude</b> uses your Claude plan. Conversations persist and run in parallel.</p>
+        <p>Parallel conversations across your connected backends.</p>
       </div>
       <div class="panel-wrap chat-wrap">
         <div class="tier-bar">
@@ -1804,7 +1876,7 @@
         <div class="chat-box" id="chat-box">
           <div class="chat-drop-hint">📎 Drop to attach</div>
           <div class="chat-log" id="chat-log">
-            <div class="chat-empty">Pick a tier and say something. Fast keeps it local; ChatGPT and Claude use signed-in account CLIs. Attach files with 📎.</div>
+            <div class="chat-empty">Pick a tier and say something.</div>
           </div>
           <div class="chat-attachments" id="chat-attachments" hidden></div>
           <div class="chat-input">
@@ -1824,7 +1896,7 @@
     <section class="view" data-view="inbox" hidden>
       <div class="view-head">
         <h2>Inbox</h2>
-        <p>Read your connected Gmail / Outlook inboxes and save drafts. Drafts are never sent — review and send them from your mail client.</p>
+        <p>Read mail and save drafts — nothing is ever sent.</p>
       </div>
       <div class="panel-wrap inbox-wrap">
         <div class="inbox-bar">
@@ -1845,7 +1917,7 @@
     <section class="view" data-view="agents" hidden>
       <div class="view-head">
         <h2>Agents</h2>
-        <p>Create specialists, dispatch one-off work, or plan a larger job across a model-sized team. Every dispatch asks whether speed or depth matters first.</p>
+        <p>Create specialists and dispatch work.</p>
       </div>
       <div class="panel-wrap">
         <div class="agents-layout">
@@ -1879,7 +1951,7 @@
     <section class="view" data-view="settings" hidden>
       <div class="view-head">
         <h2>Settings</h2>
-        <p>Everything configurable lives here — appearance, model backends, and connections. Changes save to a local, gitignored store and apply immediately (vault path needs a restart). Environment variables, if set, win over values saved here.</p>
+        <p>Appearance, backends, and connections.</p>
       </div>
       <div class="panel-wrap">
         <div class="bento">
@@ -1966,11 +2038,11 @@
                 <div class="bento-icon">🎯</div>
                 <div class="bento-heads">
                   <div class="bento-title">Personalization</div>
-                  <div class="bento-sub">Tailor the overview briefing to you — which jobs get surfaced and which news feeds you read.</div>
+                  <div class="bento-sub">Which jobs and feeds show up on the overview.</div>
                 </div>
               </div>
               <div class="bento-body">
-                <label>Job interests<span class="stg-p-hint">Only roles matching a selected area are surfaced. None selected = show everything.</span></label>
+                <label>Job interests<span class="stg-p-hint">None selected = show everything.</span></label>
                 <div class="stg-chips" id="stg-p-interests"></div>
                 <div class="np-row" style="margin-top:12px">
                   <label>Career stage<select id="stg-p-stage">
@@ -1982,15 +2054,15 @@
                   </select></label>
                   <label>Preferred locations<input id="stg-p-locations" type="text" placeholder="New York, Remote, Bay Area" autocomplete="off"></label>
                 </div>
-                <label style="margin-top:10px">Job boards <span class="stg-p-hint">Greenhouse board tokens, comma-separated (the slug in a company's careers URL). Empty = the shipped defaults.</span>
+                <label style="margin-top:10px">Job boards <span class="stg-p-hint">Greenhouse board tokens, comma-separated. Empty = defaults.</span>
                   <input id="stg-p-boards" type="text" placeholder="anthropic, stripe, databricks" autocomplete="off"></label>
-                <label style="margin-top:10px">News feeds <span class="stg-p-hint">One RSS/Atom feed per line — <code>Name | https://url</code> or just the URL. Empty = the shipped defaults.</span>
+                <label style="margin-top:10px">News feeds <span class="stg-p-hint">One per line: <code>Name | https://url</code>. Empty = defaults.</span>
                   <textarea id="stg-p-feeds" rows="4" placeholder="Hacker News | https://hnrss.org/frontpage&#10;https://techcrunch.com/feed/" autocomplete="off" spellcheck="false" style="resize:vertical"></textarea></label>
                 <div class="stg-p-toggles">
                   <label class="stg-p-toggle"><input id="stg-p-show-jobs" type="checkbox"> Show the Opportunities column</label>
                   <label class="stg-p-toggle"><input id="stg-p-show-news" type="checkbox"> Show the Tech news column</label>
-                  <label class="stg-p-toggle"><input id="stg-p-community" type="checkbox"> Include community listing feeds <span class="stg-p-hint">Student-maintained lists of roles that just opened, matched to your career stage. Off = only the job boards above.</span></label>
-                  <label class="stg-p-toggle"><input id="stg-p-buzz" type="checkbox"> Boost roles people are talking about <span class="stg-p-hint">Ranks a posting higher when its company is being discussed right now on r/csMajors, r/internships and Hacker News.</span></label>
+                  <label class="stg-p-toggle"><input id="stg-p-community" type="checkbox"> Include community listing feeds <span class="stg-p-hint">Student-maintained lists of newly opened roles.</span></label>
+                  <label class="stg-p-toggle"><input id="stg-p-buzz" type="checkbox"> Boost roles people are talking about <span class="stg-p-hint">Ranks by current chatter on r/csMajors, r/internships, HN.</span></label>
                 </div>
               </div>
             </div>
@@ -2005,7 +2077,7 @@
                 <div class="bento-icon">📁</div>
                 <div class="bento-heads">
                   <div class="bento-title">External folders</div>
-                  <div class="bento-sub">Connect a folder outside the vault. Regalia keeps its notes under <b>external/&lt;name&gt;/</b> and can read and edit the folder's contents — but never adds vault scaffolding to the folder itself.</div>
+                  <div class="bento-sub">Work in a folder outside the vault. Notes stay under <b>external/&lt;name&gt;/</b>.</div>
                 </div>
               </div>
               <div class="bento-body">
@@ -2036,7 +2108,7 @@
           <button class="np-submit" type="submit" form="stg-form">Save settings</button>
           <span class="stg-dirty" id="stg-dirty" hidden>Unsaved changes</span>
           <span class="np-msg" id="stg-msg"></span>
-          <span class="stg-actions-note" id="stg-actions-note">Saves appearance, defaults, advanced, personalization and the model backends together.</span>
+          <span class="stg-actions-note" id="stg-actions-note">API keys and external folders save separately.</span>
         </div>
       </div>
     </section>
@@ -2230,6 +2302,151 @@
 
   function esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  /* ── Calendar view ──
+     A month lens over the same `all` array the overview renders. A note spans
+     from its frontmatter `date:` (created) through its `deadline:`, so work
+     that is *currently open* shows up on today's column instead of only on the
+     day it happens to be due. Read-only; no endpoint of its own.
+
+     All date maths is done on integer day ordinals from Date.UTC(y, m, d),
+     never by parsing a date string into a local Date. `new Date('2026-08-10')`
+     is UTC midnight, so a local-time round trip drops every deadline one cell
+     early for anyone west of UTC. Both sides of every comparison here come
+     from y/m/d integers, so no timezone is ever involved. */
+  const CAL_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const CAL_MAX_LANES = 4;
+  let calCursor = null;   // {y, m} — m is 0-indexed; null until first render
+
+  function calOrd(y, m, d) { return Date.UTC(y, m, d) / 86400000; }
+
+  // 'YYYY-MM-DD' (or a 'YYYY-MM-DD HH:MM' datetime) → day ordinal, else null.
+  // Anything that isn't a plain ISO date is rejected rather than guessed at.
+  function calParseOrd(s) {
+    const p = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
+    return p ? calOrd(+p[1], +p[2] - 1, +p[3]) : null;
+  }
+
+  function calShift(n) {
+    if (!calCursor) calToday();
+    const d = new Date(calCursor.y, calCursor.m + n, 1);
+    calCursor = { y: d.getFullYear(), m: d.getMonth() };
+    renderCalendar();
+  }
+
+  function calToday() {
+    const now = new Date();
+    calCursor = { y: now.getFullYear(), m: now.getMonth() };
+    renderCalendar();
+  }
+
+  /* Every note that has a usable deadline, as a [start, end] ordinal run.
+     A note with no parseable `date:` (or one dated after its own deadline —
+     bad frontmatter) collapses to a single day on the deadline rather than
+     being dropped or drawn backwards. */
+  function calRuns() {
+    const runs = [];
+    for (const t of (all || [])) {
+      const end = calParseOrd(t.deadline);
+      if (end === null) continue;
+      const start = calParseOrd(t.date);
+      runs.push({ t, start: (start === null || start > end) ? end : start, end });
+    }
+    return runs;
+  }
+
+  /* Clip a run to one week and pack it onto the first free lane. Sorting by
+     global start (then longest-first) rather than by the clipped start keeps a
+     multi-week task on a consistent lane from one week row to the next, so its
+     bar reads as one continuous run down the month. */
+  function calPackWeek(runs, weekStart) {
+    const weekEnd = weekStart + 6;
+    const segs = runs
+      .filter(r => r.start <= weekEnd && r.end >= weekStart)
+      .sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start)
+                      || a.t.title.localeCompare(b.t.title));
+    const lanes = [];      // lanes[i] = array of [col, endCol] already taken
+    const placed = [];
+    const overflow = {};   // column → count of runs that didn't fit
+    for (const r of segs) {
+      const from = Math.max(r.start, weekStart) - weekStart;
+      const to   = Math.min(r.end, weekEnd) - weekStart;
+      let lane = lanes.findIndex(l => l.every(([a, b]) => to < a || from > b));
+      if (lane === -1) { lane = lanes.length; lanes.push([]); }
+      if (lane >= CAL_MAX_LANES) {
+        for (let c = from; c <= to; c++) overflow[c] = (overflow[c] || 0) + 1;
+        continue;
+      }
+      lanes[lane].push([from, to]);
+      placed.push({ r, lane, from, span: to - from + 1,
+                    contL: r.start < weekStart, contR: r.end > weekEnd });
+    }
+    return { placed, overflow, lanes: Math.min(lanes.length, CAL_MAX_LANES) };
+  }
+
+  function renderCalendar() {
+    const grid = document.getElementById('cal-grid');
+    if (!grid) return;
+    if (!calCursor) { const n = new Date(); calCursor = { y: n.getFullYear(), m: n.getMonth() }; }
+    const { y, m } = calCursor;
+
+    const runs = calRuns();
+    const monthStart = calOrd(y, m, 1);
+    const monthEnd = calOrd(y, m + 1, 0);
+    const dueThisMonth = runs.filter(r => r.end >= monthStart && r.end <= monthEnd).length;
+    const openThisMonth = runs.filter(r => r.start <= monthEnd && r.end >= monthStart
+                                           && r.t.status !== 'complete').length;
+
+    document.getElementById('cal-month').textContent =
+      new Date(y, m, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    document.getElementById('cal-count').textContent = dueThisMonth || openThisMonth
+      ? `${dueThisMonth} due · ${openThisMonth} open this month`
+      : 'Nothing scheduled this month';
+
+    const now = new Date();
+    const todayOrd = calOrd(now.getFullYear(), now.getMonth(), now.getDate());
+    const lead = new Date(y, m, 1).getDay();              // weekday of the 1st
+    const days = new Date(y, m + 1, 0).getDate();         // days in this month
+    const weeks = Math.ceil((lead + days) / 7);
+    const gridStart = calOrd(y, m, 1 - lead);
+
+    let html = `<div class="cal-dow-row">${CAL_DOW.map(d => `<div class="cal-dow">${d}</div>`).join('')}</div>`;
+    for (let w = 0; w < weeks; w++) {
+      const weekStart = gridStart + w * 7;
+      const { placed, overflow, lanes } = calPackWeek(runs, weekStart);
+      const rows = lanes + (Object.keys(overflow).length ? 1 : 0);
+
+      let cells = '', nums = '';
+      for (let c = 0; c < 7; c++) {
+        const cur = new Date(Date.UTC(1970, 0, 1 + weekStart + c));
+        const out = cur.getUTCMonth() !== m ? ' out' : '';
+        const today = (weekStart + c) === todayOrd ? ' today' : '';
+        cells += `<div class="cal-cell${out}${today}" style="grid-column: ${c + 1}"></div>`;
+        nums  += `<div class="cal-num${out}${today}" style="grid-column: ${c + 1}">${cur.getUTCDate()}</div>`;
+      }
+
+      const bars = placed.map(({ r, lane, from, span, contL, contR }) => {
+        const t = r.t;
+        const state = t.status === 'complete' ? 'done' : (dlState(t.deadline, t.status) || '');
+        const range = r.start === r.end ? `due ${t.deadline}` : `${t.date} → ${t.deadline}`;
+        const tip = `${t.title} · ${range}${t.topic ? ` · ${t.topic}` : ''} · ${t.file}`;
+        return `<div class="cal-span ${state} ${contL ? 'cont-l' : ''} ${contR ? 'cont-r' : ''}"
+                     style="grid-column: ${from + 1} / span ${span}; grid-row: ${lane + 2}"
+                     title="${esc(tip)}">${esc(t.title)}</div>`;
+      }).join('');
+
+      const more = Object.entries(overflow).map(([c, n]) =>
+        `<div class="cal-more" style="grid-column: ${+c + 1}; grid-row: ${rows + 1}">+${n}</div>`).join('');
+
+      // repeat(0, …) is invalid CSS and would drop the whole track list, so a
+      // week with nothing scheduled declares only the date-number row.
+      const tracks = rows ? `auto repeat(${rows}, auto)` : 'auto';
+      html += `<div class="cal-week" style="grid-template-rows: ${tracks}">
+                 ${cells}${nums}${bars}${more}
+               </div>`;
+    }
+    grid.innerHTML = html;
   }
 
   /* ── Folder browser ── */
@@ -3075,12 +3292,16 @@
   function buildCoursePills() {
     const courses = [...new Set(all.map(t => t.course).filter(Boolean))].sort();
     const wrap = document.getElementById('course-wrap');
-    if (!courses.length) { wrap.style.display = 'none'; return; }
+    if (!courses.length) { wrap.style.display = 'none'; filters.course = 'all'; return; }
     wrap.style.display = 'contents';
+    // Mirror the live `filters.course` (as buildAreaPills does) instead of
+    // hardcoding "All courses" as selected. Rebuilt on every data load, so
+    // hardcoding left the pills lying about an active filter after a refresh.
+    if (filters.course !== 'all' && !courses.includes(filters.course)) filters.course = 'all';
     document.getElementById('fg-course').innerHTML =
-      `<button class="pill on" data-k="course" data-v="all" onclick="setFilter('course','all')">All courses</button>` +
+      `<button class="pill ${filters.course === 'all' ? 'on' : ''}" data-k="course" data-v="all" onclick="setFilter('course','all')">All courses</button>` +
       courses.map(c =>
-        `<button class="pill" data-k="course" data-v="${esc(c)}" onclick="setFilter('course','${esc(c)}')">${esc(c)}</button>`
+        `<button class="pill ${filters.course === c ? 'on' : ''}" data-k="course" data-v="${esc(c)}" onclick="setFilter('course','${esc(c)}')">${esc(c)}</button>`
       ).join('');
   }
 
@@ -3161,7 +3382,7 @@
           ${usageModels(u.by_model)}
         </div>
       </div>
-      <div class="usage-foot">In ${fmtTok(t.input)} &middot; Out ${fmtTok(t.output)} &middot; Cache write ${fmtTok(t.cache_creation)} &middot; Cache read ${fmtTok(t.cache_read)}. Cost is an estimate from public API list prices; subscription plans differ.</div>
+      <div class="usage-foot">In ${fmtTok(t.input)} &middot; Out ${fmtTok(t.output)} &middot; Cache write ${fmtTok(t.cache_creation)} &middot; Cache read ${fmtTok(t.cache_read)}. Cost is estimated from list prices.</div>
     </div>`;
   }
 
@@ -3214,7 +3435,7 @@
           ${usageModels(u.by_model)}
         </div>
       </div>
-      <div class="usage-foot">Input ${fmtTok(t.input_tokens)} (including ${fmtTok(t.cached_input_tokens)} cached) &middot; Output ${fmtTok(t.output_tokens)} &middot; Cache write ${fmtTok(t.cache_write_input_tokens)}. Observed locally from Codex session logs; this is not billing data. The session bar compares the latest request with its model context window; account-limit percentages come from the latest Codex response.</div>
+      <div class="usage-foot">Input ${fmtTok(t.input_tokens)} (including ${fmtTok(t.cached_input_tokens)} cached) &middot; Output ${fmtTok(t.output_tokens)} &middot; Cache write ${fmtTok(t.cache_write_input_tokens)}. Read from local Codex logs, not billing data.</div>
     </div>`;
   }
 
@@ -3336,6 +3557,7 @@
         buildAreaPills();
         buildCoursePills();
         render();
+        renderCalendar();   // keep the month grid live if it's the visible view
       }),
       vaultFetchJson('/api/recent-folders').then(renderRecentFolders),
     ]);
@@ -3362,17 +3584,116 @@
   }
 
   function refreshOverview(btn) {
-    return refreshButton(btn, loadOverviewData);
+    return refreshButton(btn, () => loadOverviewData().then(vaultSyncSeed));
   }
 
   function refreshBrowse(btn) {
-    return refreshButton(btn, () => vaultLoadMap(true));
+    return refreshButton(btn, () => vaultLoadMap(true).then(ok => vaultSyncSeed().then(() => ok)));
   }
+
+  /* ── Live vault sync ──
+     Regalia used to only notice a completed or edited note on a restart or a
+     manual Refresh. It now polls a cheap *fingerprint* of the vault
+     (/api/vault-revision — one stat-only walk server-side, no YAML parsing) and
+     refetches only the side whose hash actually moved:
+
+       notes → /api/tasks + /api/recent-folders (overview, stats, calendar)
+       tree  → /api/vault-map (Browse)
+
+     Two things keep this from being a busy-loop. Polling stops entirely while
+     the window is hidden and checks immediately on the way back, so a
+     backgrounded tab costs nothing yet is never stale when you look at it. And
+     the tree is only re-mapped when Browse is the *visible* view — /api/vault-map
+     is an order of magnitude more expensive than the fingerprint, and rebuilding
+     a graph nobody is looking at buys nothing — so a hidden Browse is just
+     marked stale and remapped on the next visit. */
+  const VAULT_SYNC_MIN_MS = 2000, VAULT_SYNC_MAX_MS = 30000;
+  const vaultSync = {
+    notes: null, tree: null,   // null = not yet seeded; first reply is a baseline
+    pollMs: 4000, backoff: 0, timer: null, busy: false, treeStale: false,
+  };
+
+  function vaultFetchRevision() {
+    return fetch('/api/vault-revision', { cache: 'no-store' })
+      .then(r => { if (!r.ok) throw new Error('revision'); return r.json(); });
+  }
+
+  // Adopt the current revision without refetching — used at boot and after a
+  // manual refresh, so the poller doesn't immediately repeat work just done.
+  function vaultSyncSeed() {
+    return vaultFetchRevision()
+      .then(rev => { vaultSync.notes = rev.notes; vaultSync.tree = rev.tree; })
+      .catch(() => {});
+  }
+
+  function browseIsVisible() {
+    const s = document.querySelector('.view[data-view="browse"]');
+    return !!s && !s.hidden;
+  }
+
+  function vaultSyncSchedule(delay) {
+    window.clearTimeout(vaultSync.timer);
+    if (document.hidden) return;   // the visibilitychange hook restarts us
+    vaultSync.timer = window.setTimeout(vaultSyncTick, Math.max(VAULT_SYNC_MIN_MS, delay));
+  }
+
+  function vaultSyncTick() {
+    if (vaultSync.busy || document.hidden) return;
+    vaultSync.busy = true;
+    vaultFetchRevision()
+      .then(rev => {
+        vaultSync.backoff = 0;
+        if (Number(rev.poll_ms) > 0) vaultSync.pollMs = Number(rev.poll_ms);
+        const seeded = vaultSync.notes !== null;
+        const notesMoved = seeded && rev.notes !== vaultSync.notes;
+        const treeMoved = seeded && rev.tree !== vaultSync.tree;
+        vaultSync.notes = rev.notes;
+        vaultSync.tree = rev.tree;
+        if (treeMoved && loaded.browse) vaultSync.treeStale = true;
+        const work = [];
+        if (notesMoved) work.push(loadOverviewData().then(vaultSyncFlash));
+        if (vaultSync.treeStale && browseIsVisible() && !vaultGraph.loading) {
+          vaultSync.treeStale = false;
+          work.push(vaultLoadMap(true));
+        }
+        return Promise.all(work);
+      })
+      .catch(() => {
+        // Server down / mid-restart: back off instead of hammering it.
+        vaultSync.backoff = Math.min(
+          vaultSync.backoff ? vaultSync.backoff * 2 : vaultSync.pollMs, VAULT_SYNC_MAX_MS);
+      })
+      .finally(() => {
+        vaultSync.busy = false;
+        vaultSyncSchedule(vaultSync.backoff || vaultSync.pollMs);
+      });
+  }
+
+  // Confirmation that a live update landed, reusing the Refresh button rather
+  // than adding another piece of chrome. Skipped mid-manual-refresh so it can't
+  // stomp that button's own state machine.
+  const OVERVIEW_REFRESH_LABEL = '↻ Refresh';
+  function vaultSyncFlash() {
+    const btn = document.getElementById('overview-refresh');
+    if (!btn || btn.disabled) return;
+    btn.textContent = '↻ Updated';
+    window.clearTimeout(btn.__flash);
+    btn.__flash = window.setTimeout(() => {
+      if (!btn.disabled) btn.textContent = OVERVIEW_REFRESH_LABEL;
+    }, 1600);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) window.clearTimeout(vaultSync.timer);
+    else vaultSyncTick();        // catch up on whatever changed while away
+  });
+  window.addEventListener('focus', () => { if (!document.hidden) vaultSyncTick(); });
 
   loadOverviewData().catch(() => {
     document.getElementById('task-list').innerHTML =
       '<div class="empty">Could not load the vault. Use Refresh to try again.</div>';
   });
+  vaultSyncSeed().finally(() => vaultSyncSchedule(vaultSync.pollMs));
   fetch('/api/usage').then(r => r.json()).then(renderUsage).catch(() => {});
   fetch('/api/news').then(r => r.json()).then(renderNews).catch(() => {});
   const initialFolder = new URLSearchParams(location.search).get('folder');
@@ -3386,9 +3707,15 @@
   function setView(v) {
     document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.view === v));
     document.querySelectorAll('.view').forEach(s => { s.hidden = s.dataset.view !== v; });
+    // Calendar reads the already-loaded `all` array, so it re-renders on every
+    // visit rather than latching a `loaded` flag — deadlines change under it.
+    if (v === 'calendar') renderCalendar();
     if (v === 'projects' && !loaded.projects) { loaded.projects = true; loadProjects(); }
     if (v === 'browse') {
-      if (!loaded.browse) { loaded.browse = true; vaultLoadMap(); }
+      // The live-sync poller marks the map stale rather than rebuilding it
+      // while Browse is hidden; opening the view is when we pay for the remap.
+      if (!loaded.browse) { loaded.browse = true; vaultSync.treeStale = false; vaultLoadMap(); }
+      else if (vaultSync.treeStale) { vaultSync.treeStale = false; vaultLoadMap(true); }
       else { vaultRenderAll(); setTimeout(vaultResizeGraph, 0); }
     }
     if (v === 'agents') {
@@ -3421,7 +3748,7 @@
     document.getElementById('stg-vault').value = s.vault_path || '';
     document.getElementById('stg-news-ttl').value = s.news_ttl || '';
     document.getElementById('stg-vault-now').textContent =
-      vaultRoot ? `Currently serving: ${vaultRoot} — changing the folder takes effect after a restart.` : '';
+      vaultRoot ? `Serving ${vaultRoot} — a change applies after restart.` : '';
     stgFillPersonalization(s.personalization || {});
     stgUpdateFill();
     stgMarkClean();   // the form now matches the store again
@@ -3531,6 +3858,7 @@
   function stgClearAccent() {
     stgAccentValue = '';
     stgAccentSync();
+    stgSetDirty(true);   // a button, so no input event fires — but the payload changed
   }
 
   function stgApplyLive(s) {
@@ -3626,12 +3954,20 @@
   }
 
   /* ── Unsaved-changes tracking ──
-     Nothing in Settings auto-saves, so an edit the user never submitted used to
-     vanish silently on the next reload or view switch. One delegated listener on
-     the whole Settings view flags any edit; the save bar shows it.
+     Nothing in Settings auto-saves, so an edit the user never submitted would
+     vanish silently on the next reload. One delegated listener on the Settings
+     view flags an edit; the save bar shows it and beforeunload guards it.
      Programmatic fills (stgFill, stgConnections re-render) assign .value without
      dispatching input/change — including through the custom-select value
-     interceptor — so they can't raise a false "unsaved". */
+     interceptor — so they can't raise a false "unsaved".
+
+     The listener matches on an ALLOWLIST of the fields stgSave() actually posts,
+     not "everything except the save bar". The Settings view also hosts three
+     self-saving forms — the API-key rows, the pasted Gmail client JSON, and the
+     External folders form — whose fields the page Save deliberately never
+     touches. Marking those dirty was a lie in both directions: typing a key lit
+     a badge its own Save button could not clear, and the page Save then cleared
+     the badge without having saved the key. */
   let stgDirty = false;
 
   function stgSetDirty(on) {
@@ -3641,18 +3977,39 @@
   }
   function stgMarkClean() { stgSetDirty(false); }
 
+  /* The fixed fields stgSave() reads. The Connections card's plain knobs live in
+     STG_BACKEND_FIELDS, so adding one there tracks it here automatically. */
+  const STG_PAGE_FIELDS = new Set([
+    'stg-theme', 'stg-accent', 'stg-landing', 'stg-motion', 'stg-tier',
+    'stg-autoupdate', 'stg-vault', 'stg-news-ttl',
+    'stg-p-stage', 'stg-p-locations', 'stg-p-boards', 'stg-p-feeds',
+    'stg-p-show-jobs', 'stg-p-show-news', 'stg-p-community', 'stg-p-buzz',
+  ]);
+
+  function stgIsPageField(el) {
+    if (!el || el.nodeType !== 1) return false;
+    // Interest chips are generated checkboxes with no stable id of their own.
+    if (el.closest('#stg-p-interests')) return true;
+    return !!el.id && (STG_PAGE_FIELDS.has(el.id)
+                       || Object.values(STG_BACKEND_FIELDS).includes(el.id));
+  }
+
   (function stgWatchEdits() {
     const view = document.querySelector('.view[data-view="settings"]');
     if (!view) return;
-    const mark = (e) => {
-      // Buttons that save/act on their own (API keys, Connect folder) clean up
-      // after themselves; only real field edits count as page-level dirt.
-      if (e.target && e.target.closest('.stg-actions')) return;
-      stgSetDirty(true);
-    };
+    const mark = (e) => { if (stgIsPageField(e.target)) stgSetDirty(true); };
     view.addEventListener('input', mark);
     view.addEventListener('change', mark);
   })();
+
+  /* Settings is the only view holding unsubmitted state, so this is the only
+     beforeunload guard in the app. Browsers show their own generic dialog and
+     ignore any custom string — returnValue just has to be set. */
+  addEventListener('beforeunload', (e) => {
+    if (!stgDirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
 
   /* ── Connections (Settings) — model backends, API keys, email OAuth, inboxes ──
      Every field here maps to a store key (env var of the same upper-cased name
@@ -3669,13 +4026,13 @@
           <div class="bento-icon">🧠</div>
           <div class="bento-heads">
             <div class="bento-title">Models &amp; backends</div>
-            <div class="bento-sub">API keys and model choices for every tier. Env vars, if set, win over values saved here.</div>
+            <div class="bento-sub">API keys and models for every tier. Env vars win.</div>
           </div>
         </div>
         <div class="bento-body">
         <div class="np-msg" id="con-backends">Checking backends…</div>
 
-        <div class="np-msg"><b id="con-dot-fast"></b>Ollama — local, free, private. <a href="https://ollama.com" target="_blank" rel="noopener">Install it</a> if the dot is red, then pull a model below.</div>
+        <div class="np-msg"><b id="con-dot-fast"></b>Ollama — local and free. <a href="https://ollama.com" target="_blank" rel="noopener">Install</a></div>
         <div class="np-row">
           <label>Ollama URL<input id="con-ollama-host" type="text" value="${v('ollama_host')}" placeholder="http://localhost:11434" autocomplete="off"></label>
           <label>Model<span class="np-row" style="gap:8px">
@@ -3685,7 +4042,7 @@
         </div>
         <div class="np-msg" id="con-pull-msg"></div>
 
-        <div class="np-msg"><b id="con-dot-smart"></b>Anthropic API (smart tier) — powers agent tool loops; billed by API credits.</div>
+        <div class="np-msg"><b id="con-dot-smart"></b>Anthropic API — smart tier, billed by API credits.</div>
         <div class="np-row">
           <label>API key<span class="np-row" style="gap:8px">
             <input id="con-anthropic" type="password" autocomplete="off" placeholder="${keyPh('anthropic_api_key') || 'sk-ant-…'}">
@@ -3708,7 +4065,7 @@
           <label>API base URL<input id="con-openai-base" type="text" value="${v('openai_base')}" placeholder="https://api.openai.com/v1" autocomplete="off"></label>
         </div>
 
-        <div class="np-msg"><b id="con-dot-gemini"></b>Gemini API (Google) — billed to a Gemini API key. Get one at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Supports agent tool loops.</div>
+        <div class="np-msg"><b id="con-dot-gemini"></b>Gemini API — billed by API key. <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get one</a></div>
         <div class="np-row">
           <label>API key<span class="np-row" style="gap:8px">
             <input id="con-gemini" type="password" autocomplete="off" placeholder="${keyPh('gemini_api_key') || 'AIza…'}">
@@ -3720,7 +4077,7 @@
           <label>API base URL<input id="con-gemini-base" type="text" value="${v('gemini_base')}" placeholder="https://generativelanguage.googleapis.com/v1beta" autocomplete="off"></label>
         </div>
 
-        <div class="np-msg"><b id="con-dot-vertex"></b>Vertex AI — the same Gemini models billed to a Google Cloud project instead of an API key. Run <code>gcloud auth application-default login</code> once, enable the Vertex AI API on the project, and leave Project blank to use whatever your credentials already point at. Supports agent tool loops.</div>
+        <div class="np-msg"><b id="con-dot-vertex"></b>Vertex AI — Gemini billed to a GCP project. Run <code>gcloud auth application-default login</code> once.</div>
         <div class="np-row">
           <label>Project<input id="con-vertex-project" type="text" value="${v('vertex_project')}" placeholder="(from your credentials)" autocomplete="off"></label>
           <label>Location<input id="con-vertex-location" type="text" value="${v('vertex_location')}" placeholder="global" autocomplete="off"></label>
@@ -3730,7 +4087,7 @@
           </span></label>
         </div>
 
-        <div class="np-msg"><b id="con-dot-google"></b>Google account — uses Gemini CLI and your Google sign-in instead of an API key. <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Install Gemini CLI</a>, run <code>gemini</code> once and choose "Login with Google", then Check. Supports Chat, Agents, and Dispatches.</div>
+        <div class="np-msg"><b id="con-dot-google"></b>Google account — <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a>, signed in with <code>gemini</code> → Login with Google.</div>
         <div class="np-row">
           <label>CLI command/path<input id="con-gemini-cli" type="text" value="${v('gemini_cli')}" placeholder="gemini" autocomplete="off"></label>
           <label>Model<input id="con-gemini-cli-model" type="text" value="${v('gemini_cli_model')}" placeholder="(account default)" autocomplete="off"></label>
@@ -3740,7 +4097,7 @@
           </span></label>
         </div>
 
-        <div class="np-msg"><b id="con-dot-chatgpt"></b>ChatGPT account - uses Codex CLI and your ChatGPT sign-in. Run <code>codex login</code> once.</div>
+        <div class="np-msg"><b id="con-dot-chatgpt"></b>ChatGPT account — Codex CLI, signed in with <code>codex login</code>.</div>
         <div class="np-row">
           <label>CLI command/path<input id="con-codex-cli" type="text" value="${v('codex_cli')}" placeholder="codex" autocomplete="off"></label>
           <label>Model<input id="con-codex-model" type="text" value="${v('codex_cli_model')}" placeholder="(account default)" autocomplete="off"></label>
@@ -3750,7 +4107,7 @@
           </span></label>
         </div>
 
-        <div class="np-msg"><b id="con-dot-claude"></b>Claude CLI (subscription tier) — bills your Claude plan, not API credits. <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Install Claude Code</a>, sign in once in a terminal, then test here.</div>
+        <div class="np-msg"><b id="con-dot-claude"></b>Claude account — billed to your plan. <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Install Claude Code</a></div>
         <div class="np-row">
           <label>CLI command/path<input id="con-claude-cli" type="text" value="${v('claude_cli')}" placeholder="claude" autocomplete="off"></label>
           <label>Model<input id="con-claude-model" type="text" value="${v('claude_cli_model')}" placeholder="(plan default)" autocomplete="off"></label>
@@ -3762,7 +4119,7 @@
         <div class="np-msg" id="con-claude-msg"></div>
 
         <div class="np-msg" id="con-msg"></div>
-        <div class="np-msg">Model names and CLI paths save with <b>Save settings</b> at the bottom of this page; API keys have their own Save so a masked field can never be blanked by a bulk save. Keys are stored in a local, gitignored file on this machine and never returned by the API. Leave a field empty to use the environment variable / built-in default. Changes apply to the next request — no restart.</div>
+        <div class="np-msg">Keys save on their own; everything else with <b>Save settings</b>. Empty = default.</div>
         </div>
       </form>
 
@@ -3784,8 +4141,7 @@
         <details ${s.gmail_oauth_client_json && s.gmail_oauth_client_json.set ? '' : 'open'}>
           <summary class="np-msg" style="cursor:pointer">One-time OAuth app setup ${s.gmail_oauth_client_json && s.gmail_oauth_client_json.set ? '(Gmail client saved ✓)' : ''}</summary>
           <div class="np-msg" style="margin-top:8px">
-            <b>Gmail:</b> in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud → Credentials</a>,
-            create an OAuth client of type <i>Desktop app</i> (enable the Gmail API), download its JSON, and paste the whole file below.
+            <b>Gmail:</b> create a <i>Desktop app</i> OAuth client in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud → Credentials</a>, then paste its JSON below.
           </div>
           <label>Google client_secret.json<span class="np-row" style="gap:8px; align-items:flex-start">
             <textarea id="con-gmail-json" rows="3" autocomplete="off" spellcheck="false"
@@ -3796,8 +4152,7 @@
             </span>
           </span></label>
           <div class="np-msg" style="margin-top:8px">
-            <b>Outlook:</b> in <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Azure → App registrations</a>,
-            register a public client (<i>Mobile &amp; desktop</i>, redirect <code>http://localhost</code>) and paste its Application ID.
+            <b>Outlook:</b> register a public client (<i>Mobile &amp; desktop</i>, redirect <code>http://localhost</code>) in <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Azure → App registrations</a>.
           </div>
           <div class="np-row">
             <label>Azure application ID<input id="con-ms-id" type="text" value="${v('ms_oauth_client_id')}" placeholder="00000000-0000-…" autocomplete="off"></label>
@@ -4488,7 +4843,7 @@
     const log = document.getElementById('chat-log');
     log.innerHTML = '';
     if (!c || !c.msgs.length) {
-      log.innerHTML = '<div class="chat-empty">Pick a tier and say something. Fast keeps it local; ChatGPT and Claude use signed-in account CLIs. Attach files with 📎.</div>';
+      log.innerHTML = '<div class="chat-empty">Pick a tier and say something.</div>';
     } else {
       c.msgs.forEach(m => {
         if (m.role === 'user') addChatBubble('user', m.content, null, m.attachments);
@@ -5156,7 +5511,7 @@
         document.getElementById('np-form').reset();
         loadProjects();
         // Pull the new context file into the task list and refresh the vault map.
-        fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildAreaPills(); buildCoursePills(); render(); });
+        fetch('/api/tasks').then(r => r.json()).then(data => { all = data; buildAreaPills(); buildCoursePills(); render(); renderCalendar(); });
         if (vaultGraph.data) vaultLoadMap(true);
       })
       .catch(() => { msg.className = 'np-msg err'; msg.textContent = "Couldn't reach the server."; });
@@ -5169,7 +5524,7 @@
       const areas = (d && d.folders ? d.folders : []).map(f => f.name);
       populateAreaSelect(d && d.folders ? d.folders : []);
       if (!areas.length) {
-        el.innerHTML = '<div class="empty-sm">Your vault is empty — create your first project above. The area folder is created for you.</div>';
+        el.innerHTML = '<div class="empty-sm">No projects yet — create your first one above.</div>';
         return;
       }
       Promise.all(areas.map(a =>
@@ -6142,9 +6497,7 @@
     document.getElementById('wiz-steps').innerHTML = wizSteps(0);
     document.getElementById('wiz-content').innerHTML = `
       <div class="wiz-h" id="wiz-title">Connect an AI</div>
-      <p class="wiz-p">Regalia runs on an AI backend — connect at least one to continue.
-        Paste an API key below, or use a local / CLI backend you've already installed
-        (the installer can set these up). You can add or change these later in Settings.</p>
+      <p class="wiz-p">Connect at least one backend. You can add more later in Settings.</p>
       <div class="wiz-body">
         <div class="wiz-setup">
           <div class="ws-row" style="gap:7px"><span class="dot-sm down" id="wiz-dot-smart"></span>
@@ -6245,8 +6598,7 @@
     const curTheme = (window.__settings || {}).theme === 'light' ? 'light' : 'dark';
     document.getElementById('wiz-content').innerHTML = `
       <div class="wiz-h" id="wiz-title">Make it yours</div>
-      <p class="wiz-p">These tune the overview briefing and the look — pick what fits, or skip
-        and set it later under <b>Settings → Personalization</b>. Nothing here is required.</p>
+      <p class="wiz-p">All optional — change any of it later in <b>Settings → Personalization</b>.</p>
       <div class="wiz-body">
         <div class="wiz-setup">
           <div class="ws-row" style="margin:0"><b style="color:var(--text)">What kind of work interests you?</b></div>
@@ -6321,14 +6673,12 @@
     const newMode = wiz.mode === 'new';
     document.getElementById('wiz-content').innerHTML = `
       <div class="wiz-h" id="wiz-title">Welcome to Regalia</div>
-      <p class="wiz-p">Regalia works inside a folder — your <b>vault</b>. Point it at a
-        folder you already keep notes in, or create a fresh one. Regalia reads what's
-        there and never restructures a folder you connect.</p>
+      <p class="wiz-p">Regalia works inside a folder — your <b>vault</b>. Open one you already have, or create a fresh one.</p>
       <div class="wiz-body">
         <div class="wiz-tiers">
           <button type="button" class="wiz-tier ${!newMode ? 'sel' : ''}" onclick="wizSetMode('existing')">
             <span class="wt-top">Use an existing folder</span>
-            <span class="wt-sub">Adopt a folder you already have as the vault. Nothing is moved, renamed, or restructured.</span>
+            <span class="wt-sub">Nothing is moved, renamed, or restructured.</span>
           </button>
           <button type="button" class="wiz-tier ${newMode ? 'sel' : ''}" onclick="wizSetMode('new')">
             <span class="wt-top">Create a new vault</span>
@@ -6415,10 +6765,7 @@
     document.getElementById('wiz-content').innerHTML = `
       <div class="wiz-h">You're all set</div>
       <p class="wiz-p">Regalia will work in:<br><b style="color:var(--text);word-break:break-all">${esc(vaultPath)}</b></p>
-      ${restart ? `<p class="wiz-p">Restart Regalia to open this vault — the folder is applied at launch.
-        You can change it anytime under <b>Settings → Vault folder</b>.</p>`
-                : `<p class="wiz-p">This is already the folder Regalia is serving. You can change it anytime
-        under <b>Settings → Vault folder</b>.</p>`}
+      ${restart ? `<p class="wiz-p">Restart Regalia to open it.</p>` : ''}
       <div class="wiz-foot">
         <span></span>
         <div class="wiz-foot-right">

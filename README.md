@@ -64,6 +64,10 @@ Open **Settings** in the app — everything is configurable from there: theme an
 
 Prefer managing your own environment? Every knob also has an env var — see `.env.example` — and env vars win over Settings. Email OAuth tokens, chat transcripts, attachments, and the external-folder registry live in gitignored per-machine stores.
 
+Settings save to a local, gitignored store and apply to the next request — no restart, with one exception: the **vault folder** is read at launch, so changing it takes a restart. API keys have their own Save button (a bulk save can never blank a masked field), and leaving any field empty falls back to the env var or the built-in default.
+
+**External folders** let Regalia work in a directory outside the vault. It keeps its own notes about the connection under `external/<name>/` inside the vault, and can read and edit the connected folder's contents — but never writes vault scaffolding into the folder itself.
+
 ## Privacy stance
 
 - Runs entirely on localhost; no telemetry, no cloud storage.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import mimetypes
 import os
@@ -686,6 +687,85 @@ def api_recent_folders():
         it["ago"] = _rel_time(it["mtime"])
         it["mtime"] = round(it["mtime"])
     return jsonify(items)
+
+
+# ── Live vault freshness ─────────────────────────────────────────────────────
+# The UI used to need a restart (or the manual Refresh) to notice that a note
+# had been completed or edited on disk. It now polls a *fingerprint* of the
+# vault rather than the data itself: one stat-only walk — no file reads, no
+# YAML parsing — so a poll costs a fraction of /api/tasks and a small fraction
+# of /api/vault-map, and the client only refetches when a hash actually moves.
+#
+# Two hashes, because the two expensive endpoints have different inputs:
+#   notes → every .md the task loader / recent-folders / calendar can see
+#   tree  → every file the Browse map lists (_browser_rel_allowed)
+# Hashing (relpath, mtime_ns, size) means edits, adds, deletes and renames all
+# move the hash, while a pure read does not.
+#
+# Known limit: the walk prunes hidden directories, so a note buried inside one
+# (`.github/notes.md`) is not watched even though load_tasks' rglob would find
+# it. Pruning is what keeps .git/ out of the walk; the Browse map already
+# refuses to list those paths for the same reason.
+_REVISION_TTL = 1.0          # seconds — collapses N polling tabs into one walk
+VAULT_REVISION_POLL_MS = 4000
+_REVISION_LOCK = threading.Lock()
+_REVISION_CACHE: dict = {"at": 0.0, "value": None}
+
+
+def _scan_vault_revision() -> dict:
+    """Stat-only walk of the vault, hashed into a notes/tree revision pair."""
+    root = VAULT_ROOT.resolve()
+    notes = hashlib.blake2b(digest_size=16)
+    tree = hashlib.blake2b(digest_size=16)
+    note_files = tree_files = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        try:
+            rel_dir = Path(dirpath).relative_to(root)
+        except ValueError:  # a symlink walked us outside the vault
+            dirnames[:] = []
+            continue
+        # Prune in place so we never descend into ignored/hidden trees. This is
+        # the whole reason the walk is cheap — .git/, dashboard/, .obsidian/ …
+        dirnames[:] = sorted(
+            d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")
+        )
+        for fname in sorted(filenames):
+            rel = rel_dir / fname
+            try:
+                st = os.stat(os.path.join(dirpath, fname))
+            except OSError:
+                continue  # vanished mid-walk; the next poll will settle it
+            stamp = f"{rel.as_posix()}|{st.st_mtime_ns}|{st.st_size}\n".encode("utf-8", "replace")
+            if fname.lower().endswith(".md"):
+                notes.update(stamp)
+                note_files += 1
+            if _browser_rel_allowed(rel):
+                tree.update(stamp)
+                tree_files += 1
+    return {
+        "notes": notes.hexdigest(),
+        "tree": tree.hexdigest(),
+        "note_files": note_files,
+        "tree_files": tree_files,
+        "poll_ms": VAULT_REVISION_POLL_MS,
+    }
+
+
+def _vault_revision() -> dict:
+    """Cached vault fingerprint — recomputed at most once per _REVISION_TTL."""
+    now = time.time()
+    with _REVISION_LOCK:
+        cached = _REVISION_CACHE["value"]
+        if cached is not None and now - _REVISION_CACHE["at"] < _REVISION_TTL:
+            return cached
+        value = _scan_vault_revision()
+        _REVISION_CACHE.update(at=now, value=value)
+        return value
+
+
+@app.route("/api/vault-revision")
+def api_vault_revision():
+    return jsonify(_vault_revision())
 
 
 def _price_for(model: str) -> tuple[float, float, float, float] | None:

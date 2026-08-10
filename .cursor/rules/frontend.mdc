@@ -1,0 +1,22 @@
+---
+description: Regalia frontend conventions (dashboard UI)
+globs: dashboard/templates/*.html
+---
+
+Fires whenever the dashboard's UI template is touched. The full ruleset is `dashboard/UI_STANDARDS.md` — read it before adding or changing a component; this file is only the short list of what gets violated most, so a Cursor session doesn't start from nothing.
+
+Regalia's UI is **one** ~6,800-line template with a hand-written stylesheet and no component framework. Nothing structurally stops new markup from inventing a second dropdown, a second breakpoint, or a second accent color — which is why these are written down rather than left to taste.
+
+Conventions:
+- Color comes from the tokens on `:root`; never a raw hex in a component rule. Both themes define the *same token names*, so a token-only component follows the light theme for free — a hard-coded hex shows up there as a black-on-black bug. `--amber` / `--amber-fg` is the sole chromatic accent and is user-configurable from Settings; pinning `#e7c59a` pins one user's choice into the product.
+- Links: just write `<a href="…">`. A base `a` rule already colors them `--amber-fg`. Per-component link colors are how the app once shipped browser-blue anchors across four panels, then "fixed" it in exactly one of them.
+- Dropdowns: write a plain `<select>` and stop. `acxEnhance()` upgrades every select in place and a `MutationObserver` catches ones added by re-renders; `getElementById(...).value` reads *and writes* keep working, as do inline `onchange` handlers. Hand-rolling a dropdown breaks all of that silently.
+- Card grids use `repeat(auto-fill, minmax(min(100%, Npx), 1fr))` — not a media query. The `min(100%, …)` is load-bearing: without it the track can't go below `Npx` and the grid overflows its container on narrow screens.
+- Flex rows wrap, they don't squeeze — `flex-wrap: wrap` plus a real flex-basis. `min-width: 0` is a loaded gun: it removes the min-content floor, making that item the one thing that collapses. Use it only when the item is *supposed* to truncate, and pair it with `overflow: hidden; text-overflow: ellipsis`.
+- Prefer `clamp()` and the `--page-pad` / `--panel-pad` tokens over new breakpoints. `max-width` is already used at nine different values doing roughly four jobs — reuse the nearest one rather than adding a tenth.
+- Gate decorative animation on `:root[data-motion="reduced"]`, never a bare `@media (prefers-reduced-motion: reduce)`. The boot script resolves the OS flag *and* the user's Motion setting into that attribute; a bare media query can't be overridden from inside the app, which defeats the setting's whole purpose.
+- Every interpolated value goes through `esc()`. The UI renders template literals into `innerHTML`, and the values come from vault files a user or an agent wrote — "it's from our own API" is not an exemption.
+- Tailwind: leave a space before a `${}` interpolation (`leading-[1] ${…}`, never `leading-[1]${…}`) or the class is invisible to the scanner and never compiled. Rebuild with `build-css.bat` after adding utilities; a utility that "does nothing" is almost always a skipped rebuild.
+- No paragraphs of explanatory prose in the UI. A view header's `<p>` is ≤8 words; a `.bento-sub` or hint is one clause. Feature rationale, billing models, storage semantics, and setup background go in `README.md`. Check the labels, placeholders, and option text first — the Chat header once carried 45 words explaining tiers directly above pills already reading `⚡ Fast · local` / `✨ Claude · plan`. What still earns words: an un-inferable setup step (prefer a link), a trust guarantee at the moment it matters, and a caveat on a number that would otherwise mislead.
+- Comment the non-obvious constraint, not the obvious code. If you fixed a layout bug, say what broke — that's what stops the next agent from simplifying it back into the same bug.
+- Before claiming done: check both themes, check Motion full *and* reduced, measure at narrow and wide widths (no overflow), and run `python -m unittest discover -s tests`. A screenshot or a measured assertion — "should work" is not evidence.

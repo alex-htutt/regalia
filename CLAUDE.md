@@ -54,6 +54,7 @@ When a component stalls, don't grind on it: if it isn't a blocker for the rest, 
 
 - `.cursor/rules/global.mdc` — always on; vault-wide defaults
 - `.cursor/rules/python.mdc` — fires on `**/*.py` (backend-first Python conventions)
+- `.cursor/rules/frontend.mdc` — fires on `dashboard/templates/*.html`; the short list from `dashboard/UI_STANDARDS.md`, which Cursor sessions otherwise never see (`dashboard/CLAUDE.md` points at that doc, but only Claude Code auto-loads it)
 
 The area-specific rules (`internship.mdc`, `projects.mdc`, `research.mdc`, and the
 `archive-*.mdc` finished-course archives) are the creator's personal workflow and are

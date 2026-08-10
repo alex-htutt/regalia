@@ -20,13 +20,14 @@ its own breakpoint, or its own blue is instantly visible as bolted-on.
 
 ---
 
-## 0. The five that get violated most
+## 0. The six that get violated most
 
 1. **Links use the accent, never UA blue** → §1.2
 2. **Write a plain `<select>`; never hand-roll a dropdown** → §2.1
 3. **Flex rows wrap, they don't squeeze** (`min-width: 0` is a loaded gun) → §3.2
 4. **Card grids use the `minmax(min(100%, Npx), 1fr)` idiom, not media queries** → §3.1
 5. **Every interpolated value goes through `esc()`** → §6.1
+6. **No paragraphs of explanatory prose in the UI** — that's what the README is for → §7
 
 ---
 
@@ -345,7 +346,71 @@ because the trigger is a `<button>`.
 
 ---
 
-## 7. Before you say it's done
+## 7. Copy
+
+The UI should be intuitive without a paragraph explaining it. **Feature rationale,
+billing models, storage and precedence semantics, trust guarantees, and setup
+background belong in `README.md`, not on screen.** A user reading a wall of small
+grey text in the product is a design failure being patched with prose.
+
+### 7.1 Length budgets by slot
+
+| Slot | Budget | Job |
+|---|---|---|
+| View header `<p>` (under the `<h2>`) | **≤ 8 words**, one clause | Orient, don't explain. "Appearance, backends, and connections." |
+| `.bento-sub` | one short sentence | What this card configures |
+| `.stg-p-hint` | one clause | The non-obvious input format or the empty-value default |
+| Static `.np-msg` help | one clause + a link | Only where a setup step can't be inferred |
+| `.empty-sm` / `.chat-empty` | one sentence | What to do next, not why the feature exists |
+| `.usage-foot` | one caveat | The single thing that would otherwise mislead |
+| `.wiz-p` (onboarding) | one sentence | The wizard has more license than the app — still one sentence |
+
+If a slot needs more than its budget, the answer is a better control, a better
+label, or a README section — not a longer string.
+
+### 7.2 Don't restate the control
+
+Before writing help text, check whether the labels, placeholders, or option text
+already say it. The Chat header used to carry a 45-word paragraph explaining that
+Fast runs locally, ChatGPT and Google use signed-in accounts, and Claude bills
+your plan — directly above tier pills reading `⚡ Fast · local`,
+`● ChatGPT · account`, `✨ Claude · plan`. Every word of it was duplication.
+
+Same trap: a placeholder of `(from your credentials)` already tells the user what
+an empty Project field does; the paragraph above it doesn't need to.
+
+### 7.3 Put the fact next to the control it constrains
+
+Facts belong at the point of action, not in a header summarizing the page. The
+Settings header used to warn that the vault path needs a restart — while the vault
+field's own footer (`#stg-vault-now`) said the same thing, in context, where
+someone changing it would actually read it. Header prose that duplicates in-place
+messaging is the first thing to cut.
+
+### 7.4 What still earns words
+
+Three cases, each still capped at a clause:
+
+- **Setup steps that can't be inferred** — `gcloud auth application-default login`,
+  which OAuth client type to create. Prefer a link over a description.
+- **Trust guarantees at the moment they matter** — "Read mail and save drafts —
+  nothing is ever sent" stays on the Inbox header, because that's a promise the
+  user needs before they connect an account, not a feature description.
+- **Data caveats on numbers** — "Cost is estimated from list prices." A figure that
+  would otherwise be read as billing data needs its one qualifier.
+
+Everything else — how the settings store works, why three Google tiers exist, what
+external folders do to the connected directory — goes in the README.
+
+### 7.5 Voice
+
+Sentence case. No exclamation marks. Prefer the imperative for actions ("Create a
+project folder") and a noun phrase for descriptions ("Notes with deadlines, by
+month"). Em dashes are fine; two of them in one string means it's too long.
+
+---
+
+## 8. Before you say it's done
 
 - [ ] New color goes through a token; nothing hard-codes `#e7c59a`.
 - [ ] Checked it in **both themes** (Settings → Appearance → Theme). The light
@@ -353,6 +418,8 @@ because the trigger is a `<button>`.
 - [ ] Checked it with **Motion: Always animate** and **Reduced**.
 - [ ] Measured at narrow and wide (§3.5) — no overflow, no overlap.
 - [ ] Any new `<select>` renders as an `.acx-trigger`, and its `.value` round-trips.
+- [ ] Every new string is inside its §7.1 budget, and says something the labels
+      and placeholders around it don't already say. Explanation went to the README.
 - [ ] Rebuilt Tailwind if you touched utility classes.
 - [ ] `python -m unittest discover -s tests` passes.
 - [ ] Ran it and looked at it. A screenshot or a measured assertion — "should
