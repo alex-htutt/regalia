@@ -156,7 +156,8 @@ def _agent_payload(data: dict, agent_id: str | None = None, created: float | Non
     if profile not in PROFILES:
         raise DispatchStoreError(f"Unknown capability profile '{profile}'.")
     tier = str(data.get("tier") or "").strip().lower()
-    if tier and tier not in ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude"):
+    if tier and tier not in ("fast", "smart", "openai", "gemini", "vertex",
+                             "chatgpt", "google", "claude"):
         raise DispatchStoreError(f"Unknown tier '{tier}'.")
     now = _now()
     return {

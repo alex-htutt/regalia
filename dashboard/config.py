@@ -42,6 +42,8 @@ DEFAULT_PERSONALIZATION: dict = {
     "job_locations": [],   # preferred location strings; [] = shipped defaults
     "job_boards": [],      # Greenhouse board tokens; [] = shipped defaults
     "news_feeds": [],      # [{"name","url"}] RSS/Atom feeds; [] = shipped defaults
+    "job_community": True,  # pull the community listing feeds (news_sources.COMMUNITY_LISTINGS)
+    "job_buzz": True,      # boost roles whose company is being discussed in the forums
     "show_jobs": True,     # render the "Opportunities" briefing column
     "show_news": True,     # render the "Tech news" briefing column
 }
@@ -56,6 +58,7 @@ DEFAULTS: dict = {
     "accent": "",              # hex like "#e7c59a"; empty = theme default
     "default_tier": "fast",    # tier newly-created chats start on
     "landing_enabled": True,   # show the scrollytelling landing page
+    "motion": "auto",          # "auto" = follow the OS | "full" | "reduced"
     "autoupdate": False,       # self-replace + relaunch when out of date (frozen builds)
     "onboarded": False,        # has the first-run setup wizard been completed/skipped?
     "vault_path": "",          # vault root override; empty = repo root (restart to apply)
@@ -70,6 +73,9 @@ DEFAULTS: dict = {
     "openai_base": "",         # OpenAI-compatible API base URL
     "gemini_model": "",        # gemini-tier model id
     "gemini_base": "",         # Gemini API base URL
+    "vertex_project": "",      # GCP project billed by the vertex tier ("" = ADC's own)
+    "vertex_location": "",     # Vertex region, or "global" ("" = global)
+    "vertex_model": "",        # vertex-tier publisher model id
     "gemini_cli": "",          # gemini binary name/path (google tier)
     "gemini_cli_model": "",    # empty = Google account default
     "gemini_cli_timeout": "",  # seconds (stored as string; "" = default)
@@ -92,7 +98,12 @@ SECRET_KEYS = frozenset({
 })
 
 _VALID_THEMES = ("dark", "light")
-_VALID_TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
+# Ambient/decorative animation. "auto" follows the OS prefers-reduced-motion
+# flag; "full"/"reduced" pin it. Windows drives that flag from one coarse
+# "animation effects" checkbox, so people who only meant to stop window
+# animations lose the beams and the landing hero — this is their way back.
+_VALID_MOTION = ("auto", "full", "reduced")
+_VALID_TIERS = ("fast", "smart", "openai", "gemini", "vertex", "chatgpt", "google", "claude")
 
 # Store keys that are plain booleans (coerced from any truthy value, never
 # string-stripped like the rest).
@@ -220,7 +231,7 @@ def _clean_personalization(raw) -> dict:
             out[lk] = _clean_str_list(raw[lk], lk)
     if "news_feeds" in raw:
         out["news_feeds"] = _clean_feeds(raw["news_feeds"])
-    for bk in ("show_jobs", "show_news"):
+    for bk in ("show_jobs", "show_news", "job_community", "job_buzz"):
         if bk in raw:
             out[bk] = bool(raw[bk])
     return out
@@ -236,6 +247,8 @@ def update(changes: dict) -> dict:
             raise ValueError(f"Unknown setting: {k!r}")
     if "theme" in changes and changes["theme"] not in _VALID_THEMES:
         raise ValueError(f"theme must be one of {_VALID_THEMES}")
+    if "motion" in changes and changes["motion"] not in _VALID_MOTION:
+        raise ValueError(f"motion must be one of {_VALID_MOTION}")
     if "default_tier" in changes and changes["default_tier"] not in _VALID_TIERS:
         raise ValueError(f"default_tier must be one of {_VALID_TIERS}")
     for bk in _BOOL_KEYS:

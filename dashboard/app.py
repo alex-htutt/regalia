@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import mimetypes
 import os
@@ -29,6 +30,7 @@ import dispatches
 import externals
 import mailbox
 import news_sources
+import opportunities
 import paths
 import router
 import updater
@@ -706,6 +708,74 @@ def _local_day(ts: str) -> str:
         return ts[:10]
 
 
+# Rolling windows for the Claude usage bars. Claude Code keeps no plan-quota
+# data on disk (no resets/utilization/remaining fields anywhere in ~/.claude,
+# and the CLI has no `usage` subcommand — /usage asks the server), so these
+# bars fill against the heaviest window this machine has actually recorded
+# rather than a real subscription limit. Labelled as such in the UI.
+LIMIT_WINDOWS = (
+    ("session", "Session (5h)", 5 * 3600),
+    ("weekly", "Week (7d)", 7 * 86400),
+)
+
+
+def _epoch(ts: str) -> float:
+    """Epoch seconds for a transcript timestamp; 0.0 when unparseable."""
+    if not ts:
+        return 0.0
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+
+
+def _iso_local(epoch: float) -> str | None:
+    """Local-time ISO string, or None — Windows rejects out-of-range epochs."""
+    if not epoch:
+        return None
+    try:
+        return datetime.fromtimestamp(epoch).astimezone().isoformat()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _rolling_limits(events: list[tuple[float, int]], now: float) -> list[dict]:
+    """Current vs. peak token load for each rolling window.
+
+    `events` is (epoch_seconds, tokens) per billed message. For every window we
+    report the tokens spent in the trailing span and the largest amount ever
+    spent in an equally long span. The peak is found by sliding a window whose
+    right edge sits on each event, which is always >= the current trailing
+    total, so the bar can never exceed 100%.
+    """
+    events = sorted(events)
+    out = []
+    for key, label, span in LIMIT_WINDOWS:
+        cutoff = now - span
+        used = sum(tok for ts, tok in events if ts > cutoff)
+        peak = 0
+        peak_at = 0.0
+        left = 0
+        running = 0
+        for ts, tok in events:
+            running += tok
+            while events[left][0] <= ts - span:
+                running -= events[left][1]
+                left += 1
+            if running > peak:
+                peak, peak_at = running, ts
+        out.append({
+            "key": key,
+            "label": label,
+            "window_seconds": span,
+            "used_tokens": used,
+            "peak_tokens": peak,
+            "used_percent": round(used * 100 / peak, 1) if peak else 0.0,
+            "peak_ended_at": _iso_local(peak_at),
+        })
+    return out
+
+
 def load_usage(days: int = 14) -> dict:
     """Aggregate Claude Code token usage from local session transcripts."""
     if not CLAUDE_PROJECTS_DIR.is_dir():
@@ -717,6 +787,7 @@ def load_usage(days: int = 14) -> dict:
     today = {"total": 0, "cost": 0.0}
     by_model: dict[str, dict] = {}
     by_day: dict[str, int] = {}
+    events: list[tuple[float, int]] = []
     messages = 0
     sessions = 0
 
@@ -772,7 +843,11 @@ def load_usage(days: int = 14) -> dict:
             totals["cache_read"] += cr
             totals["cost"] += cost
 
-            day = _local_day(obj.get("timestamp", ""))
+            stamp = obj.get("timestamp", "")
+            when = _epoch(stamp)
+            if when:
+                events.append((when, row_total))
+            day = _local_day(stamp)
             if day:
                 by_day[day] = by_day.get(day, 0) + row_total
             if day == today_iso:
@@ -797,6 +872,7 @@ def load_usage(days: int = 14) -> dict:
         "sessions": sessions,
         "by_model": sorted(by_model.values(), key=lambda x: x["total"], reverse=True),
         "by_day": daily,
+        "limits": _rolling_limits(events, time.time()),
     }
 
 
@@ -860,6 +936,8 @@ def load_codex_usage(days: int = 14) -> dict:
     requests = 0
     latest_rate: dict | None = None
     latest_rate_ts = ""
+    latest_session: dict | None = None
+    latest_session_ts = ""
 
     for jf in CODEX_SESSIONS_DIR.rglob("*.jsonl"):
         previous = {key: 0 for key in fields}
@@ -893,6 +971,27 @@ def load_codex_usage(days: int = 14) -> dict:
                 if not isinstance(usage, dict):
                     continue
 
+                timestamp = str(obj.get("timestamp") or "")
+                last_usage = info.get("last_token_usage")
+                context_window = _usage_int(info.get("model_context_window"))
+                if (isinstance(last_usage, dict) and context_window
+                        and timestamp >= latest_session_ts):
+                    session_tokens = _usage_int(last_usage.get("total_tokens"))
+                    if not session_tokens:
+                        session_tokens = (
+                            _usage_int(last_usage.get("input_tokens"))
+                            + _usage_int(last_usage.get("output_tokens"))
+                        )
+                    latest_session = {
+                        "used_tokens": session_tokens,
+                        "limit_tokens": context_window,
+                        "remaining_tokens": max(0, context_window - session_tokens),
+                        "used_percent": min(100.0, session_tokens * 100 / context_window),
+                        "model": model,
+                        "updated_at": timestamp or None,
+                    }
+                    latest_session_ts = timestamp
+
                 current = {key: _usage_int(usage.get(key)) for key in fields}
                 delta = {
                     key: (current[key] - previous[key]
@@ -922,7 +1021,6 @@ def load_codex_usage(days: int = 14) -> dict:
                     item["requests"] += 1
 
                 rate_limits = payload.get("rate_limits")
-                timestamp = str(obj.get("timestamp") or "")
                 if isinstance(rate_limits, dict) and timestamp >= latest_rate_ts:
                     latest_rate = rate_limits
                     latest_rate_ts = timestamp
@@ -945,6 +1043,7 @@ def load_codex_usage(days: int = 14) -> dict:
         "requests": requests,
         "by_model": sorted(by_model.values(), key=lambda row: row["total"], reverse=True),
         "by_day": [{"day": day, "total": by_day.get(day, 0)} for day in window],
+        "session_limit": latest_session,
         "rate_limits": rate_limits,
     }
 
@@ -986,9 +1085,15 @@ _NEWS_LOCK = threading.Lock()
 
 
 def _http_get(url: str, accept: str = "*/*") -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept": accept})
+    # gzip is requested explicitly (urllib won't): the community listing feeds
+    # are ~10MB of JSON raw and ~1.5MB compressed, fetched once per TTL.
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _UA, "Accept": accept, "Accept-Encoding": "gzip"})
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
-        return resp.read()
+        body = resp.read()
+        if "gzip" in (resp.headers.get("Content-Encoding") or "").lower():
+            body = gzip.decompress(body)
+        return body
 
 
 def _localname(tag: str) -> str:
@@ -1039,7 +1144,8 @@ def _resolve_profile() -> dict:
     concrete here so the scorer/fetchers never re-read config mid-pass.
 
     Returns {interests: {bucket: [kw]}, locations: [str], stage: str,
-    boards: [token], feeds: [(name,url)], show_jobs: bool, show_news: bool}.
+    boards: [token], feeds: [(name,url)], community: [(label,url)],
+    buzz: bool, show_jobs: bool, show_news: bool}.
     """
     p = config.personalization()
     picked = [b for b in (p.get("job_interests") or []) if b in news_sources.INTEREST_KEYWORDS]
@@ -1049,12 +1155,18 @@ def _resolve_profile() -> dict:
     boards = list(p.get("job_boards") or news_sources.GREENHOUSE_BOARDS)
     feeds = ([(f.get("name") or "", f.get("url") or "") for f in p.get("news_feeds") if f.get("url")]
              if p.get("news_feeds") else list(news_sources.NEWS_FEEDS))
+    stage = p.get("career_stage") or "any"
+    # Which community feeds run is a function of the stage (a senior profile
+    # fetches none), so an off-stage user never pays for a multi-MB download.
+    community = opportunities.feeds_for_stage(stage) if p.get("job_community", True) else []
     return {
         "interests": interests,
         "locations": locations,
-        "stage": p.get("career_stage") or "any",
+        "stage": stage,
         "boards": boards,
         "feeds": feeds,
+        "community": community,
+        "buzz": bool(p.get("job_buzz", True)),
         "show_jobs": p.get("show_jobs", True),
         "show_news": p.get("show_news", True),
     }
@@ -1107,9 +1219,57 @@ def _score_job(title: str, location: str, profile: dict) -> tuple[int, list[str]
     return score, tags
 
 
+def _dedupe_jobs(pool: list[dict]) -> list[dict]:
+    """Collapse the same role arriving from two sources, keeping the richer copy.
+
+    A company on both a Greenhouse board and a community feed yields two rows for
+    one job. The community copy wins because it carries `posted` — dropping it
+    would throw away the freshness signal it exists to provide.
+    """
+    out: dict[tuple[str, str], dict] = {}
+    for job in pool:
+        key = ((job.get("company") or job.get("source") or "").strip().lower(),
+               re.sub(r"\s+", " ", (job.get("title") or "")).strip().lower())
+        prev = out.get(key)
+        if prev is None or (not prev.get("posted") and job.get("posted")):
+            out[key] = job
+    return list(out.values())
+
+
+def _spread_by_company(ranked: list[dict], limit: int) -> list[dict]:
+    """Take the top `limit` postings, but no more than MAX_PER_COMPANY from any
+    one employer while alternatives exist.
+
+    The score tie-break interleaves by a posting's index within its own source,
+    which held the line when the pool was a few hundred board rows. Against the
+    community feeds it doesn't: a company with 40 matching roles occupies index
+    7, 12, 15, 18 … and still takes four of the top slots in a single score band.
+    A second pass backfills from the leftovers so a genuinely thin result set is
+    never padded short just to honor the cap.
+    """
+    picked: list[dict] = []
+    spill: list[dict] = []
+    used: dict[str, int] = {}
+    for job in ranked:
+        key = (job.get("company") or job.get("source") or "").strip().lower()
+        if used.get(key, 0) < news_sources.MAX_PER_COMPANY:
+            used[key] = used.get(key, 0) + 1
+            picked.append(job)
+            if len(picked) == limit:
+                return picked
+        else:
+            spill.append(job)
+    return picked + spill[: limit - len(picked)]
+
+
 def _fetch_jobs(profile: dict) -> tuple[list[dict], list[str]]:
     """Pull a wide pool of postings, score each against the resolved profile, drop
-    the irrelevant ones, and return the top matches (best fit first)."""
+    the irrelevant ones, and return the top matches (best fit first).
+
+    Three sources, deliberately complementary: company boards (deep on a few
+    employers you named), community listing feeds (broad, and the only ones that
+    date a posting — so "just opened" is knowable), and forum chatter (which of
+    those employers people are actually talking about right now)."""
     pool, errors = [], []
     for board in profile["boards"]:
         try:
@@ -1137,8 +1297,29 @@ def _fetch_jobs(profile: dict) -> tuple[list[dict], list[str]]:
         except Exception as e:  # noqa: BLE001
             errors.append(f"lever/{board}: {type(e).__name__}")
 
+    # Community feeds: broad, dated, stage-gated (see _resolve_profile).
+    if profile.get("community"):
+        listings, e = opportunities.fetch_listings(profile["community"], _http_get)
+        pool.extend(listings)
+        errors.extend(e)
+    pool = _dedupe_jobs(pool)
+
+    # Forum chatter, matched against the companies already in the pool — the
+    # popularity signal. Fetched after the pool exists so we only ever look for
+    # companies that have an actual open posting to point at.
+    mentions: dict[str, int] = {}
+    if profile.get("buzz"):
+        titles, e = opportunities.fetch_buzz(news_sources.BUZZ_FEEDS, _http_get)
+        errors.extend(e)
+        mentions = opportunities.company_mentions(
+            titles, {j.get("company") or j.get("source") or "" for j in pool})
+
+    now = time.time()
     for job in pool:
         job["score"], job["tags"] = _score_job(job["title"], job["location"], profile)
+        bonus, extra = opportunities.signals(job, mentions, now)
+        job["score"] += bonus
+        job["tags"] = extra + job["tags"]
     matches = [j for j in pool if j["score"] > 0]
     # Number each posting within its own board (0,1,2,…) so we can break score
     # ties by round-robining across companies — keeps one board (e.g. Anthropic's
@@ -1150,9 +1331,15 @@ def _fetch_jobs(profile: dict) -> tuple[list[dict], list[str]]:
     # Best fit first; within a score, interleave boards (lower occ index first).
     # Fall back to the raw pool only if nothing scored (never empty for no reason).
     ranked = sorted(matches, key=lambda j: (-j["score"], j["occ"])) or pool
-    for j in ranked:
+    top = _spread_by_company(ranked, news_sources.MAX_JOBS_SHOWN)
+    for j in top:
         j.pop("occ", None)
-    return ranked[: news_sources.MAX_JOBS_SHOWN], errors
+        # The raw epoch is an internal ranking input; the UI wants "3d ago", so
+        # send the age it would have to derive anyway (absent on board postings).
+        posted = j.pop("posted", 0)
+        if posted:
+            j["age_days"] = max(0, int((now - posted) // 86400))
+    return top, errors
 
 
 def _build_briefing() -> dict:
@@ -1689,7 +1876,7 @@ def _activity_provider(tier: str) -> str:
         return "anthropic"
     if tier in ("openai", "chatgpt"):
         return "openai"
-    if tier in ("gemini", "google"):
+    if tier in ("gemini", "vertex", "google"):
         return "google"
     return "local"
 
@@ -2307,6 +2494,9 @@ def api_router_check():
         "smart": "No Anthropic API key is configured.",
         "openai": "No OpenAI API key is configured.",
         "gemini": "No Gemini API key is configured.",
+        # The vertex tier can fail for two different reasons (no credentials vs.
+        # no project), so it reports the specific one status_for() resolved.
+        "vertex": info.get("auth_reason") or "No Google Cloud credentials found.",
         "chatgpt": "Codex CLI was not found on PATH.",
         "google": "Gemini CLI was not found on PATH.",
         "claude": "Claude CLI was not found on PATH.",
@@ -2447,13 +2637,14 @@ def api_chat():
 
     # Tool-loop tiers run the model over the real vault tools. Fast (local) always
     # uses the read-only loop so it can answer "what does note X say" — not just
-    # see the outline; smart/openai/gemini join the loop only when Edit mode is on (else
-    # they take the plain cloud-chat path below). With Edit mode, the loop also gets the
-    # write/scaffold tools. The local model needs tool support; if it can't (or any
+    # see the outline; smart/openai/gemini/vertex join the loop only when Edit mode is on
+    # (else they take the plain cloud-chat path below). With Edit mode, the loop also gets
+    # the write/scaffold tools. The local model needs tool support; if it can't (or any
     # other fast-tier hiccup), fall back to outline-grounded plain chat so the panel
     # still answers. Smart-tier failures surface to the user. Attachment turns skip
     # the loop (chat_tools has no attachment path) and use the image-inlining chat.
-    use_loop = (tier == "fast" or (tier in ("smart", "openai", "gemini") and edit_mode))
+    use_loop = (tier == "fast"
+                or (tier in ("smart", "openai", "gemini", "vertex") and edit_mode))
     if use_loop and not attachments:
         try:
             return jsonify(agent.chat_vault(
@@ -2540,29 +2731,62 @@ def _codex_summary_text(summary) -> str:
     return ""
 
 
-def _codex_tool_label(item: dict) -> str:
-    """Compact, user-facing label for a Codex activity item."""
+# Tool *arguments* are what make a live run readable — "Bash" says nothing,
+# `Bash: pytest -q` says everything. But raw tool input also carries whole file
+# bodies (Write.content, Edit.new_string), so pass a bounded preview: bulky
+# authoring fields are dropped outright and every survivor is clipped. The
+# browser decides how to phrase it (`toolSummary()`); this only bounds it.
+_TOOL_INPUT_DROP = ("content", "new_string", "old_string", "prompt", "todos")
+_TOOL_INPUT_CLIP = 300
+_TOOL_INPUT_KEYS = 8
+
+
+def _tool_input_preview(value) -> dict:
+    """Bound a tool's arguments to something safe to stream to the panel."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict = {}
+    for key, raw in value.items():
+        if key in _TOOL_INPUT_DROP or len(out) >= _TOOL_INPUT_KEYS:
+            continue
+        if isinstance(raw, str):
+            out[key] = raw[:_TOOL_INPUT_CLIP]
+        elif isinstance(raw, (int, float, bool)) or raw is None:
+            out[key] = raw
+        elif isinstance(raw, list):
+            out[key] = " ".join(str(part) for part in raw)[:_TOOL_INPUT_CLIP]
+    return out
+
+
+def _codex_tool_label(item: dict) -> tuple[str, dict]:
+    """Split a Codex activity item into a tool name and its arguments.
+
+    Returns `("", {})` for items that aren't user-facing activity. Name and
+    arguments stay separate so the panel can render the name as a label and the
+    arguments (the command, the query, the paths) as monospace detail — the same
+    shape the Claude path and the dispatch event log already use.
+    """
     kind = str(item.get("type") or "")
     if kind == "command_execution":
         raw = item.get("command") or "command"
         if isinstance(raw, list):
             raw = " ".join(str(part) for part in raw)
-        return f"Command · {str(raw).strip()[:100]}"
+        return "Command", {"command": str(raw).strip()[:_TOOL_INPUT_CLIP]}
     if kind == "file_change":
         paths = [
             str(change.get("path") or change.get("file_path") or "")
             for change in (item.get("changes") or []) if isinstance(change, dict)
         ]
-        return "Files · " + (", ".join(filter(None, paths))[:100] or "editing")
+        return "Files", {"path": ", ".join(filter(None, paths))[:_TOOL_INPUT_CLIP] or "editing"}
     if kind == "mcp_tool_call":
         server = str(item.get("server") or "").strip()
         tool = str(item.get("tool") or item.get("name") or "tool").strip()
-        return f"{server + ' · ' if server else ''}{tool}"[:110]
+        return f"{server + ' · ' if server else ''}{tool}"[:110], {}
     if kind == "web_search":
-        return f"Web search · {str(item.get('query') or 'searching')[:95]}"
+        return "Web search", {"query": str(item.get("query") or "searching")[:_TOOL_INPUT_CLIP]}
     if kind == "plan":
-        return "Plan updated"
-    return ""
+        return "Plan updated", {}
+    return "", {}
 
 
 def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
@@ -2610,11 +2834,18 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
                 elif etype == "item.started":
                     if kind == "reasoning":
                         append({"type": "status", "text": "Reasoning…"})
-                    label = _codex_tool_label(item)
+                    label, tool_input = _codex_tool_label(item)
                     if label:
-                        append({"type": "tool", "tool": label})
+                        append({"type": "tool", "tool": label, "input": tool_input})
                 elif etype == "item.completed":
-                    if kind == "reasoning":
+                    if kind == "command_execution":
+                        exit_code = item.get("exit_code")
+                        append({
+                            "type": "tool_result", "tool": "Command",
+                            "ok": exit_code in (0, None),
+                            "output": str(item.get("aggregated_output") or "")[:400],
+                        })
+                    elif kind == "reasoning":
                         # `codex exec --json` has used `text` for this readable
                         # progress summary; app-server names it `summary`. Its
                         # separate raw `content` field is intentionally ignored.
@@ -2650,12 +2881,16 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
                                         "text": clean})
                         elif bt == "tool_use":
                             names[b.get("id")] = b.get("name")
-                            append({"type": "tool", "tool": b.get("name")})
+                            append({"type": "tool", "tool": b.get("name"),
+                                    "input": _tool_input_preview(b.get("input"))})
                 elif etype == "user":
                     for b in (ev.get("message") or {}).get("content") or []:
                         if b.get("type") == "tool_result":
                             append({"type": "tool_result",
-                                    "tool": names.get(b.get("tool_use_id"), "tool")})
+                                    "tool": names.get(b.get("tool_use_id"), "tool"),
+                                    "ok": not b.get("is_error"),
+                                    "output": _strip_tool_markup(
+                                        agent._tool_result_text(b.get("content")))[:400]})
                 elif etype == "result":
                     if ev.get("is_error"):
                         why = ev.get("result") or ev.get("subtype") or "unknown error"

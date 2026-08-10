@@ -32,7 +32,7 @@ CHATS_DIR = paths.data_dir() / ".chats"
 DEFAULT_TITLE = "New chat"
 # Mirrors router.TIERS. Kept as a literal so this store stays importable on its
 # own (no router/config dependency) — keep the two in sync when adding a tier.
-VALID_TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
+VALID_TIERS = ("fast", "smart", "openai", "gemini", "vertex", "chatgpt", "google", "claude")
 TITLE_MAX_CHARS = 40
 
 # Conversation ids are minted by create_chat() and must match exactly — the

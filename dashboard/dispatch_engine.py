@@ -39,6 +39,7 @@ def model_catalog() -> dict:
         "smart": {**status["smart"], "models": [status["smart"]["model"]]},
         "openai": {**status["openai"], "models": [status["openai"]["model"]]},
         "gemini": {**status["gemini"], "models": router.gemini_model_choices()},
+        "vertex": {**status["vertex"], "models": [status["vertex"]["model"]]},
         "chatgpt": {**status["chatgpt"], "models": router.chatgpt_model_choices()},
         "google": {**status["google"], "models": [status["google"]["model"]]
                    if "default" not in status["google"]["model"].lower() else []},
@@ -60,7 +61,7 @@ def _planner_choice(priority: str, requested: dict | None = None) -> tuple[str, 
     model = str(requested.get("model") or "").strip()
     if tier in agent.AGENT_TIERS and _tier_available(tier):
         return tier, model
-    order = ("claude", "smart", "openai", "gemini", "chatgpt", "google", "fast")
+    order = ("claude", "smart", "openai", "gemini", "vertex", "chatgpt", "google", "fast")
     for candidate in order:
         if _tier_available(candidate):
             if candidate == "claude":
@@ -87,9 +88,9 @@ def _choose_worker_tier(complexity: str, priority: str) -> str:
     if complexity == "simple" and _tier_available("fast"):
         return "fast"
     if priority == "fast":
-        order = ("claude", "openai", "gemini", "smart", "chatgpt", "google", "fast")
+        order = ("claude", "openai", "gemini", "vertex", "smart", "chatgpt", "google", "fast")
     else:
-        order = ("claude", "smart", "openai", "gemini", "chatgpt", "google", "fast")
+        order = ("claude", "smart", "openai", "gemini", "vertex", "chatgpt", "google", "fast")
     return next((tier for tier in order if _tier_available(tier)), "fast")
 
 

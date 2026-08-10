@@ -1057,7 +1057,7 @@ AGENTS = {
 # Keep agent-capable tiers explicit rather than inheriting every chat backend.
 # Key-billed `gemini` uses the in-process loop; account-billed `google` lets
 # Gemini CLI drive its native tools and streams the resulting JSONL events.
-AGENT_TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
+AGENT_TIERS = ("fast", "smart", "openai", "gemini", "vertex", "chatgpt", "google", "claude")
 VAULT_TOOL_NAMES = frozenset({
     "search_vault", "read_note", "list_notes", "list_folder", "write_note", "create_project",
 })

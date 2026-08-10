@@ -16,12 +16,12 @@ Regalia is a single-user cockpit for a Markdown knowledge vault. It reads YAML f
 - **Overview dashboard** — every note with frontmatter becomes a task: stat cards (active / overdue / complete), filters by status · area · course, live search, deadline highlighting.
 - **Landing page** — an ASCII-dither WebGL hero with pinned scrollytelling that lands you in your recently-worked folders.
 - **Chat, grounded in your vault** — multi-conversation chat that can search, open, and quote your actual notes; an opt-in ✏️ Edit mode lets it write them.
-- **Seven model tiers, one router** — local Ollama; Anthropic, OpenAI, and Gemini APIs; plus Claude, ChatGPT, and Google-account CLI backends.
+- **Eight model tiers, one router** — local Ollama; Anthropic, OpenAI, and Gemini APIs; Vertex AI billed to a Google Cloud project; plus Claude, ChatGPT, and Google-account CLI backends.
 - **Settings & connections** — theme, accent, default tier, vault folder, model backends, Gmail/Outlook, and connected external workspaces from one view.
 - **Agents** — Daily Summarizer, Project Scaffolder, Research Agent, and Inbox Triage with streamed steps, task presets, per-run folder scope, and a live running-agents sidebar.
 - **External folders** — connect workspaces outside the vault without restructuring them; Regalia keeps context notes under `external/<name>/` while traversal-safe tools operate on the real folder.
 - **Inbox (drafts-only, by construction)** — connect Gmail and Outlook, read mail, and save drafts. There is deliberately **no send path anywhere in the codebase** — you review and send from your mail client.
-- **Daily briefing** — tech-news RSS, a profile-ranked job board scan, and an important-mail panel on the home page.
+- **Daily briefing** — tech-news RSS, an important-mail panel, and an opportunities column that ranks openings by fit, how recently they were posted, and how much they're being talked about right now.
 - **Account usage panels** — local Claude Code and Codex token/limit metadata, including 14-day charts and per-model totals. Message content is never read.
 - **Desktop or browser** — `python app.py` for the browser, `python desktop.py` for a native window (pywebview).
 
@@ -51,6 +51,7 @@ From source, the dashboard indexes the vault it lives inside (the repo root) unl
 | `smart` | Anthropic API | API key (env or Settings) | API credits |
 | `openai` | OpenAI API | API key (env or Settings) | API credits |
 | `gemini` | Gemini API | API key (env or Settings) | API credits |
+| `vertex` | Vertex AI | `gcloud auth application-default login` + Vertex AI enabled on the project | Your Google Cloud project |
 | `chatgpt` | Codex CLI | `codex` CLI signed in with ChatGPT (not an API key) | Your ChatGPT plan |
 | `google` | Gemini CLI | `gemini` CLI signed in with Google (not an API key) | Your Google account allowance |
 | `claude` | Claude Code CLI | `claude` CLI signed in to a Claude subscription | Your subscription |

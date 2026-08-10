@@ -1,4 +1,4 @@
-"""Model router — one chat() over seven backends.
+"""Model router — one chat() over eight backends.
 
 This is the core primitive of the self-hosted workspace: every model call in the
 app goes through chat(), which picks a backend by tier.
@@ -7,6 +7,9 @@ app goes through chat(), which picks a backend by tier.
     tier="smart"  -> Anthropic, cloud              (needs an Anthropic API key)
     tier="openai" -> OpenAI, cloud                 (needs an OpenAI API key)
     tier="gemini" -> Google Gemini, cloud          (needs a Gemini API key)
+    tier="vertex" -> Vertex AI, cloud              (bills a Google Cloud project
+                                                    via Application Default
+                                                    Credentials; no API key)
     tier="chatgpt"-> Codex CLI, subprocess         (uses your ChatGPT/Codex login)
     tier="google" -> Gemini CLI, subprocess        (uses your signed-in Google
                                                     account instead of an API key)
@@ -14,8 +17,11 @@ app goes through chat(), which picks a backend by tier.
                                                     not API credits; needs `claude`
                                                     installed and signed in)
 
-Google gets the same two-door treatment as OpenAI: `gemini` bills a Gemini API
-key, `google` shells out to the Gemini CLI and rides your Google sign-in.
+Google gets a three-door treatment: `gemini` bills a Gemini API key, `vertex`
+bills a GCP project through ADC, and `google` shells out to the Gemini CLI and
+rides your personal Google sign-in. All three speak the same generateContent
+wire format, so `vertex` reuses the Gemini payload/parsing helpers and differs
+only in how the request is addressed and authorized.
 
 API keys come from the environment OR the Settings store (config.secret — env
 wins). chat() returns {"reply", "model", "tier"} on success, or raises
@@ -87,6 +93,24 @@ def _gemini_model() -> str:
     # and per project, so the picker below lists what the key can actually reach
     # (ListModels) and Settings → Models overrides this outright.
     return _config.value("gemini_model", "GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def _vertex_project() -> str:
+    """GCP project billed by the vertex tier. Empty = fall back to whatever
+    project Application Default Credentials resolve to (see _vertex_token)."""
+    return _config.value("vertex_project", "GOOGLE_CLOUD_PROJECT", "")
+
+
+def _vertex_location() -> str:
+    """Vertex region, or "global" for the multi-region endpoint. "global" keeps
+    availability widest; a specific region is what data-residency rules want."""
+    return _config.value("vertex_location", "GOOGLE_CLOUD_LOCATION", "global")
+
+
+def _vertex_model() -> str:
+    """Vertex publisher model id. Availability is per project and per location,
+    so Settings → Models overrides this outright."""
+    return _config.value("vertex_model", "VERTEX_MODEL", "gemini-2.5-flash")
 
 
 def _gemini_cli() -> str:
@@ -181,7 +205,7 @@ CODEX_CLI_CWD = os.environ.get("CODEX_CLI_CWD", VAULT_ROOT)
 CLAUDE_CLI_CWD = os.environ.get("CLAUDE_CLI_CWD", VAULT_ROOT)
 GEMINI_CLI_CWD = os.environ.get("GEMINI_CLI_CWD", VAULT_ROOT)
 
-TIERS = ("fast", "smart", "openai", "gemini", "chatgpt", "google", "claude")
+TIERS = ("fast", "smart", "openai", "gemini", "vertex", "chatgpt", "google", "claude")
 
 # ``status()`` stays cheap: it reports executable presence plus the most recent
 # explicit login check. The browser performs that check automatically when the
@@ -286,6 +310,9 @@ def chat(messages, tier="fast", system=None, max_tokens=2048, model=None, attach
         return _openai_chat(messages, system, max_tokens, model, atts)
     if tier == "gemini":
         return _gemini_chat(messages, system, max_tokens, model, atts)
+    if tier == "vertex":
+        return _gemini_chat(messages, system, max_tokens, model, atts,
+                            send=_vertex_request, tier="vertex")
     if tier == "chatgpt":
         return _codex_exec_chat(messages, system, max_tokens, model, atts, allow_write)
     if tier == "google":
@@ -321,6 +348,9 @@ def chat_tools(messages, tools, tier="smart", system=None, max_tokens=2048, mode
         return _openai_chat_tools(messages, tools, system, max_tokens, model)
     if tier == "gemini":
         return _gemini_chat_tools(messages, tools, system, max_tokens, model)
+    if tier == "vertex":
+        return _gemini_chat_tools(messages, tools, system, max_tokens, model,
+                                  send=_vertex_request, tier="vertex")
     if tier == "chatgpt":
         raise RouterError(
             "The ChatGPT account tier runs through Codex CLI and cannot use this "
@@ -359,6 +389,18 @@ def status_for(tier: str) -> dict:
             "backend": "gemini",
             "model": _gemini_model(),
             "available": bool(_gemini_key()),
+        }
+    if tier == "vertex":
+        ready, reason = _vertex_health()
+        return {
+            "backend": "vertex-ai",
+            "model": _vertex_model(),
+            "project": _vertex_project() or _VERTEX_STATE.get("project") or "",
+            "location": _vertex_location(),
+            "auth_reason": "" if ready else reason,
+            # Credentials resolving is not proof the project can serve the
+            # model; a wrong project/location surfaces on the first request.
+            "available": ready,
         }
     if tier == "google":
         exe = _gemini_cli_path()
@@ -739,6 +781,146 @@ def _gemini_request(model: str, payload: dict, path: str = "generateContent") ->
         raise RouterError(f"Couldn't reach Gemini: {e}", 503)
 
 
+# ── Cloud: Vertex AI (Google Cloud project billing via ADC) ──────────────────
+# Same generateContent wire format as the Gemini API tier, so everything below
+# is about addressing and authorization only. Auth is Application Default
+# Credentials — `gcloud auth application-default login`, a service-account key
+# via GOOGLE_APPLICATION_CREDENTIALS, or an attached GCE/Cloud Run identity.
+#
+# Deliberately NOT the same door as the `google` tier: that one shells out to
+# the Gemini CLI with ADC stripped from its environment on purpose (see
+# _GEMINI_ENV_KEYS) so account billing cannot silently become project billing.
+# This tier is the sanctioned way to bill a GCP project, and the two coexist.
+
+_VERTEX_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
+# Cached ADC credentials + the project they resolved to. google.auth.default()
+# touches disk and (on GCE) the metadata server, so it runs once per process and
+# the credentials object refreshes its own token in place.
+_VERTEX_STATE: dict = {"creds": None, "project": "", "error": ""}
+_VERTEX_LOCK = threading.Lock()
+
+
+def _vertex_credentials():
+    """Resolve (and cache) ADC, or raise a RouterError the UI can show."""
+    with _VERTEX_LOCK:
+        if _VERTEX_STATE["creds"] is not None:
+            return _VERTEX_STATE["creds"]
+        try:
+            import google.auth
+        except ImportError:
+            raise RouterError(
+                "The `google-auth` package isn't installed. Run "
+                "`pip install -r requirements.txt` and restart.",
+                503,
+            )
+        try:
+            creds, project = google.auth.default(scopes=[_VERTEX_SCOPE])
+        except Exception as e:  # google.auth.exceptions.DefaultCredentialsError & friends
+            _VERTEX_STATE["error"] = str(e)
+            raise RouterError(
+                "No Google Cloud credentials found. Run "
+                "`gcloud auth application-default login`, then set the project in "
+                "Settings → Connections (or GOOGLE_CLOUD_PROJECT).",
+                401,
+            )
+        _VERTEX_STATE.update(creds=creds, project=project or "", error="")
+        return creds
+
+
+def _vertex_token() -> str:
+    """A valid OAuth access token for Vertex, refreshing when it has expired."""
+    creds = _vertex_credentials()
+    if not creds.valid:
+        import google.auth.transport.requests
+
+        with _VERTEX_LOCK:
+            if not creds.valid:  # another thread may have refreshed it already
+                try:
+                    creds.refresh(google.auth.transport.requests.Request())
+                except Exception as e:  # noqa: BLE001 — surfaced verbatim to the UI
+                    raise RouterError(
+                        "Google Cloud credentials could not be refreshed "
+                        f"({e}). Run `gcloud auth application-default login` again.",
+                        401,
+                    )
+    return creds.token
+
+
+def _vertex_endpoint(model: str, path: str) -> str:
+    """Publisher-model URL. The multi-region endpoint drops the region prefix."""
+    project = _vertex_project() or _VERTEX_STATE.get("project") or ""
+    if not project:
+        raise RouterError(
+            "No Google Cloud project set for the Vertex tier. Add one in "
+            "Settings → Connections, or set GOOGLE_CLOUD_PROJECT.",
+            400,
+        )
+    loc = _vertex_location() or "global"
+    host = "aiplatform.googleapis.com" if loc == "global" else f"{loc}-aiplatform.googleapis.com"
+    return (
+        f"https://{host}/v1/projects/{project}/locations/{loc}"
+        f"/publishers/google/models/{model}:{path}"
+    )
+
+
+def _vertex_request(model: str, payload: dict, path: str = "generateContent") -> dict:
+    token = _vertex_token()  # resolves the project too, so call it before the URL
+    req = urllib.request.Request(
+        _vertex_endpoint(model, path),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = (json.loads(e.read().decode("utf-8")).get("error") or {}).get("message", "")
+        except Exception:  # noqa: BLE001
+            pass
+        project = _vertex_project() or _VERTEX_STATE.get("project") or "?"
+        if e.code in (401, 403):
+            raise RouterError(
+                f"Google Cloud rejected the request for project '{project}'. Check that "
+                "the Vertex AI API is enabled and your account has the Vertex AI User "
+                f"role. ({detail or e})",
+                401,
+            )
+        if e.code == 404:
+            raise RouterError(
+                f"Vertex model '{model}' wasn't found in {project}/"
+                f"{_vertex_location()}. Pick a model available in that location "
+                "(Settings → Models), or switch location.",
+                503,
+            )
+        if e.code == 429:
+            raise RouterError(
+                f"Vertex AI quota reached for project '{project}'. Wait a moment, or "
+                "request more quota in the Google Cloud console.",
+                429,
+            )
+        raise RouterError(f"Vertex AI error: {detail or e}", 502)
+    except (urllib.error.URLError, OSError) as e:
+        raise RouterError(f"Couldn't reach Vertex AI: {e}", 503)
+
+
+def _vertex_health() -> tuple[bool, str]:
+    """Cheap readiness for status(): can we resolve credentials and a project?
+
+    Does not call the API — a wrong model or a missing role only shows up on a
+    real request, exactly like the Gemini key tier's `available` flag.
+    """
+    try:
+        _vertex_credentials()
+    except RouterError as e:
+        return False, str(e)
+    if not (_vertex_project() or _VERTEX_STATE.get("project")):
+        return False, "No Google Cloud project set (Settings → Connections)."
+    return True, ""
+
+
 def _gemini_tool_names(messages) -> dict:
     """Map tool_use id → function name, so tool_results can name their call."""
     names = {}
@@ -876,22 +1058,37 @@ def _gemini_payload(messages, system, max_tokens, atts=None) -> dict:
     return payload
 
 
-def _gemini_chat(messages, system, max_tokens, model, attachments=None) -> dict:
-    mdl = model or _gemini_model()
-    data = _gemini_request(mdl, _gemini_payload(messages, system, max_tokens, attachments))
+def _gemini_default_model(tier: str) -> str:
+    """The configured model for whichever generateContent tier is calling."""
+    return _vertex_model() if tier == "vertex" else _gemini_model()
+
+
+def _gemini_chat(messages, system, max_tokens, model, attachments=None,
+                 send=None, tier="gemini") -> dict:
+    """Chat over the generateContent wire format.
+
+    `send(model, payload)` selects the door: _gemini_request bills a Gemini API
+    key, _vertex_request bills a Google Cloud project through ADC. The payload
+    and response shapes are identical, so only the caller differs.
+    """
+    send = send or _gemini_request
+    mdl = model or _gemini_default_model(tier)
+    data = send(mdl, _gemini_payload(messages, system, max_tokens, attachments))
     reply = "\n".join(p["text"] for p in _gemini_parts(data) if p.get("text")).strip()
     if not reply:
         reply = _gemini_blocked_reason(data) or "…(the model went quiet — try again)"
-    return {"reply": reply, "model": data.get("modelVersion") or mdl, "tier": "gemini"}
+    return {"reply": reply, "model": data.get("modelVersion") or mdl, "tier": tier}
 
 
-def _gemini_chat_tools(messages, tools, system, max_tokens, model) -> dict:
-    mdl = model or _gemini_model()
+def _gemini_chat_tools(messages, tools, system, max_tokens, model,
+                       send=None, tier="gemini") -> dict:
+    send = send or _gemini_request
+    mdl = model or _gemini_default_model(tier)
     payload = _gemini_payload(messages, system, max_tokens)
     gem_tools = _to_gemini_tools(tools)
     if gem_tools:
         payload["tools"] = gem_tools
-    data = _gemini_request(mdl, payload)
+    data = send(mdl, payload)
     texts, tool_calls = [], []
     for i, part in enumerate(_gemini_parts(data)):
         if part.get("text"):
@@ -911,7 +1108,7 @@ def _gemini_chat_tools(messages, tools, system, max_tokens, model) -> dict:
         "tool_calls": tool_calls,
         "stop_reason": "tool_use" if tool_calls else (finish.lower() or "end_turn"),
         "model": data.get("modelVersion") or mdl,
-        "tier": "gemini",
+        "tier": tier,
     }
 
 

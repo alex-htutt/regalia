@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import unittest
+import urllib.error
 from unittest import mock
 from pathlib import Path
 
@@ -47,6 +48,7 @@ import app as dashboard_app  # noqa: E402
 import chats  # noqa: E402
 import email_sources  # noqa: E402
 import mailbox  # noqa: E402
+import opportunities  # noqa: E402
 import router  # noqa: E402
 import updater  # noqa: E402
 import version  # noqa: E402
@@ -74,6 +76,13 @@ class RouteSmokeTests(unittest.TestCase):
             asset = self.client.get(path)
             self.assertEqual(asset.status_code, 200)
             asset.close()
+
+    def test_markdown_inspector_includes_local_pdf_preview(self):
+        body = self.client.get("/").get_data(as_text=True)
+        for marker in ('class="vi-pdf"', "vaultPdfPreview(node, pdf._markdown)",
+                       "@page { size: A4", "Download / Save as PDF",
+                       "node.extension === '.md'"):
+            self.assertIn(marker, body)
 
     def test_index_includes_manual_vault_refresh_controls(self):
         body = self.client.get("/").get_data(as_text=True)
@@ -164,7 +173,10 @@ class CodexUsageTests(unittest.TestCase):
                     "input_tokens": 20, "cached_input_tokens": 4,
                     "cache_write_input_tokens": 1, "output_tokens": 6,
                     "reasoning_output_tokens": 2, "total_tokens": 26,
-                }}, "rate_limits": rate_limits}},
+                }, "last_token_usage": {
+                    "input_tokens": 60, "cached_input_tokens": 40,
+                    "output_tokens": 4, "total_tokens": 64,
+                }, "model_context_window": 128}, "rate_limits": rate_limits}},
             {"timestamp": stamp, "type": "response_item",
              "payload": {"type": "message", "content": "must not be parsed"}},
         ]
@@ -182,6 +194,11 @@ class CodexUsageTests(unittest.TestCase):
         self.assertEqual(usage["totals"]["total_tokens"], 26)
         self.assertEqual(usage["today"]["total"], 26)
         self.assertEqual(usage["by_model"][0]["model"], "gpt-5.6-sol")
+        self.assertEqual(usage["session_limit"]["used_tokens"], 64)
+        self.assertEqual(usage["session_limit"]["limit_tokens"], 128)
+        self.assertEqual(usage["session_limit"]["remaining_tokens"], 64)
+        self.assertEqual(usage["session_limit"]["used_percent"], 50.0)
+        self.assertEqual(usage["session_limit"]["model"], "gpt-5.6-sol")
         self.assertEqual(usage["rate_limits"]["plan_type"], "plus")
         self.assertEqual(
             [row["label"] for row in usage["rate_limits"]["windows"]],
@@ -191,6 +208,52 @@ class CodexUsageTests(unittest.TestCase):
     def test_missing_codex_session_directory_is_unavailable(self):
         dashboard_app.CODEX_SESSIONS_DIR = Path(self.tmp.name) / "missing"
         self.assertFalse(dashboard_app.load_codex_usage()["available"])
+
+
+class ClaudeRollingLimitTests(unittest.TestCase):
+    """The Claude limit bars are peak-relative, so used must never exceed peak."""
+
+    def test_trailing_window_is_measured_against_the_all_time_peak(self):
+        now = 1_800_000_000.0
+        hour = 3600.0
+        # A heavy 5h burst eight days ago, a lighter one inside the last 5h.
+        events = [
+            (now - 8 * 24 * hour, 900),
+            (now - 8 * 24 * hour + hour, 100),
+            (now - 2 * hour, 250),
+            (now - hour, 50),
+        ]
+        session, weekly = dashboard_app._rolling_limits(events, now)
+
+        self.assertEqual(session["key"], "session")
+        self.assertEqual(session["used_tokens"], 300)   # only the last 5h
+        self.assertEqual(session["peak_tokens"], 1000)  # the old burst
+        self.assertEqual(session["used_percent"], 30.0)
+
+        self.assertEqual(weekly["key"], "weekly")
+        self.assertEqual(weekly["used_tokens"], 300)    # burst is 8 days old
+        self.assertEqual(weekly["peak_tokens"], 1000)
+        self.assertEqual(weekly["used_percent"], 30.0)
+
+    def test_current_window_can_reach_but_not_exceed_its_own_peak(self):
+        now = 1_800_000_000.0
+        rows = dashboard_app._rolling_limits([(now - 60, 500)], now)
+        for row in rows:
+            self.assertEqual(row["used_tokens"], row["peak_tokens"])
+            self.assertEqual(row["used_percent"], 100.0)
+
+    def test_no_events_yields_zeroed_bars_not_a_division_error(self):
+        for row in dashboard_app._rolling_limits([], 1_800_000_000.0):
+            self.assertEqual(row["peak_tokens"], 0)
+            self.assertEqual(row["used_percent"], 0.0)
+            self.assertIsNone(row["peak_ended_at"])
+
+    def test_unparseable_and_out_of_range_timestamps_degrade_quietly(self):
+        self.assertEqual(dashboard_app._epoch(""), 0.0)
+        self.assertEqual(dashboard_app._epoch("not-a-timestamp"), 0.0)
+        # Windows raises OSError here rather than returning a date.
+        self.assertIsNone(dashboard_app._iso_local(-1e18))
+        self.assertIsNone(dashboard_app._iso_local(0))
 
 
 class VersionCompareTests(unittest.TestCase):
@@ -1744,6 +1807,16 @@ class UiConfigTests(unittest.TestCase):
         self.assertNotIn("connect_email.py", html)
         self.assertNotIn("GMAIL_OAUTH_CLIENT", html)
 
+    def test_settings_save_never_pins_the_accent_swatch(self):
+        # An <input type="color"> always reports a value, so posting it raw pinned
+        # the dark amber as an explicit accent on every save — which then beat the
+        # light theme's own accent after a refresh. The Save payload must carry the
+        # tracked choice (stgAccentValue, "" = follow the theme) instead.
+        html = (Path(dashboard_app.__file__).parent / "templates" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn("accent: stgAccentValue,", html)
+        self.assertNotIn("getElementById('stg-accent').value,", html)
+
     # ── Personalization (v1.33) ──
     def test_personalization_defaults_and_catalog(self):
         d = self.client.get("/api/settings").get_json()
@@ -1803,6 +1876,226 @@ class UiConfigTests(unittest.TestCase):
         # A senior role is penalized for a student profile.
         senior_score, _ = dashboard_app._score_job("Senior Staff Engineer", "Remote", prof)
         self.assertLessEqual(senior_score, 0)
+
+
+class OpportunitySourcingTests(unittest.TestCase):
+    """Community listing feeds + forum-buzz ranking (v1.36).
+
+    All offline: `opportunities` takes its HTTP getter as a parameter, so every
+    case here feeds it canned bytes. Nothing in this class touches the network.
+    """
+
+    def setUp(self):
+        import time
+        self.now = time.time()
+
+    def _row(self, **kw):
+        row = {"company_name": "Roblox", "title": "Software Engineer Intern",
+               "url": "https://roblox.example/1", "active": True, "is_visible": True,
+               "date_posted": self.now - 86400, "locations": ["San Mateo, CA"],
+               "terms": ["Summer 2027"]}
+        row.update(kw)
+        return row
+
+    def _feed(self, rows):
+        payload = json.dumps(rows).encode()
+        return lambda url: payload
+
+    # ── listing feeds ──
+    def test_stage_gates_which_feeds_are_fetched(self):
+        # Each feed is a multi-MB download; a senior profile must pull none.
+        self.assertTrue(opportunities.feeds_for_stage("student"))
+        self.assertEqual(opportunities.feeds_for_stage("senior"), [])
+        for label, url in opportunities.feeds_for_stage("student"):
+            self.assertTrue(url.startswith("https://"))
+
+    def test_listings_keep_only_open_visible_and_recent(self):
+        rows = [
+            self._row(),                                            # keep
+            self._row(url="https://x/2", active=False),             # closed
+            self._row(url="https://x/3", is_visible=False),         # hidden
+            self._row(url="https://x/4", date_posted=self.now - 400 * 86400),  # stale
+            self._row(url="https://x/5", date_posted=0),            # undated
+            self._row(url="", title=""),                            # unusable
+        ]
+        jobs, errors = opportunities.fetch_listings(
+            [("test", "https://feed")], self._feed(rows), now=self.now)
+        self.assertEqual(errors, [])
+        self.assertEqual([j["url"] for j in jobs], ["https://roblox.example/1"])
+        j = jobs[0]
+        self.assertEqual(j["company"], "Roblox")
+        self.assertEqual(j["source"], "Roblox")   # byline = company, drives round-robin
+        self.assertEqual(j["location"], "San Mateo, CA")
+        self.assertEqual(j["terms"], ["Summer 2027"])
+
+    def test_listings_accept_the_alternate_season_schema(self):
+        # The vanshb03 fork ships `season` instead of `terms` and no category.
+        rows = [{"company_name": "Citadel", "title": "Quant Intern",
+                 "url": "https://c/1", "active": True, "is_visible": True,
+                 "date_posted": self.now - 3600, "season": "Summer 2027",
+                 "locations": ["New York, NY"]}]
+        jobs, _ = opportunities.fetch_listings(
+            [("alt", "https://feed")], self._feed(rows), now=self.now)
+        self.assertEqual(jobs[0]["terms"], ["Summer 2027"])
+
+    def test_a_dead_listing_feed_degrades_to_an_error_string(self):
+        def boom(url):
+            raise TimeoutError("nope")
+        jobs, errors = opportunities.fetch_listings(
+            [("dead", "https://feed")], boom, now=self.now)
+        self.assertEqual(jobs, [])
+        self.assertEqual(errors, ["dead: TimeoutError"])
+
+    # ── buzz ──
+    def test_buzz_parses_both_atom_and_json_shapes(self):
+        atom = (b'<feed xmlns="http://www.w3.org/2005/Atom">'
+                b"<entry><title>Roblox OA just dropped</title></entry></feed>")
+        hn = json.dumps({"hits": [{"title": "Citadel superday"}]}).encode()
+        payloads = {"https://a": atom, "https://b": hn}
+        titles, errors = opportunities.fetch_buzz(
+            [("reddit", "https://a"), ("hn", "https://b")], lambda u: payloads[u])
+        self.assertEqual(errors, [])
+        self.assertEqual(titles, ["Roblox OA just dropped", "Citadel superday"])
+
+    def test_buzz_rate_limit_is_a_skipped_source_not_a_crash(self):
+        # Reddit answers 429 to a burst from one IP — the ranking just loses the
+        # bonus for this refresh.
+        def boom(url):
+            err = urllib.error.HTTPError(url, 429, "Too Many Requests", {}, io.BytesIO(b""))
+            err.close()  # HTTPError holds a response body; closing it keeps the suite warning-free
+            raise err
+        titles, errors = opportunities.fetch_buzz([("r/csMajors", "https://a")], boom)
+        self.assertEqual(titles, [])
+        self.assertEqual(errors, ["buzz/r/csMajors: HTTPError"])
+
+    def test_mentions_count_companies_and_resolve_nicknames(self):
+        titles = ["Roblox OA just dropped", "Anyone hear back from Roblox?",
+                  "JPMC SEP return offers", "Citadel Securities superday"]
+        m = opportunities.company_mentions(
+            titles, ["Roblox", "JPMorgan Chase", "Citadel Securities", "Stripe"])
+        self.assertEqual(m["Roblox"], 2)
+        self.assertEqual(m["JPMorgan Chase"], 1)   # via the JPMC alias
+        self.assertEqual(m["Citadel Securities"], 1)
+        self.assertNotIn("Stripe", m)              # never mentioned -> omitted
+
+    def test_mentions_are_word_bounded_and_skip_everyday_words(self):
+        # "Block" would otherwise match every "blocked"/"block" post, and a
+        # substring match would credit Stripe for "stripes".
+        m = opportunities.company_mentions(
+            ["I got blocked by the recruiter", "love the stripes on this",
+             "my scale is off"],
+            ["Block", "Stripe", "Scale AI"])
+        self.assertEqual(m, {})
+
+    def test_mentions_match_a_shortened_multiword_company(self):
+        m = opportunities.company_mentions(
+            ["Citadel Securities OA"], ["Citadel Securities"])
+        self.assertEqual(m["Citadel Securities"], 1)
+
+    # ── signals ──
+    def test_signals_reward_freshness_and_buzz(self):
+        fresh, tags = opportunities.signals(
+            {"company": "Roblox", "posted": self.now - 3600}, {"Roblox": 3}, self.now)
+        self.assertGreater(fresh, 0)
+        self.assertIn("Just posted", tags)
+        self.assertIn("Buzzing ×3", tags)
+        # Buzz is capped so chatter can never outweigh a real interest match.
+        capped, _ = opportunities.signals(
+            {"company": "Roblox", "posted": 0}, {"Roblox": 99}, self.now)
+        self.assertEqual(capped, dashboard_app.news_sources.BUZZ_BONUS_CAP)
+        # A board posting has no date and no chatter -> contributes nothing.
+        none, tags = opportunities.signals({"source": "stripe"}, {}, self.now)
+        self.assertEqual((none, tags), (0, []))
+
+    def test_week_old_posting_ranks_below_a_same_day_one(self):
+        week, wtags = opportunities.signals(
+            {"posted": self.now - 5 * 86400}, {}, self.now)
+        day, _ = opportunities.signals({"posted": self.now - 3600}, {}, self.now)
+        self.assertIn("New this week", wtags)
+        self.assertLess(week, day)
+
+    # ── merge into the ranking ──
+    def test_dedupe_prefers_the_copy_that_carries_a_post_date(self):
+        board = {"source": "roblox", "title": "Software Engineer Intern", "url": "b"}
+        community = {"source": "Roblox", "company": "Roblox",
+                     "title": "Software  Engineer Intern", "url": "c",
+                     "posted": self.now}
+        merged = dashboard_app._dedupe_jobs([board, community])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["url"], "c")
+
+    def test_one_company_cannot_take_over_the_panel(self):
+        cap = dashboard_app.news_sources.MAX_PER_COMPANY
+        ranked = ([{"company": "ByteDance", "title": f"SWE Intern {i}"} for i in range(20)]
+                  + [{"company": "TikTok", "title": "SWE Intern"},
+                     {"company": "Roblox", "title": "SWE Intern"}])
+        top = dashboard_app._spread_by_company(ranked, 6)
+        self.assertEqual(len(top), 6)
+        self.assertEqual(sum(1 for j in top[:cap + 2] if j["company"] == "ByteDance"), cap)
+        self.assertIn("TikTok", [j["company"] for j in top])
+        self.assertIn("Roblox", [j["company"] for j in top])
+
+    def test_company_cap_still_fills_a_thin_panel(self):
+        # Only one employer has anything: better to over-show it than under-fill.
+        ranked = [{"company": "OnlyCo", "title": f"Role {i}"} for i in range(5)]
+        self.assertEqual(len(dashboard_app._spread_by_company(ranked, 4)), 4)
+
+    def test_fetch_jobs_ranks_a_fresh_buzzing_posting_first(self):
+        listing = json.dumps([
+            self._row(company_name="Roblox", title="Software Engineer Intern",
+                      url="https://roblox.example/new"),
+            self._row(company_name="Nobodycorp", title="Software Engineer Intern",
+                      url="https://nobody.example/old",
+                      date_posted=self.now - 15 * 86400),
+        ]).encode()
+        buzz = (b'<feed xmlns="http://www.w3.org/2005/Atom">'
+                b"<entry><title>Roblox intern OA just dropped</title></entry>"
+                b"<entry><title>Roblox superday timeline?</title></entry></feed>")
+        empty = b'<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+        chatty = dashboard_app.news_sources.BUZZ_FEEDS[0][1]
+
+        def fake_get(url, accept="*/*"):
+            if url.startswith("https://raw.githubusercontent.com"):
+                return listing
+            if url == chatty:
+                return buzz
+            if "reddit.com" in url or "algolia" in url:
+                return empty
+            raise urllib.error.URLError("no boards in this test")
+
+        profile = {
+            "interests": {"SWE": dashboard_app.news_sources.INTEREST_KEYWORDS["SWE"]},
+            "locations": ["remote"], "stage": "student", "boards": ["stripe"],
+            "feeds": [], "community": opportunities.feeds_for_stage("student"),
+            "buzz": True, "show_jobs": True, "show_news": True,
+        }
+        with mock.patch.object(dashboard_app, "_http_get", fake_get):
+            jobs, errors = dashboard_app._fetch_jobs(profile)
+        self.assertTrue(jobs)
+        self.assertEqual(jobs[0]["source"], "Roblox")
+        self.assertIn("Buzzing ×2", jobs[0]["tags"])
+        self.assertIn("Just posted", jobs[0]["tags"])
+        # The epoch is internal; the UI gets a whole-day age instead.
+        self.assertNotIn("posted", jobs[0])
+        self.assertEqual(jobs[0]["age_days"], 1)
+        # The dead board is reported, not raised.
+        self.assertTrue(any(e.startswith("gh/stripe") for e in errors))
+
+    def test_community_and_buzz_can_be_switched_off(self):
+        called = []
+
+        def fake_get(url, accept="*/*"):
+            called.append(url)
+            raise urllib.error.URLError("boards off in this test")
+
+        profile = {
+            "interests": {}, "locations": [], "stage": "student", "boards": [],
+            "feeds": [], "community": [], "buzz": False,
+            "show_jobs": True, "show_news": True,
+        }
+        with mock.patch.object(dashboard_app, "_http_get", fake_get):
+            jobs, errors = dashboard_app._fetch_jobs(profile)
+        self.assertEqual((jobs, errors, called), ([], [], []))
 
 
 class ChatGptAccountTierTests(unittest.TestCase):
@@ -2164,6 +2457,164 @@ class GeminiApiTierTests(unittest.TestCase):
             router.urllib.request.urlopen = original
             http_error.close()
         self.assertEqual(ctx.exception.status, 401)
+
+
+class VertexTierTests(unittest.TestCase):
+    """`vertex` tier — Gemini models billed to a GCP project through ADC.
+
+    Same generateContent wire format as the `gemini` tier, so these tests cover
+    what actually differs: URL construction, bearer auth, and the fact that it
+    never reaches for an API key.
+    """
+
+    def setUp(self):
+        # Each test drives credential resolution itself; never inherit a cached
+        # ADC object (or leak one into an unrelated test).
+        self._saved = dict(router._VERTEX_STATE)
+        router._VERTEX_STATE.update(creds=None, project="", error="")
+
+    def tearDown(self):
+        router._VERTEX_STATE.clear()
+        router._VERTEX_STATE.update(self._saved)
+
+    def _fake_creds(self, token="tok-123", valid=True):
+        class FakeCreds:
+            def __init__(self):
+                self.token = token
+                self.valid = valid
+                self.refreshed = False
+
+            def refresh(self_inner, request):
+                self_inner.refreshed = True
+                self_inner.valid = True
+                self_inner.token = token
+        return FakeCreds()
+
+    def _capture(self, response, call, project="proj-test", creds=None):
+        """Run a vertex call with credentials and urlopen faked."""
+        seen = {}
+
+        class FakeResponse:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+            def read(self_inner):
+                return json.dumps(response).encode("utf-8")
+
+        def fake_urlopen(req, **kwargs):
+            seen["request"] = req
+            return FakeResponse()
+
+        router._VERTEX_STATE.update(creds=creds or self._fake_creds(), project=project)
+        original = router.urllib.request.urlopen
+        router.urllib.request.urlopen = fake_urlopen
+        try:
+            result = call()
+        finally:
+            router.urllib.request.urlopen = original
+        return seen.get("request"), result
+
+    def test_vertex_is_a_registered_tool_capable_tier(self):
+        self.assertIn("vertex", router.TIERS)
+        self.assertIn("vertex", agent.AGENT_TIERS)
+        self.assertIn("vertex", chats.VALID_TIERS)
+
+    def test_request_is_bearer_authorized_and_carries_no_api_key(self):
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "must-not-be-used"}):
+            req, result = self._capture(
+                {"candidates": [{"content": {"parts": [{"text": "hi there"}]},
+                                 "finishReason": "STOP"}],
+                 "modelVersion": "gemini-test-001"},
+                lambda: router.chat([{"role": "user", "content": "hi"}], tier="vertex"),
+            )
+        self.assertEqual(req.headers.get("Authorization"), "Bearer tok-123")
+        # The key tier's header must never ride along on a project-billed call.
+        self.assertIsNone(req.headers.get("X-goog-api-key"))
+        self.assertNotIn("must-not-be-used", req.full_url)
+        self.assertEqual(result["tier"], "vertex")
+        self.assertEqual(result["reply"], "hi there")
+
+    def test_global_location_uses_the_unprefixed_host(self):
+        with mock.patch.object(router, "_vertex_location", return_value="global"):
+            req, _ = self._capture(
+                {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
+                lambda: router.chat([{"role": "user", "content": "hi"}], tier="vertex"),
+            )
+        self.assertIn("https://aiplatform.googleapis.com/v1/projects/proj-test", req.full_url)
+        self.assertIn("/locations/global/publishers/google/models/", req.full_url)
+        self.assertTrue(req.full_url.endswith(":generateContent"))
+
+    def test_regional_location_prefixes_the_host(self):
+        with mock.patch.object(router, "_vertex_location", return_value="us-central1"):
+            req, _ = self._capture(
+                {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
+                lambda: router.chat([{"role": "user", "content": "hi"}], tier="vertex"),
+            )
+        self.assertIn("https://us-central1-aiplatform.googleapis.com/", req.full_url)
+        self.assertIn("/locations/us-central1/", req.full_url)
+
+    def test_expired_credentials_are_refreshed_before_the_call(self):
+        creds = self._fake_creds(valid=False)
+        with mock.patch.object(router, "_vertex_location", return_value="global"):
+            self._capture(
+                {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
+                lambda: router.chat([{"role": "user", "content": "hi"}], tier="vertex"),
+                creds=creds,
+            )
+        self.assertTrue(creds.refreshed)
+
+    def test_missing_project_is_a_400_not_a_malformed_url(self):
+        router._VERTEX_STATE.update(creds=self._fake_creds(), project="")
+        with mock.patch.object(router, "_vertex_project", return_value=""):
+            with self.assertRaises(router.RouterError) as ctx:
+                router.chat([{"role": "user", "content": "hi"}], tier="vertex")
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_forbidden_names_the_project_so_the_fix_is_obvious(self):
+        http_error = router.urllib.error.HTTPError(
+            "https://example.invalid", 403, "Forbidden", {},
+            io.BytesIO(b'{"error": {"message": "permission denied"}}'))
+
+        def raise_403(req, **kwargs):
+            raise http_error
+
+        router._VERTEX_STATE.update(creds=self._fake_creds(), project="proj-test")
+        original = router.urllib.request.urlopen
+        router.urllib.request.urlopen = raise_403
+        try:
+            with self.assertRaises(router.RouterError) as ctx:
+                router.chat([{"role": "user", "content": "hi"}], tier="vertex")
+        finally:
+            router.urllib.request.urlopen = original
+            http_error.close()
+        self.assertEqual(ctx.exception.status, 401)
+        self.assertIn("proj-test", str(ctx.exception))
+
+    def test_tool_calls_are_reported_under_the_vertex_tier(self):
+        payload = {"candidates": [{"content": {"parts": [
+            {"functionCall": {"name": "search_vault", "args": {"q": "x"}}}]},
+            "finishReason": "STOP"}]}
+        _, out = self._capture(
+            payload,
+            lambda: router.chat_tools(
+                [{"role": "user", "content": "find x"}],
+                [{"name": "search_vault", "description": "d",
+                  "input_schema": {"type": "object", "properties": {}}}],
+                tier="vertex"),
+        )
+        self.assertEqual(out["tier"], "vertex")
+        self.assertEqual(out["stop_reason"], "tool_use")
+        self.assertEqual(out["tool_calls"][0]["name"], "search_vault")
+
+    def test_health_reports_the_reason_it_is_not_ready(self):
+        with mock.patch.object(router, "_vertex_credentials",
+                               side_effect=router.RouterError("no ADC", 401)):
+            ready, reason = router._vertex_health()
+        self.assertFalse(ready)
+        self.assertIn("no ADC", reason)
 
 
 class GoogleAccountTierTests(unittest.TestCase):
@@ -2813,12 +3264,50 @@ class ChatStreamPresentationTests(unittest.TestCase):
             {"type": "think", "text": "Checking the relevant files."},
             run["steps"],
         )
+        # Name and arguments stay separate so the panel can render the command
+        # itself as monospace detail under the tool name.
         self.assertIn(
-            {"type": "tool", "tool": "Command · rg -n chat app.py"},
+            {"type": "tool", "tool": "Command", "input": {"command": "rg -n chat app.py"}},
             run["steps"],
         )
         serialized = json.dumps(run)
         self.assertNotIn("RAW REASONING MUST STAY PRIVATE", serialized)
+
+    def test_tool_steps_carry_their_arguments_without_file_bodies(self):
+        # The panel shows *what ran*, so arguments must survive — but a Write's
+        # whole file body must not be streamed to the browser for a chip label.
+        run = self._run([
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "python -m unittest", "description": "run tests"}},
+                {"type": "tool_use", "id": "t2", "name": "Write",
+                 "input": {"file_path": "notes/a.md", "content": "x" * 5000}},
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "OK"},
+                {"type": "tool_result", "tool_use_id": "t2", "is_error": True,
+                 "content": "permission denied"},
+            ]}},
+            {"type": "result", "is_error": False, "result": "Done."},
+        ])
+        tools = [s for s in run["steps"] if s["type"] == "tool"]
+        self.assertEqual(tools[0]["input"]["command"], "python -m unittest")
+        self.assertEqual(tools[1]["input"], {"file_path": "notes/a.md"})
+        self.assertNotIn("x" * 5000, json.dumps(run))
+
+        results = [s for s in run["steps"] if s["type"] == "tool_result"]
+        self.assertEqual([(r["tool"], r["ok"]) for r in results],
+                         [("Bash", True), ("Write", False)])
+        self.assertEqual(results[1]["output"], "permission denied")
+
+    def test_tool_input_preview_clips_long_values(self):
+        preview = dashboard_app._tool_input_preview(
+            {"command": "z" * 900, "count": 3, "parts": ["a", "b"], "content": "body"})
+        self.assertEqual(len(preview["command"]), dashboard_app._TOOL_INPUT_CLIP)
+        self.assertEqual(preview["count"], 3)
+        self.assertEqual(preview["parts"], "a b")
+        self.assertNotIn("content", preview)
+        self.assertEqual(dashboard_app._tool_input_preview("not a dict"), {})
 
     def test_chatgpt_cli_text_reasoning_is_readable_summary(self):
         run = self._run_chatgpt([

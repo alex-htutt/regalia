@@ -23,6 +23,15 @@
     var root = document.documentElement;
     if (s.theme === 'light') root.dataset.theme = 'light';
     if (!s.landing_enabled) root.classList.add('no-landing');
+    /* Motion is resolved to an explicit data-motion attribute here — one source
+       of truth the CSS and the scrolly driver both key off, instead of each
+       re-querying the media query. "auto" follows the OS; "full" overrides it
+       (Windows drives prefers-reduced-motion from one coarse "animation
+       effects" checkbox, which kills the ambient beams for people who only
+       meant to stop window animations). */
+    root.dataset.motion = s.motion === 'full' ? 'full'
+      : s.motion === 'reduced' ? 'reduced'
+      : (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduced' : 'full');
     if (s.accent) {
       root.style.setProperty('--amber', s.accent);
       root.style.setProperty('--amber-fg', s.accent);
@@ -131,6 +140,18 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /* Links carry the accent, never UA blue. There was no base `a` rule at all, so
+     every anchor outside .news-item (briefing footer, Connections help text,
+     release notes, chat markdown) rendered browser-blue-and-underlined on the
+     obsidian canvas. Use --amber-fg, not --amber: it's the text-safe end of the
+     accent pair and the boot script repoints it at the user's chosen accent, so
+     links follow Settings → Appearance for free. Underline on hover only —
+     Hyperstudio keeps resting text undecorated. Components that need a different
+     treatment (.news-item a) override this; they have higher specificity. */
+  a { color: var(--amber-fg); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible { outline: 2px solid var(--amber-fg); outline-offset: 2px; border-radius: 3px; }
 
   /* dark scrollbars */
   * { scrollbar-color: #3a3a3a transparent; scrollbar-width: thin; }
@@ -256,6 +277,10 @@
   .news-item .fit-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
   .news-item .fit-tag { font-size: 9.5px; line-height: 1; padding: 3px 6px; border-radius: 99px; background: var(--amber-bg); border: 1px solid rgba(231,197,154,0.28); color: var(--amber-fg); letter-spacing: 0.2px; }
   .news-item .fit-tag.early { background: var(--amber); border-color: var(--amber); color: var(--accent-fg); font-weight: 600; }
+  /* Freshness + forum-buzz tags (v1.36) — visually distinct from the fit tags so
+     "just opened" and "people are talking about this" read at a glance. */
+  .news-item .fit-tag.fresh { background: rgba(120,200,160,0.14); border-color: rgba(120,200,160,0.34); color: #7fc8a4; font-weight: 600; }
+  .news-item .fit-tag.hot { background: rgba(231,120,90,0.14); border-color: rgba(231,120,90,0.36); color: #e0866a; font-weight: 600; }
   .news-foot { font-size: 10.5px; color: var(--faint); margin-top: 12px; }
   .news.empty-state { color: var(--faint); font-size: 12.5px; }
 
@@ -397,7 +422,15 @@
   .vi-head { display: flex; align-items: flex-start; gap: 10px; }
   .vi-kind { color: var(--amber); font: 10px var(--font-mono); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
   .vi-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-  .vi-close { margin-left: auto; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 18px; }
+  .vi-head-actions { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+  .vi-pdf {
+    height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--muted); cursor: pointer;
+    font: 10px var(--font-mono); letter-spacing: .35px;
+  }
+  .vi-pdf:hover:not(:disabled) { color: var(--amber); border-color: var(--amber); }
+  .vi-pdf:disabled { opacity: .45; cursor: wait; }
+  .vi-close { border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 18px; }
   .vi-path { margin-top: 7px; color: var(--faint); font: 10px/1.45 var(--font-mono); overflow-wrap: anywhere; }
   .vi-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 9px; color: var(--muted); font-size: 11px; }
   .vi-actions { display: flex; gap: 6px; margin-top: 11px; }
@@ -439,10 +472,8 @@
     0%, 100% { filter: drop-shadow(0 0 0 color-mix(in srgb, var(--amber) 0%, transparent)); }
     50% { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--amber) 75%, transparent)); }
   }
-  @media (prefers-reduced-motion: reduce) {
-    .vault-node.agent-editing .vault-agent-badge:first-child,
-    .vault-tree-row.agent-editing .vault-tree-agent:first-child { animation: none; }
-  }
+  :root[data-motion="reduced"] .vault-node.agent-editing .vault-agent-badge:first-child,
+  :root[data-motion="reduced"] .vault-tree-row.agent-editing .vault-tree-agent:first-child { animation: none; }
   .vault-tree-empty { padding: 18px 12px; color: var(--faint); font-size: 11px; }
   @media (max-width: 900px) {
     .vault-browser { grid-template-columns: 1fr; position: relative; }
@@ -660,7 +691,6 @@
   .np-msg { font-size: 12.5px; min-height: 1px; }
   .np-msg.ok { color: var(--green-fg); }
   .np-msg.err { color: var(--red); }
-  .bento-card a { color: var(--amber); }
   .proj-list-head, .activity-head {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
     color: var(--muted); font-weight: 600; margin: 22px 0 10px;
@@ -675,18 +705,26 @@
   .settings-card { margin-top: 16px; }
 
   /* ── Settings bento grid ──
-     Each major settings group is a card in a 3-col bento. The wrapping <form>s
-     use .stg-contents (display:contents) so a single form still submits while
-     its cards participate directly in the grid. */
+     Each settings group is a card, and a card is one of exactly two sizes:
+     normal (one grid track) or full-width. The in-between `span 2` size is gone
+     on purpose — in a fixed 3-col grid it left a half-empty track beside every
+     wide card, which is what made the page read as randomly sized boxes.
+     The column count stays a fixed 3 (with the pre-existing 900/620 breakpoints)
+     rather than the usual auto-fit idiom (UI_STANDARDS §3.1): auto-fit only
+     collapses tracks that are empty across the WHOLE grid, and the full-width
+     cards occupy every track, so it never collapsed — three small cards ended up
+     287px wide in a 1794px row. A fixed 3 makes the one row of small cards fill
+     its width exactly, which is the point.
+     The wrapping <form>s use .stg-contents (display:contents) so a single form
+     still submits while its cards participate directly in the grid. */
   .stg-contents { display: contents; }
   .bento {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 14px;
-    align-items: start;
+    align-items: stretch;   /* cards sharing a row agree on height (§3.3) */
   }
   .bento-card {
-    grid-column: span 1;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 13px;
@@ -696,9 +734,21 @@
     transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
   }
   .bento-card:hover { border-color: var(--border-hover); box-shadow: 0 8px 30px rgba(0,0,0,0.16); }
-  .bento-card:not(.bento-span-3):hover { transform: translateY(-2px); }
-  .bento-span-2 { grid-column: span 2; }
-  .bento-span-3 { grid-column: 1 / -1; }
+  .bento-card:not(.bento-wide):hover { transform: translateY(-2px); }
+  /* .bento-span-2/-3 are the old names, kept so any card rendered from JS keeps
+     working; both now mean the same thing as .bento-wide. */
+  .bento-wide, .bento-span-2, .bento-span-3 { grid-column: 1 / -1; }
+  /* Section rule — groups the cards so the page has a reading order instead of
+     being one undifferentiated wall of boxes. */
+  .bento-sec {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 10px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--muted); font-weight: 600;
+  }
+  .bento-sec::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--border); }
+  .bento-sec:first-child { margin-top: 0; }
   .bento-head { display: flex; align-items: flex-start; gap: 11px; }
   .bento-icon {
     flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px;
@@ -712,7 +762,36 @@
   }
   .bento-card:hover .bento-title { transform: translateX(2px); }
   .bento-sub { font-size: 12px; color: var(--muted); line-height: 1.42; }
-  .bento-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  /* flex:1 so a card's body fills the stretched height — that's what lets a
+     trailing status line sit on the card's baseline instead of floating
+     mid-card when a neighbour in the same row is taller. */
+  .bento-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; flex: 1 1 auto; }
+  .bento-foot { margin-top: auto; }
+  /* ── Settings save bar ──
+     One Save for the whole page, parked at the bottom of the viewport while the
+     Settings view is scrolled. It used to be a button buried inside the Advanced
+     card, which is why two other cards had to carry a "saving here also applies
+     Appearance and Defaults" disclaimer in their subtitle. */
+  .stg-actions {
+    position: sticky; bottom: 0; z-index: 4;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-top: 16px; padding: 12px var(--panel-pad);
+    border: 1px solid var(--glass-border); border-radius: 12px;
+    background: var(--glass);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+  }
+  .stg-actions .np-msg { margin: 0; }
+  .stg-actions-note { color: var(--faint); font-size: 11.5px; flex: 1 1 auto; min-width: 0; }
+  .stg-dirty {
+    display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+    color: var(--amber-fg); font-size: 12px; font-weight: 600;
+  }
+  .stg-dirty::before {
+    content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--amber); animation: stg-dirty-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes stg-dirty-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  :root[data-motion="reduced"] .stg-dirty::before { animation: none; }
   /* ── Personalization card ── */
   .stg-p-hint {
     display: block; font-size: 11px; font-weight: 400; color: var(--muted);
@@ -741,14 +820,10 @@
     letter-spacing: 0; font-weight: 400; color: var(--text); cursor: pointer;
   }
   .stg-p-toggle input { width: auto; }
-  @media (max-width: 900px) {
-    .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .bento-span-2, .bento-span-3 { grid-column: 1 / -1; }
-  }
-  @media (max-width: 620px) {
-    .bento { grid-template-columns: 1fr; }
-    .bento-card, .bento-span-2, .bento-span-3 { grid-column: 1 / -1; }
-  }
+  /* Reuses the app's existing 900/620 breakpoints (§3.4). Wide cards need no
+     rule here — `1 / -1` is already correct at every column count. */
+  @media (max-width: 900px) { .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 620px) { .bento { grid-template-columns: 1fr; } }
   .backend-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
@@ -897,23 +972,51 @@
     padding: 9px 13px; font-size: 12.5px; line-height: 1.5; color: var(--muted);
     overflow-wrap: anywhere;
   }
-  .chat-thinking .ct-elided { color: var(--faint); font-size: 11px; font-style: italic; margin-bottom: 4px; }
   .chat-thinking .ct-head {
     font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px;
     color: var(--faint); font-weight: 600; margin-bottom: 6px;
   }
-  .chat-thinking .ct-line { margin: 3px 0; }
-  .chat-thinking .ct-line.think { color: var(--muted); font-style: italic; }
-  .chat-thinking .ct-line.status { color: var(--faint); font: 10.5px ui-monospace, monospace; }
-  .chat-thinking .ct-line.text { color: var(--text); font-style: normal; }
-  .chat-thinking .ct-line p { margin: 3px 0; }
-  .chat-thinking .ct-line ol, .chat-thinking .ct-line ul { margin: 3px 0; padding-left: 18px; }
-  .chat-thinking .ct-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
-  .chat-thinking .ct-tool {
-    font-size: 10.5px; font-family: var(--font-mono); color: var(--muted);
-    background: var(--bg); border: 1px solid var(--border);
-    border-radius: 6px; padding: 1px 6px;
+  /* ── Activity timeline ──────────────────────────────────────────────────
+     One renderer, two homes: the live chat-thinking box and each dispatch
+     worker. Reasoning, the command that ran, and its result stay in arrival
+     order on a single rail so the run reads as a sequence, not a chip cloud. */
+  .act { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .act-row { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 7px; align-items: start; padding: 2px 0; }
+  .act-ic { font-size: 10px; line-height: 17px; text-align: center; color: var(--faint); }
+  .act-body { min-width: 0; font-size: 12px; line-height: 1.5; }
+  .act-row.think .act-body { color: var(--muted); font-style: italic; }
+  .act-row.text .act-body { color: var(--text); }
+  .act-row.status .act-body { color: var(--faint); font-size: 11px; }
+  .act-row.error .act-body { color: var(--red); }
+  .act-body p { margin: 2px 0; }
+  .act-body ol, .act-body ul { margin: 2px 0; padding-left: 17px; }
+  .act-name { color: var(--text); font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
+  /* The command/query/path itself — the line people actually want to read. */
+  /* inline-block so the box hugs the command instead of stretching across a
+     wide dispatch column; max-width keeps a long one-liner inside the panel. */
+  .act-cmd {
+    display: inline-block; max-width: 100%; margin-top: 2px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--amber-fg); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 5px; padding: 2px 6px; white-space: pre-wrap; overflow-wrap: anywhere;
   }
+  .act-out {
+    display: block; max-width: 100%; margin-top: 2px;
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--faint); white-space: pre-wrap; overflow-wrap: anywhere;
+    max-height: 84px; overflow: hidden;
+  }
+  .act-row.result .act-name { color: var(--muted); font-weight: 500; }
+  .act-row.result.bad .act-name { color: var(--red); }
+  /* The in-flight call: a pulsing rail marker so it's obvious what is running now. */
+  .act-row.live .act-ic { color: var(--accent); animation: act-pulse 1.4s ease-in-out infinite; }
+  @keyframes act-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .act-more {
+    align-self: flex-start; background: none; border: 0; padding: 1px 0 3px; cursor: pointer;
+    color: var(--faint); font: italic 11px inherit; font-family: inherit;
+  }
+  .act-more:hover { color: var(--muted); text-decoration: underline; }
+  :root[data-motion="reduced"] .act-row.live .act-ic { animation: none; }
   .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); min-width: 0; }
   .chat-input textarea {
     flex: 1 1 180px; min-width: 0; resize: none; border: 1px solid var(--border); border-radius: 8px;
@@ -954,9 +1057,17 @@
     border-radius: 10px; padding: 14px 16px;
     display: flex; flex-direction: column; gap: 8px;
   }
-  .agent-top { display: flex; align-items: center; gap: 8px; }
+  /* Header row: status dot, name, and one or two model pickers. It has to WRAP,
+     not squeeze. The name used to be `flex: 1; min-width: 0` — basis 0 and the
+     only shrinkable item — so on the cards that show a second picker (tier +
+     model) the two ~110px pickers ate the whole 268px row and collapsed the name
+     to ~19px; the text then overflowed its box and painted underneath them.
+     flex-basis auto + wrap drops a picker to its own line instead, and leaving
+     min-width at `auto` (min-content) stops the name being shrunk below its
+     longest word. Same idiom as .np-row in Settings. */
+  .agent-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .agent-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
-  .agent-name { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; }
+  .agent-name { font-size: 13.5px; font-weight: 600; flex: 1 1 auto; overflow-wrap: anywhere; }
   .tier {
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700;
     padding: 2px 7px; border-radius: 4px;
@@ -971,7 +1082,11 @@
     cursor: pointer; max-width: min(100%, 120px);
   }
   .agent-tier-select:focus { border-color: var(--border-hover); outline: none; }
-  .agent-run { display: flex; gap: 6px; margin-top: 2px; }
+  /* margin-top:auto, not a fixed gap: cards in a grid row stretch to a common
+     height, but their headers/descriptions differ in line count, so the task box
+     used to land at a different height in every card. Pushing it to the bottom
+     lines the run rows up across the row. */
+  .agent-run { display: flex; gap: 6px; margin-top: auto; }
   .agent-run input {
     flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
     padding: 6px 9px; font-size: 12.5px; font-family: inherit;
@@ -1047,6 +1162,8 @@
   .dispatch-status { border-top:1px solid var(--border); margin-top:12px; padding-top:12px; }
   .worker-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:7px 0; border-bottom:1px solid var(--border); font-size:12px; }
   .worker-row .state { color:var(--muted); }
+  /* Live per-worker timeline, indented under its row on a rail. */
+  .worker-activity { margin:0 0 6px 7px; padding:5px 0 5px 11px; border-left:1px solid var(--border); min-width:0; }
   .dispatch-result { margin-top:12px; border:1px solid var(--border); border-radius:9px; padding:12px; }
   .artifact-preview { max-height:240px; overflow:auto; white-space:pre-wrap; font:11px/1.45 ui-monospace,monospace; background:var(--bg); padding:9px; border-radius:7px; }
   .custom-agent-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr)); gap:10px; margin-bottom:16px; }
@@ -1150,7 +1267,8 @@
      SVG + CSS reimplementation of the Aceternity "Background Beams" effect
      (the original is Svelte + svelte-motion; this needs no deps). Recolored
      to the sole amber accent per Assets/DESIGN.md, low-opacity so it reads as
-     ambient texture, not chrome. Honors prefers-reduced-motion. The fixed
+     ambient texture, not chrome. Honors the resolved motion preference (see
+     the boot script's data-motion) rather than the media query directly. The fixed
      layer sits at z-index 0; opaque surfaces (header/sidebar/cards) cover it,
      and it shows through the transparent canvas gaps in the main area. */
   .beams { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
@@ -1163,9 +1281,7 @@
     animation: beam-travel linear infinite;
   }
   @keyframes beam-travel { from { stroke-dashoffset: 1800; } to { stroke-dashoffset: 0; } }
-  @media (prefers-reduced-motion: reduce) {
-    .beams .beam-flow { animation: none; opacity: 0.14; stroke-dasharray: none; }
-  }
+  :root[data-motion="reduced"] .beams .beam-flow { animation: none; opacity: 0.14; stroke-dasharray: none; }
 
   /* ── Landing (hero + parallax) — sits above the dashboard; scroll down into
      the overview. The hero is an opaque obsidian layer (z-index 1) so it covers
@@ -1258,10 +1374,13 @@
     .pcol { margin-top: 0 !important; }
     .pcol[data-col="3"] { display: flex; }
   }
-  /* No-pin fallback: reduced-motion or small screens render the landing as a
+  /* No-pin fallback: reduced motion or small screens render the landing as a
      normal stack (hero title, then the panel) with everything visible — the JS
-     driver bails in these cases, so CSS is authoritative here. */
-  @media (prefers-reduced-motion: reduce), (max-width: 640px) {
+     driver bails in these cases, so CSS is authoritative here. Two copies of the
+     same rules on purpose: the width case stays a media query, while the motion
+     case keys off the resolved data-motion attribute so the Motion setting can
+     override the OS flag (a media query can't be overridden from the app). */
+  @media (max-width: 640px) {
     html { scroll-behavior: auto; }
     .scrolly { height: auto; }
     .scrolly-stage { position: static; display: block; height: auto; }
@@ -1271,6 +1390,14 @@
     .stage-panel .tile { opacity: 1 !important; transform: none !important; }
     .scroll-hint .chev { animation: none; }
   }
+  :root[data-motion="reduced"] { scroll-behavior: auto; }
+  :root[data-motion="reduced"] .scrolly { height: auto; }
+  :root[data-motion="reduced"] .scrolly-stage { position: static; display: block; height: auto; }
+  :root[data-motion="reduced"] .spotlight { display: none; }
+  :root[data-motion="reduced"] .stage-title { position: relative; min-height: 100vh; display: grid; place-items: center; opacity: 1 !important; transform: none !important; }
+  :root[data-motion="reduced"] .stage-panel { position: relative; opacity: 1 !important; transform: none !important; padding: 80px 24px 100px; pointer-events: auto; }
+  :root[data-motion="reduced"] .stage-panel .tile { opacity: 1 !important; transform: none !important; }
+  :root[data-motion="reduced"] .scroll-hint .chev { animation: none; }
 
   /* ── Inbox view ── */
   .inbox-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
@@ -1427,9 +1554,7 @@
   .acx-item:hover, .acx-item:focus-visible { background: var(--glass-inset); color: var(--text); outline: none; }
   .acx-item.sel { color: var(--amber); }
   .acx-item[disabled] { color: var(--faint); cursor: default; background: none; }
-  @media (prefers-reduced-motion: reduce) {
-    .acx-menu, .acx-trigger .acx-chev, .acx-item { transition: none; }
-  }
+  :root[data-motion="reduced"] :is(.acx-menu, .acx-trigger .acx-chev, .acx-item) { transition: none; }
 </style>
 </head>
 <body>
@@ -1657,6 +1782,7 @@
             <button class="pill"    id="tier-smart"  onclick="setTier('smart')">🧠 Smart · API</button>
             <button class="pill"    id="tier-openai" onclick="setTier('openai')">🤖 GPT · API</button>
             <button class="pill"    id="tier-gemini" onclick="setTier('gemini')">✦ Gemini · API</button>
+            <button class="pill"    id="tier-vertex" onclick="setTier('vertex')">▲ Vertex · GCP</button>
             <button class="pill"    id="tier-chatgpt" onclick="setTier('chatgpt')">● ChatGPT · account</button>
             <button class="pill"    id="tier-google" onclick="setTier('google')">◈ Google · account</button>
             <button class="pill"    id="tier-claude" onclick="setTier('claude')">✨ Claude · plan</button>
@@ -1757,25 +1883,35 @@
       </div>
       <div class="panel-wrap">
         <div class="bento">
-          <form class="stg-contents" onsubmit="stgSave(event)">
-            <div class="bento-card bento-span-2">
+          <form class="stg-contents" id="stg-form" onsubmit="stgSave(event)">
+            <div class="bento-sec">Preferences</div>
+            <div class="bento-card">
               <div class="bento-head">
                 <div class="bento-icon">🎨</div>
                 <div class="bento-heads">
                   <div class="bento-title">Appearance</div>
-                  <div class="bento-sub">Theme, accent color, and the landing hero.</div>
+                  <div class="bento-sub">Theme, accent color, motion, and the landing hero.</div>
                 </div>
               </div>
               <div class="bento-body">
                 <div class="np-row">
-                  <label>Theme<select id="stg-theme">
+                  <label>Theme<select id="stg-theme" onchange="stgAccentSync()">
                     <option value="dark">Dark — Hyperstudio midnight</option>
                     <option value="light">Light — Hyperstudio daylight</option>
                   </select></label>
                   <label>Accent color<span class="np-row" style="gap:8px">
-                    <input id="stg-accent" type="color" value="#e7c59a" style="min-width:52px; height:34px; padding:2px;">
+                    <input id="stg-accent" type="color" value="#e7c59a" oninput="stgAccentPick(this.value)"
+                      title="Leave it alone to follow the theme's own accent; Reset clears a custom pick."
+                      style="min-width:52px; height:34px; padding:2px;">
                     <button type="button" class="pill" onclick="stgClearAccent()" title="Back to the theme default">Reset</button>
                   </span></label>
+                </div>
+                <div class="np-row">
+                  <label>Motion<select id="stg-motion">
+                    <option value="auto">Follow system — honor the OS reduced-motion setting</option>
+                    <option value="full">Always animate — ambient beams and the landing hero</option>
+                    <option value="reduced">Reduced — no ambient or decorative animation</option>
+                  </select></label>
                 </div>
                 <label class="np-row" style="flex-direction:row; align-items:center; gap:8px; text-transform:none; letter-spacing:0; font-weight:400; color:var(--text)">
                   <input id="stg-landing" type="checkbox" style="width:auto"> Show the landing page (scrollytelling hero) on load
@@ -1783,12 +1919,54 @@
               </div>
             </div>
 
-            <div class="bento-card bento-span-3">
+            <div class="bento-card">
+              <div class="bento-head">
+                <div class="bento-icon">⚡</div>
+                <div class="bento-heads">
+                  <div class="bento-title">Defaults</div>
+                  <div class="bento-sub">Where new chats begin, and how Regalia updates itself.</div>
+                </div>
+              </div>
+              <div class="bento-body">
+                <label>New chats start on<select id="stg-tier">
+                  <option value="fast">⚡ Fast · local Ollama</option>
+                  <option value="smart">🧠 Smart · Anthropic API</option>
+                  <option value="openai">🤖 GPT · OpenAI API</option>
+                  <option value="gemini">✦ Gemini · Google API</option>
+                  <option value="vertex">▲ Vertex · GCP project</option>
+                  <option value="chatgpt">● ChatGPT · account</option>
+                  <option value="google">◈ Google · account</option>
+                  <option value="claude">✨ Claude · subscription</option>
+                </select></label>
+                <label class="stg-p-toggle">
+                  <input id="stg-autoupdate" type="checkbox"> Auto-update on launch (download &amp; relaunch when out of date)
+                </label>
+                <div class="np-msg bento-foot" id="stg-update"></div>
+              </div>
+            </div>
+
+            <div class="bento-card">
+              <div class="bento-head">
+                <div class="bento-icon">🛠️</div>
+                <div class="bento-heads">
+                  <div class="bento-title">Advanced</div>
+                  <div class="bento-sub">Vault location and how long the briefing stays cached.</div>
+                </div>
+              </div>
+              <div class="bento-body">
+                <label>Vault folder<input id="stg-vault" type="text" placeholder="(this repo)" autocomplete="off"></label>
+                <label>Briefing cache (seconds)<input id="stg-news-ttl" type="text" inputmode="numeric" placeholder="1800" autocomplete="off"></label>
+                <div class="np-msg bento-foot" id="stg-vault-now"></div>
+              </div>
+            </div>
+
+            <div class="bento-sec">Your briefing</div>
+            <div class="bento-card bento-wide">
               <div class="bento-head">
                 <div class="bento-icon">🎯</div>
                 <div class="bento-heads">
                   <div class="bento-title">Personalization</div>
-                  <div class="bento-sub">Tailor the overview briefing to you — which jobs get surfaced and which news feeds you read. Saving here also applies Appearance and Defaults.</div>
+                  <div class="bento-sub">Tailor the overview briefing to you — which jobs get surfaced and which news feeds you read.</div>
                 </div>
               </div>
               <div class="bento-body">
@@ -1811,57 +1989,18 @@
                 <div class="stg-p-toggles">
                   <label class="stg-p-toggle"><input id="stg-p-show-jobs" type="checkbox"> Show the Opportunities column</label>
                   <label class="stg-p-toggle"><input id="stg-p-show-news" type="checkbox"> Show the Tech news column</label>
+                  <label class="stg-p-toggle"><input id="stg-p-community" type="checkbox"> Include community listing feeds <span class="stg-p-hint">Student-maintained lists of roles that just opened, matched to your career stage. Off = only the job boards above.</span></label>
+                  <label class="stg-p-toggle"><input id="stg-p-buzz" type="checkbox"> Boost roles people are talking about <span class="stg-p-hint">Ranks a posting higher when its company is being discussed right now on r/csMajors, r/internships and Hacker News.</span></label>
                 </div>
               </div>
             </div>
 
-            <div class="bento-card">
-              <div class="bento-head">
-                <div class="bento-icon">⚡</div>
-                <div class="bento-heads">
-                  <div class="bento-title">Defaults</div>
-                  <div class="bento-sub">Where new chats begin.</div>
-                </div>
-              </div>
-              <div class="bento-body">
-                <label>New chats start on<select id="stg-tier">
-                  <option value="fast">⚡ Fast · local Ollama</option>
-                  <option value="smart">🧠 Smart · Anthropic API</option>
-                  <option value="openai">🤖 GPT · OpenAI API</option>
-                  <option value="gemini">✦ Gemini · Google API</option>
-                  <option value="chatgpt">● ChatGPT · account</option>
-                  <option value="google">◈ Google · account</option>
-                  <option value="claude">✨ Claude · subscription</option>
-                </select></label>
-                <label class="np-row" style="flex-direction:row; align-items:center; gap:8px; text-transform:none; letter-spacing:0; font-weight:400; color:var(--text); margin-top:10px">
-                  <input id="stg-autoupdate" type="checkbox" style="width:auto"> Auto-update on launch (download &amp; relaunch when out of date)
-                </label>
-                <div class="np-msg" id="stg-update"></div>
-              </div>
-            </div>
-
-            <div class="bento-card">
-              <div class="bento-head">
-                <div class="bento-icon">🛠️</div>
-                <div class="bento-heads">
-                  <div class="bento-title">Advanced</div>
-                  <div class="bento-sub">Vault location and briefing cache. Saving here also applies Appearance and Defaults.</div>
-                </div>
-              </div>
-              <div class="bento-body">
-                <label>Vault folder<input id="stg-vault" type="text" placeholder="(this repo)" autocomplete="off"></label>
-                <label>Briefing cache (seconds)<input id="stg-news-ttl" type="text" inputmode="numeric" placeholder="1800" autocomplete="off"></label>
-                <div class="np-msg" id="stg-vault-now"></div>
-                <div class="np-row">
-                  <button class="np-submit" type="submit">Save settings</button>
-                </div>
-                <div class="np-msg" id="stg-msg"></div>
-              </div>
-            </div>
           </form>
 
+          <div class="bento-sec">Connections</div>
+
           <form class="stg-contents" onsubmit="extAdd(event)">
-            <div class="bento-card bento-span-2">
+            <div class="bento-card bento-wide">
               <div class="bento-head">
                 <div class="bento-icon">📁</div>
                 <div class="bento-heads">
@@ -1887,6 +2026,17 @@
           </form>
 
           <div id="stg-connections" class="stg-contents"></div>
+        </div>
+
+        <!-- One Save for the page. `form="stg-form"` keeps this a real submit
+             button for the settings form even though it sits outside it, so
+             Enter-in-a-field still saves. External folders and the API keys keep
+             their own buttons — they're actions, not page state. -->
+        <div class="stg-actions">
+          <button class="np-submit" type="submit" form="stg-form">Save settings</button>
+          <span class="stg-dirty" id="stg-dirty" hidden>Unsaved changes</span>
+          <span class="np-msg" id="stg-msg"></span>
+          <span class="stg-actions-note" id="stg-actions-note">Saves appearance, defaults, advanced, personalization and the model backends together.</span>
         </div>
       </div>
     </section>
@@ -2579,6 +2729,67 @@
     return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
   }
 
+  // Open a local, print-ready representation of the selected Markdown note.
+  // The reference converter pairs a live document preview with PDF export; this
+  // keeps that workflow entirely in the browser and uses the native print
+  // dialog's "Save as PDF", so note contents never leave the machine.
+  function vaultPdfPreview(node, markdown) {
+    const body = String(markdown || '').replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/, '');
+    const documentHtml = mdToHtml(body);
+    const previewHtml = `<!doctype html>
+      <html lang="en"><head><meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <title>${esc(node.name)} - PDF preview</title>
+      <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #171717; color: #202124; font: 15px/1.65 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+        .pdf-toolbar { position: sticky; top: 0; z-index: 2; height: 54px; padding: 0 max(20px, calc((100vw - 794px) / 2)); display: flex; align-items: center; gap: 12px; background: #101010; color: #f1f1ef; border-bottom: 1px solid #303030; }
+        .pdf-toolbar strong { font-size: 13px; }
+        .pdf-toolbar span { color: #999; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pdf-toolbar button { margin-left: auto; flex: 0 0 auto; border: 0; border-radius: 7px; padding: 8px 13px; background: #e7c59a; color: #17120d; cursor: pointer; font-weight: 650; }
+        .pdf-canvas { padding: 28px 16px 48px; }
+        .pdf-page { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 18mm 17mm 22mm; background: #fff; box-shadow: 0 18px 60px rgba(0,0,0,.35); }
+        .pdf-file { padding-bottom: 11px; margin-bottom: 24px; border-bottom: 1px solid #e6e6e3; color: #777; font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+        h1, h2, h3, h4 { color: #111; line-height: 1.2; page-break-after: avoid; }
+        h1 { margin: 0 0 22px; font-size: 30px; letter-spacing: -.6px; }
+        h2 { margin: 30px 0 10px; font-size: 22px; }
+        h3 { margin: 24px 0 8px; font-size: 17px; }
+        h4 { margin: 20px 0 7px; font-size: 14px; }
+        p { margin: 0 0 12px; orphans: 3; widows: 3; }
+        ul, ol { margin: 0 0 14px; padding-left: 24px; }
+        li { margin: 4px 0; }
+        blockquote { margin: 18px 0; padding: 4px 0 4px 16px; border-left: 3px solid #c89d67; color: #555; }
+        code { border-radius: 4px; padding: 2px 4px; background: #f2f2ef; color: #8a4f18; font: .88em ui-monospace, SFMono-Regular, Consolas, monospace; }
+        pre { page-break-inside: avoid; overflow-wrap: anywhere; white-space: pre-wrap; border: 1px solid #deded9; border-radius: 7px; padding: 13px; background: #f6f6f3; }
+        pre code { padding: 0; background: none; color: #272727; }
+        a, .wikilink { color: #8a5a27; text-decoration: underline; text-underline-offset: 2px; }
+        img { max-width: 100%; height: auto; page-break-inside: avoid; }
+        table { width: 100%; border-collapse: collapse; margin: 16px 0; page-break-inside: avoid; }
+        th, td { padding: 7px 9px; border: 1px solid #d9d9d4; text-align: left; }
+        th { background: #f4f4f1; }
+        @page { size: A4; margin: 18mm 17mm 22mm; }
+        @media print {
+          body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .pdf-toolbar { display: none; }
+          .pdf-canvas { padding: 0; }
+          .pdf-page { width: auto; min-height: 0; margin: 0; padding: 0; box-shadow: none; }
+        }
+        @media (max-width: 850px) {
+          .pdf-page { width: 100%; min-height: 0; padding: 10vw 8vw; }
+        }
+      </style></head><body>
+      <div class="pdf-toolbar"><strong>PDF preview</strong><span>${esc(node.path)}</span><button type="button" onclick="window.print()">Download / Save as PDF</button></div>
+      <div class="pdf-canvas"><main class="pdf-page"><div class="pdf-file">${esc(node.path)}</div><article>${documentHtml}</article></main></div>
+      </body></html>`;
+    const previewUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(previewHtml);
+    const popup = window.open(previewUrl, '_blank');
+    if (!popup) {
+      alert('Allow pop-ups for Regalia to open the PDF preview.');
+      return;
+    }
+  }
+
   function vaultShowInspector(node) {
     const panel = document.getElementById('vault-inspector');
     if (!panel) return;
@@ -2589,12 +2800,19 @@
       : `<span>${esc(node.extension ? node.extension.slice(1).toUpperCase() : 'FILE')}</span><span>${vaultFormatBytes(node.size)}</span>`;
     panel.hidden = false;
     panel.innerHTML = `<div class="vi-head"><div><div class="vi-kind">${esc(kind)}</div><div class="vi-title">${esc(node.name)}</div></div>
-      <button class="vi-close" type="button" aria-label="Close inspector">×</button></div>
+      <div class="vi-head-actions">${node.extension === '.md' ? `<button class="vi-pdf" type="button" disabled aria-label="Open PDF preview for ${esc(node.name)}">PDF</button>` : ''}
+      <button class="vi-close" type="button" aria-label="Close inspector">×</button></div></div>
       <div class="vi-path">${esc(node.path)}</div>
       <div class="vi-meta">${folderMeta}<span>Modified ${esc(changed)}</span><span>${node.links} linked edges</span></div>
       ${(node.kind === 'folder' || node.kind === 'home') ? '<div class="vi-actions"><button class="vault-tool-btn vi-branch" type="button"></button></div>' : ''}
       <div class="vi-preview"></div>`;
     panel.querySelector('.vi-close').addEventListener('click', vaultCloseInspector);
+    const pdf = panel.querySelector('.vi-pdf');
+    if (pdf) {
+      pdf.addEventListener('click', () => {
+        if (typeof pdf._markdown === 'string') vaultPdfPreview(node, pdf._markdown);
+      });
+    }
     const branch = panel.querySelector('.vi-branch');
     if (branch) {
       branch.textContent = node.kind === 'home' ? 'Collapse to top level' : (vaultGraph.expanded.has(node.id) ? 'Collapse branch' : 'Expand branch');
@@ -2622,6 +2840,7 @@
       preview.innerHTML = '';
       if (node.extension === '.md') {
         const rendered = document.createElement('div'); rendered.className = 'md'; rendered.innerHTML = mdToHtml(text); preview.appendChild(rendered);
+        if (pdf) { pdf._markdown = text; pdf.disabled = false; }
       } else {
         const pre = document.createElement('pre'); pre.textContent = text; preview.appendChild(pre);
       }
@@ -2897,9 +3116,29 @@
       : '<div class="no-ctx">No model data.</div>';
   }
 
+  /* Peak-relative: Claude Code stores no plan quota locally, so each bar fills
+     against the heaviest window this machine has recorded. Say so in the UI. */
+  function claudeLimits(rows) {
+    rows = (rows || []).filter(r => r.peak_tokens > 0);
+    if (!rows.length) return '';
+    return `<div style="margin-bottom:18px">
+      <div class="model-title">Rolling load</div>
+      <div class="usage-stack">${rows.map(r => {
+        const pct = Math.max(0, Math.min(100, Number(r.used_percent || 0)));
+        return `<div class="rate-row">
+          <div class="rate-meta"><span>${esc(r.label)}</span><span>${pct.toFixed(0)}% of your peak</span></div>
+          <div class="rate-track"><div class="rate-fill" style="width:${pct}%"></div></div>
+          <div class="rate-reset">${fmtTok(r.used_tokens)} tokens &middot; peak was ${fmtTok(r.peak_tokens)}</div>
+        </div>`;
+      }).join('')}</div>
+      <div class="rate-reset" style="margin-top:8px">Relative to your own history — not a plan quota.</div>
+    </div>`;
+  }
+
   function renderClaudeUsage(u) {
     if (!u || !u.available) return '';
     const t = u.totals;
+    const limits = claudeLimits(u.limits);
     return `<div class="usage-panel">
       <div class="usage-head">
         <h2>Claude token usage</h2>
@@ -2917,6 +3156,7 @@
           <div class="bars">${usageBars(u.by_day)}</div>
         </div>
         <div>
+          ${limits}
           <div class="model-title">By model</div>
           ${usageModels(u.by_model)}
         </div>
@@ -2935,13 +3175,21 @@
     if (!u || !u.available) return '';
     const t = u.totals || {};
     const limits = u.rate_limits || {};
+    const session = u.session_limit || {};
     const plan = limits.plan_type ? limits.plan_type.charAt(0).toUpperCase() + limits.plan_type.slice(1) + ' plan' : 'ChatGPT account';
+    const sessionBar = session.limit_tokens
+      ? `<div class="rate-row">
+          <div class="rate-meta"><span>Session limit</span><span>${Number(session.used_percent || 0).toFixed(0)}% used</span></div>
+          <div class="rate-track"><div class="rate-fill" style="width:${Math.max(0, Math.min(100, Number(session.used_percent || 0)))}%"></div></div>
+          <div class="rate-reset">${fmtTok(session.used_tokens)} of ${fmtTok(session.limit_tokens)} tokens &middot; latest local session</div>
+        </div>`
+      : '';
     const windows = (limits.windows || []).length
-      ? `<div class="rate-list">${limits.windows.map(w => `<div class="rate-row">
+      ? limits.windows.map(w => `<div class="rate-row">
           <div class="rate-meta"><span>${esc(w.label)}</span><span>${Number(w.used_percent || 0).toFixed(0)}% used</span></div>
           <div class="rate-track"><div class="rate-fill" style="width:${Math.max(0, Math.min(100, Number(w.used_percent || 0)))}%"></div></div>
           <div class="rate-reset">${esc(fmtReset(w.resets_at))}</div>
-        </div>`).join('')}</div>`
+        </div>`).join('')
       : '<div class="no-ctx">No account-limit snapshot yet. Run Codex once while signed in with ChatGPT.</div>';
     return `<div class="usage-panel">
       <div class="usage-head">
@@ -2960,13 +3208,13 @@
           <div class="bars">${usageBars(u.by_day)}</div>
         </div>
         <div>
-          <div class="model-title">Account limits</div>
-          ${windows}
+          <div class="model-title">Usage limits</div>
+          <div class="rate-list">${sessionBar}${windows}</div>
           <div class="model-title" style="margin-top:14px">By model</div>
           ${usageModels(u.by_model)}
         </div>
       </div>
-      <div class="usage-foot">Input ${fmtTok(t.input_tokens)} (including ${fmtTok(t.cached_input_tokens)} cached) &middot; Output ${fmtTok(t.output_tokens)} &middot; Cache write ${fmtTok(t.cache_write_input_tokens)}. Observed locally from Codex session logs; this is not billing data, and account-limit percentages come from the latest Codex response.</div>
+      <div class="usage-foot">Input ${fmtTok(t.input_tokens)} (including ${fmtTok(t.cached_input_tokens)} cached) &middot; Output ${fmtTok(t.output_tokens)} &middot; Cache write ${fmtTok(t.cache_write_input_tokens)}. Observed locally from Codex session logs; this is not billing data. The session bar compares the latest request with its model context window; account-limit percentages come from the latest Codex response.</div>
     </div>`;
   }
 
@@ -2986,8 +3234,12 @@
 
   function newsCol(title, items, kind) {
     const rows = items.length ? items.map(it => {
+      // Community postings carry an age (board postings don't) — showing it is
+      // the whole point of sourcing them, so it goes in the byline.
+      const age = (typeof it.age_days === 'number')
+        ? ' &middot; ' + (it.age_days < 1 ? 'today' : it.age_days + 'd ago') : '';
       const meta = kind === 'jobs'
-        ? `${esc(it.source)}${it.location ? ' &middot; ' + esc(it.location) : ''}`
+        ? `${esc(it.source)}${it.location ? ' &middot; ' + esc(it.location) : ''}${age}`
         : esc(it.source);
       const link = it.url
         ? `<a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a>`
@@ -2995,7 +3247,10 @@
       const tags = (kind === 'jobs' && it.tags && it.tags.length)
         ? `<div class="fit-tags">${it.tags.map(t => {
             const early = (t === 'Intern' || t === 'Early career');
-            return `<span class="fit-tag${early ? ' early' : ''}">${esc(t)}</span>`;
+            const fresh = (t === 'Just posted' || t === 'New this week');
+            const hot = t.indexOf('Buzzing') === 0;
+            const cls = hot ? ' hot' : fresh ? ' fresh' : early ? ' early' : '';
+            return `<span class="fit-tag${cls}">${esc(t)}</span>`;
           }).join('')}</div>`
         : '';
       return `<div class="news-item">${link}<div class="meta">${meta}</div>${tags}</div>`;
@@ -3157,8 +3412,10 @@
 
   function stgFill(s, vaultRoot) {
     document.getElementById('stg-theme').value = s.theme === 'light' ? 'light' : 'dark';
-    document.getElementById('stg-accent').value = s.accent || '#e7c59a';
+    stgAccentValue = s.accent || '';   // '' = follow the theme's own amber
+    stgAccentSync();
     document.getElementById('stg-landing').checked = s.landing_enabled !== false;
+    document.getElementById('stg-motion').value = s.motion || 'auto';
     document.getElementById('stg-tier').value = s.default_tier || 'fast';
     document.getElementById('stg-autoupdate').checked = s.autoupdate === true;
     document.getElementById('stg-vault').value = s.vault_path || '';
@@ -3167,6 +3424,7 @@
       vaultRoot ? `Currently serving: ${vaultRoot} — changing the folder takes effect after a restart.` : '';
     stgFillPersonalization(s.personalization || {});
     stgUpdateFill();
+    stgMarkClean();   // the form now matches the store again
   }
 
   /* ── Personalization (Settings) — briefing profile: interests, career stage,
@@ -3205,6 +3463,10 @@
     if (sj) sj.checked = p.show_jobs !== false;
     const sn = document.getElementById('stg-p-show-news');
     if (sn) sn.checked = p.show_news !== false;
+    const sc = document.getElementById('stg-p-community');
+    if (sc) sc.checked = p.job_community !== false;
+    const sb = document.getElementById('stg-p-buzz');
+    if (sb) sb.checked = p.job_buzz !== false;
   }
 
   /* Read the Personalization card back into a full personalization object (the
@@ -3226,6 +3488,8 @@
       news_feeds: feeds,
       show_jobs: document.getElementById('stg-p-show-jobs').checked,
       show_news: document.getElementById('stg-p-show-news').checked,
+      job_community: document.getElementById('stg-p-community').checked,
+      job_buzz: document.getElementById('stg-p-buzz').checked,
     };
   }
 
@@ -3248,17 +3512,35 @@
     }
   }
 
-  let stgAccentCleared = false;
+  /* Accent state. An <input type="color"> ALWAYS reports a value, so the picker
+     can't tell "the user chose this amber" from "nothing chosen — showing the
+     theme default". Saving the raw input value therefore pinned the dark amber
+     on every save, which then overrode the light theme's own accent. Track the
+     choice separately instead: '' means "follow the theme", and the swatch just
+     previews whatever the selected theme would use. */
+  let stgAccentValue = '';
+  function stgAccentDefault() {
+    return document.getElementById('stg-theme').value === 'light' ? '#a06a24' : '#e7c59a';
+  }
+  function stgAccentSync() {
+    document.getElementById('stg-accent').value = stgAccentValue || stgAccentDefault();
+  }
+  function stgAccentPick(v) {
+    stgAccentValue = v;
+  }
   function stgClearAccent() {
-    stgAccentCleared = true;
-    document.getElementById('stg-accent').value =
-      document.getElementById('stg-theme').value === 'light' ? '#a06a24' : '#e7c59a';
+    stgAccentValue = '';
+    stgAccentSync();
   }
 
   function stgApplyLive(s) {
     const root = document.documentElement;
     if (s.theme === 'light') root.dataset.theme = 'light'; else delete root.dataset.theme;
     root.classList.toggle('no-landing', s.landing_enabled === false);
+    root.dataset.motion = s.motion === 'full' ? 'full'
+      : s.motion === 'reduced' ? 'reduced'
+      : (matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduced' : 'full');
+    if (window.__scrollyUpdate) window.__scrollyUpdate();  // pin/unpin the landing to match
     if (s.accent) {
       root.style.setProperty('--amber', s.accent);
       root.style.setProperty('--amber-fg', s.accent);
@@ -3276,19 +3558,53 @@
     }
   }
 
+  /* On "auto", data-motion was resolved once at boot — re-resolve it if the OS
+     flag flips while the app is open. No-op when the setting pins full/reduced. */
+  matchMedia('(prefers-reduced-motion: reduce)')
+    .addEventListener('change', () => stgApplyLive(window.__settings || {}));
+
+  /* store key → input id for every PLAIN backend knob in the Connections card.
+     These ride the page-level Save, so editing a model name and then hitting the
+     Save bar at the bottom stores it — there is no second save button to miss.
+     Secrets (API keys, the pasted Gmail client JSON) are deliberately absent:
+     their inputs render empty because the API masks stored secrets, so sweeping
+     them into a bulk save would post "" and wipe the stored key. */
+  const STG_BACKEND_FIELDS = {
+    ollama_host: 'con-ollama-host', ollama_model: 'con-ollama-model',
+    anthropic_model: 'con-anthropic-model',
+    openai_model: 'con-openai-model', openai_base: 'con-openai-base',
+    gemini_model: 'con-gemini-model', gemini_base: 'con-gemini-base',
+    vertex_project: 'con-vertex-project', vertex_location: 'con-vertex-location',
+    vertex_model: 'con-vertex-model',
+    gemini_cli: 'con-gemini-cli', gemini_cli_model: 'con-gemini-cli-model',
+    gemini_cli_timeout: 'con-gemini-timeout',
+    codex_cli: 'con-codex-cli', codex_cli_model: 'con-codex-model',
+    codex_cli_timeout: 'con-codex-timeout',
+    claude_cli: 'con-claude-cli', claude_cli_model: 'con-claude-model',
+    claude_cli_timeout: 'con-claude-timeout',
+    ms_oauth_client_id: 'con-ms-id', ms_oauth_tenant: 'con-ms-tenant',
+  };
+
   function stgSave(ev) {
-    ev.preventDefault();
+    if (ev) ev.preventDefault();
     const msg = document.getElementById('stg-msg');
     const payload = {
       theme: document.getElementById('stg-theme').value,
-      accent: stgAccentCleared ? '' : document.getElementById('stg-accent').value,
+      accent: stgAccentValue,
       landing_enabled: document.getElementById('stg-landing').checked,
+      motion: document.getElementById('stg-motion').value,
       default_tier: document.getElementById('stg-tier').value,
       autoupdate: document.getElementById('stg-autoupdate').checked,
       vault_path: document.getElementById('stg-vault').value.trim(),
       news_ttl: document.getElementById('stg-news-ttl').value.trim(),
       personalization: stgReadPersonalization(),
     };
+    // Connections renders lazily into #stg-connections; skip any field that
+    // isn't on the page yet rather than posting an empty value for it.
+    for (const [key, id] of Object.entries(STG_BACKEND_FIELDS)) {
+      const el = document.getElementById(id);
+      if (el) payload[key] = el.value.trim();
+    }
     msg.textContent = 'Saving…';
     fetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3297,9 +3613,10 @@
       if (!ok) { msg.textContent = d.error || 'Could not save.'; return; }
       window.__settings = d.settings;
       if (d.catalog) window.__catalog = d.catalog;
-      stgAccentCleared = false;
-      stgApplyLive(d.settings);
+      stgApplyLive(d.settings);   // stgFill re-seeds stgAccentValue from the saved accent
       stgFill(d.settings, d.vault_root);
+      stgMarkClean();
+      if (typeof stgBackendDots === 'function') stgBackendDots();
       if (typeof updateRenderBanner === 'function') updateRenderBanner();
       // The briefing profile may have changed — pull a fresh, re-scored briefing.
       fetch('/api/news').then(r => r.json()).then(renderNews).catch(() => {});
@@ -3308,16 +3625,46 @@
     }).catch(() => { msg.textContent = 'Could not save.'; });
   }
 
+  /* ── Unsaved-changes tracking ──
+     Nothing in Settings auto-saves, so an edit the user never submitted used to
+     vanish silently on the next reload or view switch. One delegated listener on
+     the whole Settings view flags any edit; the save bar shows it.
+     Programmatic fills (stgFill, stgConnections re-render) assign .value without
+     dispatching input/change — including through the custom-select value
+     interceptor — so they can't raise a false "unsaved". */
+  let stgDirty = false;
+
+  function stgSetDirty(on) {
+    stgDirty = !!on;
+    const flag = document.getElementById('stg-dirty');
+    if (flag) flag.hidden = !stgDirty;
+  }
+  function stgMarkClean() { stgSetDirty(false); }
+
+  (function stgWatchEdits() {
+    const view = document.querySelector('.view[data-view="settings"]');
+    if (!view) return;
+    const mark = (e) => {
+      // Buttons that save/act on their own (API keys, Connect folder) clean up
+      // after themselves; only real field edits count as page-level dirt.
+      if (e.target && e.target.closest('.stg-actions')) return;
+      stgSetDirty(true);
+    };
+    view.addEventListener('input', mark);
+    view.addEventListener('change', mark);
+  })();
+
   /* ── Connections (Settings) — model backends, API keys, email OAuth, inboxes ──
      Every field here maps to a store key (env var of the same upper-cased name
-     wins). Plain fields save via stgSaveFields; secrets via stgSaveKey/ClearKey. */
+     wins). Plain fields ride the page-level Save via STG_BACKEND_FIELDS; secrets
+     keep their own Save/Clear buttons (stgSaveKey/stgClearKey). */
   function stgConnections() {
     const s = window.__settings || {};
     const v = k => esc(s[k] || '');
     const keyPh = k => (s[k] && s[k].set ? 'saved ✓ — enter to replace' : '');
     const host = document.getElementById('stg-connections');
     host.innerHTML = `
-      <form class="bento-card bento-span-3" onsubmit="return false">
+      <form class="bento-card bento-wide" onsubmit="return false">
         <div class="bento-head">
           <div class="bento-icon">🧠</div>
           <div class="bento-heads">
@@ -3373,6 +3720,16 @@
           <label>API base URL<input id="con-gemini-base" type="text" value="${v('gemini_base')}" placeholder="https://generativelanguage.googleapis.com/v1beta" autocomplete="off"></label>
         </div>
 
+        <div class="np-msg"><b id="con-dot-vertex"></b>Vertex AI — the same Gemini models billed to a Google Cloud project instead of an API key. Run <code>gcloud auth application-default login</code> once, enable the Vertex AI API on the project, and leave Project blank to use whatever your credentials already point at. Supports agent tool loops.</div>
+        <div class="np-row">
+          <label>Project<input id="con-vertex-project" type="text" value="${v('vertex_project')}" placeholder="(from your credentials)" autocomplete="off"></label>
+          <label>Location<input id="con-vertex-location" type="text" value="${v('vertex_location')}" placeholder="global" autocomplete="off"></label>
+          <label>Model<span class="np-row" style="gap:8px">
+            <input id="con-vertex-model" type="text" value="${v('vertex_model')}" placeholder="(app default)" autocomplete="off">
+            <button type="button" class="pill compact" onclick="stgCheckTier('vertex')" title="Check Vertex AI credentials">Check</button>
+          </span></label>
+        </div>
+
         <div class="np-msg"><b id="con-dot-google"></b>Google account — uses Gemini CLI and your Google sign-in instead of an API key. <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Install Gemini CLI</a>, run <code>gemini</code> once and choose "Login with Google", then Check. Supports Chat, Agents, and Dispatches.</div>
         <div class="np-row">
           <label>CLI command/path<input id="con-gemini-cli" type="text" value="${v('gemini_cli')}" placeholder="gemini" autocomplete="off"></label>
@@ -3404,15 +3761,12 @@
         </div>
         <div class="np-msg" id="con-claude-msg"></div>
 
-        <div class="np-row">
-          <button type="button" class="np-submit" onclick="stgSaveBackends()">Save backend settings</button>
-        </div>
         <div class="np-msg" id="con-msg"></div>
-        <div class="np-msg">Keys are stored in a local, gitignored file on this machine and never returned by the API. Leave a field empty to use the environment variable / built-in default. Changes apply to the next request — no restart.</div>
+        <div class="np-msg">Model names and CLI paths save with <b>Save settings</b> at the bottom of this page; API keys have their own Save so a masked field can never be blanked by a bulk save. Keys are stored in a local, gitignored file on this machine and never returned by the API. Leave a field empty to use the environment variable / built-in default. Changes apply to the next request — no restart.</div>
         </div>
       </form>
 
-      <form class="bento-card bento-span-3" onsubmit="return false">
+      <form class="bento-card bento-wide" onsubmit="return false">
         <div class="bento-head">
           <div class="bento-icon">✉️</div>
           <div class="bento-heads">
@@ -3450,7 +3804,6 @@
             <label>Tenant<span class="np-row" style="gap:8px">
               <input id="con-ms-tenant" type="text" value="${v('ms_oauth_tenant')}" placeholder="consumers · organizations · common" autocomplete="off"
                      title="consumers = personal Outlook.com · organizations = work/school · common = both (or paste a tenant ID)">
-              <button type="button" class="pill" onclick="stgSaveFields({ms_oauth_client_id:'con-ms-id', ms_oauth_tenant:'con-ms-tenant'}, 'con-email-msg')">Save</button>
             </span></label>
           </div>
         </details>
@@ -3467,41 +3820,6 @@
   }
 
 
-  function stgSaveFields(map, msgId) {
-    const payload = {};
-    for (const [key, id] of Object.entries(map)) {
-      const el = document.getElementById(id);
-      if (el) payload[key] = el.value.trim();
-    }
-    const msg = document.getElementById(msgId);
-    if (msg) msg.textContent = 'Saving…';
-    fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                             body: JSON.stringify(payload) })
-      .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
-        if (!msg) return;
-        if (!ok) { msg.textContent = d.error || 'Could not save.'; return; }
-        window.__settings = d.settings;
-        msg.textContent = 'Saved ✓ — applies to the next request.';
-        setTimeout(() => { if (msg.textContent.startsWith('Saved')) msg.textContent = ''; }, 2500);
-        stgBackendDots(); loadRouterStatus();
-      }).catch(() => { if (msg) msg.textContent = 'Could not save.'; });
-  }
-
-  function stgSaveBackends() {
-    stgSaveFields({
-      ollama_host: 'con-ollama-host', ollama_model: 'con-ollama-model',
-      anthropic_model: 'con-anthropic-model',
-      openai_model: 'con-openai-model', openai_base: 'con-openai-base',
-      gemini_model: 'con-gemini-model', gemini_base: 'con-gemini-base',
-      gemini_cli: 'con-gemini-cli', gemini_cli_model: 'con-gemini-cli-model',
-      gemini_cli_timeout: 'con-gemini-timeout',
-      codex_cli: 'con-codex-cli', codex_cli_model: 'con-codex-model',
-      codex_cli_timeout: 'con-codex-timeout',
-      claude_cli: 'con-claude-cli', claude_cli_model: 'con-claude-model',
-      claude_cli_timeout: 'con-claude-timeout',
-    }, 'con-msg');
-  }
-
   let pullPoll = null;
   function stgOllamaPull() {
     const input = document.getElementById('con-ollama-model');
@@ -3514,7 +3832,7 @@
       .then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
         if (!ok) { msg.textContent = d.error || 'Could not start the pull.'; return; }
         // The server normalizes a pasted link to the bare model name — reflect it
-        // back so "Save backend settings" stores the clean name, not the URL.
+        // back so Save settings stores the clean name, not the URL.
         if (d.model) input.value = d.model;
         clearInterval(pullPoll);
         pullPoll = setInterval(() => {
@@ -3558,9 +3876,10 @@
     el.innerHTML =
       `${dot('fast')} Ollama (local) &nbsp; ${dot('smart')} Anthropic API &nbsp; ` +
       `${dot('openai')} OpenAI API &nbsp; ${dot('gemini')} Gemini API &nbsp; ` +
+      `${dot('vertex')} Vertex AI &nbsp; ` +
       `${dot('chatgpt')} ChatGPT account &nbsp; ${dot('google')} Google account &nbsp; ` +
       `${dot('claude')} Claude CLI (subscription)`;
-    for (const t of ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude']) {
+    for (const t of ['fast', 'smart', 'openai', 'gemini', 'vertex', 'chatgpt', 'google', 'claude']) {
       const detail = document.getElementById('con-dot-' + t);
       if (detail) detail.innerHTML = dot(t) + ' ';
     }
@@ -3571,6 +3890,7 @@
     };
     ph('con-ollama-model', 'fast'); ph('con-anthropic-model', 'smart');
     ph('con-openai-model', 'openai'); ph('con-gemini-model', 'gemini');
+    ph('con-vertex-model', 'vertex');
     ph('con-codex-model', 'chatgpt'); ph('con-gemini-cli-model', 'google');
     ph('con-claude-model', 'claude');
   }
@@ -3586,7 +3906,7 @@
       if (!ok) { msg.textContent = d.error || 'Could not check that backend.'; return; }
       const model = d.status && d.status.model ? ` · ${d.status.model}` : '';
       const label = { fast: 'Ollama', smart: 'Anthropic API', openai: 'OpenAI API',
-                      gemini: 'Gemini API', chatgpt: 'ChatGPT account',
+                      gemini: 'Gemini API', vertex: 'Vertex AI', chatgpt: 'ChatGPT account',
                       google: 'Google account', claude: 'Claude CLI' }[d.tier] || d.tier;
       msg.textContent = `${label}: ${d.reason || (d.ok ? 'ready' : 'not ready')}${model}`;
 
@@ -4012,6 +4332,154 @@
     }).join('');
   }
 
+  /* ── Activity timeline (shared by live chat and dispatch workers) ──────────
+     Both surfaces get the same event vocabulary — think / text / status / tool
+     / tool_result / error — from /api/chat/stream and the durable dispatch
+     event log, so one renderer serves both and they stay in sync by
+     construction. The point is legibility of *what actually ran*: a tool row
+     shows its arguments, not just its name. */
+
+  const ACT_ICON = { think: '💭', text: '💬', status: '·', tool: '🔧',
+                     tool_result: '↳', error: '⚠️', start: '▶', final: '✅', limit: '⏹' };
+
+  const TOOL_ICON = {
+    Bash: '⌘', Command: '⌘', run_check: '⌘',
+    Read: '📄', NotebookRead: '📄', read_note: '📄', read_file: '📄', read_email: '📄',
+    Write: '✎', Edit: '✎', MultiEdit: '✎', NotebookEdit: '✎', Files: '✎',
+    write_note: '✎', write_file: '✎', draft_email: '✎', stage_email_draft: '✎',
+    Grep: '🔍', Glob: '🔍', search_vault: '🔍', search_email: '🔍',
+    LS: '🗂', list_notes: '🗂', list_folder: '🗂', list_inboxes: '🗂', read_inbox: '🗂',
+    WebFetch: '🌐', WebSearch: '🌐', 'Web search': '🌐', fetch_url: '🌐',
+    Task: '◎', TodoWrite: '☑', 'Plan updated': '☑',
+  };
+
+  // The Codex worker path (agent.js `_run_agent_codex`) reports raw Codex item
+  // types rather than tool names; give them the same labels the chat stream uses.
+  const TOOL_ALIAS = { command_execution: 'Command', file_change: 'Files',
+                       mcp_tool_call: 'MCP tool', web_search: 'Web search' };
+
+  // Argument keys worth surfacing, most identifying first. `content`-style bulk
+  // fields never reach the browser (the server drops them). `detail` is the
+  // Codex path's catch-all — it holds the command or the MCP tool name.
+  const TOOL_DETAIL_KEYS = ['command', 'detail', 'query', 'pattern', 'url', 'file_path', 'path',
+                            'notebook_path', 'note', 'folder', 'subagent_type', 'description', 'name'];
+  const TOOL_PATH_KEYS = new Set(['file_path', 'path', 'notebook_path', 'note']);
+
+  // Absolute paths are mostly noise in a narrow column — the tail identifies the file.
+  function shortPath(p) {
+    const parts = String(p).split(/[\\/]/).filter(Boolean);
+    return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : String(p);
+  }
+
+  // CLI agents run everything through a shell wrapper, so on Windows every single
+  // command reads `"C:\…\powershell.exe" -Command …` and the part that actually
+  // ran is buried. Show the inner command; the wrapper carries no information.
+  const SHELL_WRAPPER = /^"?[^"]*?(?:powershell\.exe|pwsh\.exe|cmd\.exe|\/bin\/bash|\/bin\/sh|bash|sh)"?\s+(?:-Command|-c|-lc|\/c)\s+/i;
+  function prettyCommand(cmd) {
+    let out = String(cmd || '').trim();
+    const stripped = out.replace(SHELL_WRAPPER, '');
+    if (stripped !== out) {
+      out = stripped.trim();
+      // The inner command is usually quoted as a single argument. Strip the
+      // opening quote even when the closing one is gone — a long command is
+      // truncated upstream, and a dangling `"` is worse than none.
+      const q = out[0];
+      if (q === '"' || q === "'") out = (out.endsWith(q) && out.length > 1) ? out.slice(1, -1) : out.slice(1);
+    }
+    return out.trim();
+  }
+
+  function toolSummary(name, input) {
+    const raw = String(name || 'tool');
+    const label = TOOL_ALIAS[raw] || raw;
+    const inp = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+    let detail = '', key = '';
+    for (const k of TOOL_DETAIL_KEYS) {
+      const v = inp[k];
+      if (typeof v === 'string' && v.trim()) { detail = v.trim(); key = k; break; }
+    }
+    // A file_change has no command, so its `detail` degrades to the item type —
+    // which the label already says. Prefer the paths it actually touched.
+    if (detail === raw) { detail = ''; key = ''; }
+    if (!detail && Array.isArray(inp.changes)) {
+      detail = inp.changes.map(c => (c && (c.path || c.file_path)) || '')
+                          .filter(Boolean).map(shortPath).join(', ');
+    }
+    if (key && TOOL_PATH_KEYS.has(key)) detail = shortPath(detail);
+    if (key === 'command' || key === 'detail') detail = prettyCommand(detail);
+    // A search reads better with its haystack attached.
+    const where = [inp.path, inp.glob].find(v => typeof v === 'string' && v.trim());
+    if (where && (inp.pattern || inp.query) && !TOOL_PATH_KEYS.has(key)) detail += '  in ' + shortPath(where);
+    return { icon: TOOL_ICON[label] || '🔧', label, detail };
+  }
+
+  // Collapse runs of the identical tool call into one row with a ×N badge — a
+  // long agentic turn fires the same tool dozens of times in a row.
+  function actCollapse(events) {
+    const out = [];
+    for (const ev of events || []) {
+      const last = out[out.length - 1];
+      if (last && last.type === 'tool' && ev.type === 'tool' && last.tool === ev.tool &&
+          JSON.stringify(last.input || {}) === JSON.stringify(ev.input || {})) {
+        last._n = (last._n || 1) + 1;
+        continue;
+      }
+      out.push({ ...ev });
+    }
+    return out;
+  }
+
+  /* Render an event list as a timeline.
+     opts.limit  — keep only the last N events (0 = all)
+     opts.clip   — max characters per prose line
+     opts.live   — mark a trailing unanswered tool call as in-flight
+     opts.expand — JS for the "show earlier steps" button (omitted = plain note) */
+  function renderActivity(events, opts) {
+    const o = opts || {};
+    const all = actCollapse(events);
+    if (!all.length) return '';
+    const shown = (o.limit && all.length > o.limit) ? all.slice(-o.limit) : all;
+    const hidden = all.length - shown.length;
+    const clip = o.clip || 0;
+    let html = '<div class="act">';
+    if (hidden > 0) {
+      const note = `…show ${hidden} earlier step${hidden === 1 ? '' : 's'}`;
+      html += o.expand ? `<button class="act-more" onclick="${o.expand}">${note}</button>`
+                       : `<div class="act-more">…${hidden} earlier step${hidden === 1 ? '' : 's'}</div>`;
+    }
+    shown.forEach((ev, i) => {
+      const type = String(ev.type || 'status');
+      const last = i === shown.length - 1;
+      if (type === 'tool') {
+        const t = toolSummary(ev.tool, ev.input);
+        const live = o.live && last ? ' live' : '';
+        html += `<div class="act-row tool${live}"><span class="act-ic">${t.icon}</span><div class="act-body">` +
+          `<span class="act-name">${esc(t.label)}${ev._n > 1 ? ' ×' + ev._n : ''}</span>` +
+          (t.detail ? `<code class="act-cmd">${esc(t.detail)}</code>` : '') + '</div></div>';
+        return;
+      }
+      if (type === 'tool_result') {
+        const bad = ev.ok === false ? ' bad' : '';
+        // Command output arrives with ragged leading/trailing blank lines that
+        // leave a gap in the rail; stripToolMarkup only trims when it edits.
+        const out = stripToolMarkup(ev.output || '').replace(/\n{3,}/g, '\n\n').trim();
+        const rawName = String(ev.tool || 'tool');
+        html += `<div class="act-row result${bad}"><span class="act-ic">↳</span><div class="act-body">` +
+          `<span class="act-name">${esc(TOOL_ALIAS[rawName] || rawName)} ${ev.ok === false ? 'failed' : 'done'}</span>` +
+          (out ? `<code class="act-out">${esc(out)}</code>` : '') + '</div></div>';
+        return;
+      }
+      // Prose rows: reasoning summaries, answer text, status notes, errors.
+      let text = stripToolMarkup(ev.text || '');
+      if (!text) return;
+      if (clip && text.length > clip) text = text.slice(0, clip) + '…';
+      const kind = ['think', 'text', 'status', 'error'].includes(type) ? type : 'status';
+      html += `<div class="act-row ${kind}"><span class="act-ic">${ACT_ICON[type] || '·'}</span>` +
+        `<div class="act-body">${renderMd(text)}</div></div>`;
+    });
+    return html + '</div>';
+  }
+
   // Rebuild #chat-log from the conversation's message array (the repaint path
   // that makes switching possible — bubbles used to be append-only).
   function renderChatLog(id) {
@@ -4029,32 +4497,18 @@
       });
     }
     if (c && c.busy) {
-      if (c.stream && (c.stream.lines.length || c.stream.tools.length)) {
+      if (c.stream && c.stream.events.length) {
         const box = document.createElement('div');
         box.className = 'chat-thinking';
         const presenceIcon = c.tier === 'chatgpt' ? '●' : '✨';
         let html = `<div class="ct-head">${presenceIcon} ${esc(modelLabel(chatThinker(c)))} is working…</div>`;
         // A long agentic run emits far more narration than anyone reads while it
-        // scrolls past: keep the last few steps, each clipped, and say how many
-        // were folded away. The final reply is unaffected.
-        const CT_KEEP = 6, CT_CLIP = 500;
-        const lines = c.stream.lines.slice(-CT_KEEP);
-        const hidden = c.stream.lines.length - lines.length;
-        if (hidden > 0) html += `<div class="ct-elided">…${hidden} earlier step${hidden === 1 ? '' : 's'}</div>`;
-        for (const ln of lines) {
-          const t = stripToolMarkup(ln.text);
-          const clipped = t.length > CT_CLIP ? t.slice(0, CT_CLIP) + '…' : t;
-          if (clipped) html += `<div class="ct-line ${['think','status'].includes(ln.kind) ? ln.kind : 'text'}">${renderMd(clipped)}</div>`;
-        }
-        if (c.stream.tools.length) {
-          // Collapse repeats into one chip per tool ("🔧 Read ×12") — a run can
-          // fire the same tool dozens of times and each used to add a chip.
-          const counts = new Map();
-          for (const t of c.stream.tools) counts.set(t, (counts.get(t) || 0) + 1);
-          html += '<div class="ct-tools">' +
-            [...counts].map(([t, n]) => `<span class="ct-tool">🔧 ${esc(t)}${n > 1 ? ' ×' + n : ''}</span>`).join('') +
-            '</div>';
-        }
+        // scrolls past, so the tail is shown by default and the rest is one
+        // click away. The final reply is unaffected either way.
+        html += renderActivity(c.stream.events, {
+          limit: c.streamExpanded ? 0 : 8, clip: 500, live: true,
+          expand: `chatExpandActivity('${id}')`,
+        });
         box.innerHTML = html;
         log.appendChild(box);
       } else {
@@ -4087,7 +4541,7 @@
     document.getElementById('chat-attach').disabled = !ready;
     document.querySelector('.chat-clear').disabled = !ready;
     document.getElementById('chat-edit').disabled = !ready;
-    for (const tier of ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude']) {
+    for (const tier of ['fast', 'smart', 'openai', 'gemini', 'vertex', 'chatgpt', 'google', 'claude']) {
       document.getElementById('tier-' + tier).disabled = !ready;
     }
     document.getElementById('model-select').disabled = !ready || !ollamaModelsAvailable;
@@ -4098,7 +4552,7 @@
   function syncChatControls() {
     const c = chatConvo();
     const tier = c ? c.tier : 'fast';
-    for (const t of ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude']) {
+    for (const t of ['fast', 'smart', 'openai', 'gemini', 'vertex', 'chatgpt', 'google', 'claude']) {
       document.getElementById('tier-' + t).classList.toggle('on', tier === t);
     }
     const sel = document.getElementById('model-select');
@@ -4565,7 +5019,8 @@
   // discipline as chatSend: `cid`/`generation` gate every DOM/state touch, so a
   // background stream stays correct if the user switches or deletes the chat.
   function chatStreamSend(cid, c, generation, atts) {
-    c.stream = { lines: [], tools: [] };
+    c.stream = { events: [] };
+    c.streamExpanded = false;
     c._streamMisses = 0;
     const controller = new AbortController();
     c.requestController = controller;
@@ -4600,12 +5055,10 @@
         if (!chatIsCurrent(cid, c, generation)) return;
         c._streamMisses = 0;
         const steps = d.steps || [];
-        for (const s of steps) {
-          if (s.type === 'think' || s.type === 'text' || s.type === 'status') {
-            c.stream.lines.push({ kind: s.type, text: s.text });
-          }
-          else if (s.type === 'tool') c.stream.tools.push(s.tool);
-        }
+        // Every step type goes in, in arrival order — the timeline renderer is
+        // what decides how each one reads. Capped so a very long turn can't
+        // grow this array without bound.
+        if (steps.length) c.stream.events = [...c.stream.events, ...steps].slice(-400);
         const nextSince = (typeof d.total === 'number') ? d.total : since + steps.length;
         if (cid === activeChat && steps.length) renderChatLog(cid);
         if (d.status === 'running') {
@@ -4627,6 +5080,15 @@
         }
         c._streamTimer = setTimeout(() => pollChatStream(cid, c, generation, runId, since), 1500);
       });
+  }
+
+  // "Show earlier steps" — reveal the whole timeline for this conversation.
+  // Transient like the rest of c.stream: the final reply is what gets saved.
+  function chatExpandActivity(cid) {
+    const c = chats[cid];
+    if (!c) return;
+    c.streamExpanded = true;
+    renderChatLog(cid);
   }
 
   function finishChatStream(cid, c, generation) {
@@ -5101,14 +5563,61 @@
       <b>${esc(d.goal)}</b><span>${esc(d.kind)} · ${esc(d.priority)} · ${esc(d.state)}</span></div>`).join('');
   }
 
+  /* ── Live dispatch activity ────────────────────────────────────────────────
+     Workers already write every reasoning summary, tool call and tool result to
+     the durable event log as they run; /api/dispatches/<id>/events replays it
+     from a cursor. Poll it alongside the dispatch state so a running dispatch
+     shows the work instead of the word "running". Survives a reload — the log
+     is on disk, so re-opening a dispatch replays it from seq 0. */
+  let dispatchEvents = [];        // durable event log for the open dispatch
+  let dispatchEventCursor = 0;    // last seq consumed
+  let dispatchEventsFor = null;   // which dispatch the log above belongs to
+  let dispatchWorkerOpen = new Set();   // worker ids with a fully expanded timeline
+
+  function resetDispatchEvents(id) {
+    dispatchEvents = []; dispatchEventCursor = 0;
+    dispatchEventsFor = id; dispatchWorkerOpen = new Set();
+  }
+
+  function fetchDispatchEvents(id) {
+    return fetch('/api/dispatches/' + encodeURIComponent(id) + '/events?after=' + dispatchEventCursor)
+      .then(r => r.json())
+      .then(d => {
+        if (dispatchEventsFor !== id || !d || d.error) return;
+        const evs = d.events || [];
+        if (!evs.length) return;
+        dispatchEvents = [...dispatchEvents, ...evs].slice(-1500);
+        // Advance by the last row actually received, never by the reported max
+        // seq: the server pages at 500 events and the rest would be skipped.
+        const lastSeq = evs[evs.length - 1].seq;
+        if (Number.isInteger(lastSeq)) dispatchEventCursor = lastSeq;
+      })
+      .catch(() => {});
+  }
+
+  function dispatchExpandWorker(wid) {
+    dispatchWorkerOpen.add(wid);
+    if (activeDispatchId) {
+      fetch('/api/dispatches/' + encodeURIComponent(activeDispatchId))
+        .then(r => r.json()).then(d => renderDispatch(d)).catch(() => {});
+    }
+  }
+
   function openDispatch(id) {
     activeDispatchId = id;
+    resetDispatchEvents(id);
     fetch('/api/dispatches/' + encodeURIComponent(id)).then(r => r.json()).then(d => { renderDispatch(d); watchDispatch(id); });
   }
 
   function watchDispatch(id) {
     if (dispatchPollTimer) clearTimeout(dispatchPollTimer);
-    fetch('/api/dispatches/' + encodeURIComponent(id)).then(r => r.json()).then(d => {
+    if (dispatchEventsFor !== id) resetDispatchEvents(id);
+    // State and events are fetched together so the timeline is never behind the
+    // status badge it's rendered under.
+    Promise.all([
+      fetch('/api/dispatches/' + encodeURIComponent(id)).then(r => r.json()),
+      fetchDispatchEvents(id),
+    ]).then(([d]) => {
       if (activeDispatchId === id) renderDispatch(d);
       loadDispatchHistory();
       if (['planning','running'].includes(d.state)) dispatchPollTimer = setTimeout(() => watchDispatch(id), 1100);
@@ -5173,11 +5682,38 @@
       .then(r=>r.json().then(d=>({ok:r.ok,d}))).then(({ok,d})=>{ if(!ok){alert(d.error||'Planning failed.');return;} renderDispatch(d);watchDispatch(id); });
   }
 
+  /* Map a durable dispatch event onto the shared timeline vocabulary. Returns
+     null for events the timeline shouldn't repeat: `start`/`final` duplicate the
+     worker row and the result block that already bracket it. */
+  function normalizeDispatchEvent(ev) {
+    const type = String(ev.type || '');
+    if (['think', 'text', 'status', 'tool', 'tool_result'].includes(type)) return ev;
+    if (type === 'error' || type === 'worker_failed') return { type: 'error', text: ev.text || '' };
+    if (type === 'limit') return { type: 'status', text: ev.text || 'Step limit reached.' };
+    return null;
+  }
+
+  function dispatchTimeline(workerId, opts) {
+    const evs = dispatchEvents
+      .filter(ev => (ev.worker || null) === workerId)
+      .map(normalizeDispatchEvent)
+      .filter(Boolean);
+    return evs.length ? renderActivity(evs, opts) : '';
+  }
+
   function renderDispatchStatus(d) {
-    const rows = (d.workers || []).map(w => `<div class="worker-row"><div><b>${esc(w.title)}</b><div class="worker-meta">${esc(w.tier)} · ${esc(w.model || 'default')}${w.error ? ' · ' + esc(w.error) : ''}</div></div><span class="state">${esc(w.status)}</span></div>
+    const rows = (d.workers || []).map(w => {
+      const open = dispatchWorkerOpen.has(w.id);
+      const timeline = dispatchTimeline(w.id, {
+        limit: open ? 0 : 6, clip: 400, live: w.status === 'running',
+        expand: `dispatchExpandWorker('${w.id}')`,
+      });
+      return `<div class="worker-row"><div><b>${esc(w.title)}</b><div class="worker-meta">${esc(w.tier)} · ${esc(w.model || 'default')}${w.error ? ' · ' + esc(w.error) : ''}</div></div><span class="state">${esc(w.status)}</span></div>
+      ${timeline ? `<div class="worker-activity">${timeline}</div>` : ''}
       ${(w.result && w.result.reply) || (w.artifact && w.artifact.preview) ? `<details class="dispatch-result"><summary>Worker details${w.artifact && w.artifact.files ? ` · ${w.artifact.files.length} staged item(s)` : ''}</summary>
         ${w.result && w.result.reply ? `<div class="md">${renderMd(w.result.reply)}</div>` : ''}
-        ${w.artifact && w.artifact.preview ? `<div class="artifact-preview">${esc(w.artifact.preview)}</div>` : ''}</details>` : ''}`).join('');
+        ${w.artifact && w.artifact.preview ? `<div class="artifact-preview">${esc(w.artifact.preview)}</div>` : ''}</details>` : ''}`;
+    }).join('');
     let controls = '';
     if (d.state === 'running') controls = `<button class="dispatch-danger" onclick="dispatchAction('${d.id}','cancel')">Cancel</button>`;
     if (['failed','interrupted'].includes(d.state)) controls = `<button class="dispatch-primary" onclick="dispatchAction('${d.id}','resume')">Retry / resume</button>`;
@@ -5186,7 +5722,11 @@
       result += (d.artifacts || []).map(a => `<div class="dispatch-result"><b>${(a.files||[]).length} staged item(s)</b><div class="artifact-preview">${esc(a.preview || '')}</div></div>`).join('');
       controls += `<button class="dispatch-secondary" onclick="dispatchAction('${d.id}','discard')">Discard changes</button><button class="dispatch-primary" onclick="dispatchAction('${d.id}','apply')">Apply changes</button>`;
     }
-    return `<div class="dispatch-status">${rows}${result}<div class="dispatch-foot">${controls}</div></div>`;
+    // Orchestrator-level trouble (no worker attached) has nowhere else to show.
+    const orchestration = dispatchTimeline(null, { limit: 4, clip: 400 });
+    return `<div class="dispatch-status">${rows}` +
+      (orchestration ? `<div class="worker-activity">${orchestration}</div>` : '') +
+      `${result}<div class="dispatch-foot">${controls}</div></div>`;
   }
 
   function dispatchAction(id, action) {
@@ -5253,6 +5793,7 @@
             <option value="smart"  ${a.tier === 'smart'  ? 'selected' : ''}>🧠 smart · API</option>
             <option value="openai" ${a.tier === 'openai' ? 'selected' : ''}>🤖 gpt · API</option>
             <option value="gemini" ${a.tier === 'gemini' ? 'selected' : ''}>✦ gemini · API</option>
+            <option value="vertex" ${a.tier === 'vertex' ? 'selected' : ''}>▲ vertex · GCP</option>
             <option value="chatgpt" ${a.tier === 'chatgpt' ? 'selected' : ''}>● chatgpt · account</option>
             <option value="google" ${a.tier === 'google' ? 'selected' : ''}>◈ google · account</option>
             <option value="claude" ${a.tier === 'claude' ? 'selected' : ''}>✨ claude · plan</option>
@@ -5336,8 +5877,6 @@
     if (btn) { btn.disabled = busy; btn.textContent = busy ? 'Running…' : 'Run'; }
     if (card) card.classList.toggle('running', busy);
   }
-
-  const STEP_ICON = { start: '▶', think: '💭', tool: '🔧', tool_result: '↳', final: '✅', error: '⚠️', limit: '⏹' };
 
   function runAgent(id) {
     if (agentBusy[id]) return;
@@ -5466,18 +6005,14 @@
 
   function renderRun(run, runEl) {
     const t = new Date(run.started).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const steps = (run.steps || []).map(ev => {
-      const ic = STEP_ICON[ev.type] || '·';
-      let body = '';
-      if (ev.type === 'start') body = `<span class="sx">on the <b>${esc(run.tier)}</b> tier — ${esc(ev.task || '')}</span>`;
-      else if (ev.type === 'tool') body = `<span class="sx">calling <span class="nm">${esc(ev.tool)}</span>(${esc(JSON.stringify(ev.input || {}))})</span>`;
-      else if (ev.type === 'tool_result') body = `<span class="sx">${esc(ev.output || '')}</span>`;
-      else if (ev.type === 'think') body = `<span class="sx">${esc(ev.text || '')}</span>`;
-      else if (ev.type === 'final' || ev.type === 'limit') return '';
-      else body = `<span class="sx">${esc(ev.text || '')}</span>`;
-      if (!body) return '';
-      return `<div class="step ${esc(ev.type)}"><span class="ic">${ic}</span>${body}</div>`;
-    }).join('');
+    // Same event vocabulary as chat and dispatch — same timeline renderer, so a
+    // tool row reads `Bash · pytest -q` instead of `calling Bash({"command":…})`.
+    const events = (run.steps || []).map(ev => {
+      if (ev.type === 'start') return { type: 'status', text: `${run.tier} tier — ${ev.task || ''}` };
+      if (ev.type === 'final') return null;   // the reply renders in full below
+      return normalizeDispatchEvent(ev);
+    }).filter(Boolean);
+    const steps = renderActivity(events, { clip: 600, live: run.status === 'running' });
 
     let final = '';
     if (run.status === 'done' && run.result && run.result.reply) {
@@ -5590,7 +6125,7 @@
      via /api/onboard/vault. A backend connection is required before the vault
      step so a fresh install is never left with a vault but no way to work it. */
   const wiz = { mode: 'existing', path: '', name: '', busy: false, status: {} };
-  const WIZ_TIERS = ['fast', 'smart', 'openai', 'gemini', 'chatgpt', 'google', 'claude'];
+  const WIZ_TIERS = ['fast', 'smart', 'openai', 'gemini', 'vertex', 'chatgpt', 'google', 'claude'];
 
   function wizMaybeShow() {
     if ((window.__settings || {}).onboarded === true) return;
@@ -6053,7 +6588,7 @@
     const lerp  = (a, b, t) => a + (b - a) * t;
     const disabled = () =>
       document.documentElement.classList.contains('no-landing') ||
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches || window.innerWidth <= 640;
+      document.documentElement.dataset.motion === 'reduced' || window.innerWidth <= 640;
 
     let ticking = false;
     function update() {
