@@ -14,6 +14,9 @@
 # --- Python / dashboard ---
 __pycache__/
 *.py[cod]
+.pytest_cache/
+# Scratch space: downloaded PDFs, screenshots, and working research. Never ships.
+/tmp/
 .venv/
 venv/
 env/
