@@ -13,7 +13,8 @@ Regalia is a single-user cockpit for a Markdown knowledge vault. It reads YAML f
 
 ## Features
 
-- **Overview dashboard** — every note with frontmatter becomes a task: stat cards (active / overdue / complete), filters by status · area · course, live search, deadline highlighting.
+- **Overview dashboard** — every note with frontmatter becomes a task: stat cards (active / overdue / complete), filters by status · area · course, live search, deadline highlighting. Edits you make on disk show up on their own within seconds — no restart, no refresh.
+- **Calendar** — a month grid where each note is a bar running from its `date:` through its `deadline:`, so open work sits on today's column instead of only on the day it's due.
 - **Landing page** — an ASCII-dither WebGL hero with pinned scrollytelling that lands you in your recently-worked folders.
 - **Chat, grounded in your vault** — multi-conversation chat that can search, open, and quote your actual notes; an opt-in ✏️ Edit mode lets it write them.
 - **Eight model tiers, one router** — local Ollama; Anthropic, OpenAI, and Gemini APIs; Vertex AI billed to a Google Cloud project; plus Claude, ChatGPT, and Google-account CLI backends.
