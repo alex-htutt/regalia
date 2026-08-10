@@ -35,6 +35,12 @@ When planning or scaffolding any coding project, split the plan into two parts:
 
 The micro plan exists so a building agent has a solid, component-level blueprint to work from rather than improvising structure. If problems arise during the build, revise the **micro plan** — adjust components, split or merge them, change interfaces — while keeping the macro plan stable unless the goals themselves change.
 
+## Building complex projects (verifiable components)
+
+Break the work into components that can each be **verified on their own** (a test, a run, an observable result), then build them in dependency order toward the goal. Note which components are hard dependencies and which are independent.
+
+When a component stalls, don't grind on it: if it isn't a blocker for the rest, park it with a note on what's blocking, move to the next independent component, and come back. If it *is* a blocker, say so and surface the decision rather than working around it silently. *Why:* independently verifiable pieces mean progress is always provable and never hostage to one stuck part.
+
 ## Working rules (vault-wide)
 
 - **Don't invent; say when unsure.** Never fabricate APIs, function signatures, benchmark numbers, citations, or capabilities. If you don't know, say so and offer to check. *Why:* false confidence is worse than a gap — a wrong API or made-up benchmark costs more to unwind than the honest "I don't know." (Generalized from the `research/` citation rules.)
