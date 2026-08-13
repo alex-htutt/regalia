@@ -1160,7 +1160,7 @@ CHAT_WRITE_RULES = (
 
 
 def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
-               max_steps=6, allow_write=False) -> dict:
+               max_steps=6, allow_write=False, emit=None) -> dict:
     """Free-form chat that can read (and, with allow_write, change) the vault.
 
     Drop-in for router.chat() on the fast tier — same return shape
@@ -1174,6 +1174,14 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
     edit-mode guidance — the chat panel passes it only when "Edit mode" is on.
     """
     import app
+
+    def _emit(event):
+        """Keep live presentation best-effort; it must never break the turn."""
+        if emit:
+            try:
+                emit(event)
+            except Exception:  # noqa: BLE001
+                pass
     tool_names = CHAT_TOOLS + (CHAT_WRITE_TOOLS if allow_write else [])
     tools = [TOOL_SCHEMAS[n] for n in tool_names if n in TOOL_SCHEMAS]
     sys_text = CHAT_SYSTEM.format(outline=app._vault_outline())
@@ -1197,6 +1205,9 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
             return {"reply": text or "…(empty response from the local model)",
                     "model": model_used, "tier": res.get("tier", tier)}
 
+        if text:
+            _emit({"type": "think", "text": text})
+
         assistant_content = ([{"type": "text", "text": text}] if text else []) + [
             {"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]}
             for tc in tool_calls
@@ -1207,6 +1218,7 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
         for tc in tool_calls:
             fn = TOOL_FNS.get(tc["name"])
             args = tc.get("input") or {}
+            _emit({"type": "tool", "tool": tc["name"], "input": args})
             if fn is None:
                 out = f"Error: no such tool '{tc['name']}'."
             else:
@@ -1216,6 +1228,8 @@ def chat_vault(messages, tier="fast", system=None, max_tokens=2048, model=None,
                     out = f"Error: {e.message}"
                 except Exception as e:  # noqa: BLE001 — tool errors feed back to the model
                     out = f"Error running {tc['name']}: {e}"
+            _emit({"type": "tool_result", "tool": tc["name"],
+                   "ok": not str(out).startswith("Error"), "output": str(out)[:600]})
             results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": out})
         convo.append({"role": "user", "content": results})
 

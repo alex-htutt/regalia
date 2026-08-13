@@ -4489,9 +4489,11 @@
   // Tiers backed by a signed-in account CLI rather than an API key: they get the
   // per-conversation model picker and a sign-in state in the status line.
   const ACCOUNT_CLI_TIERS = ['chatgpt', 'google', 'claude'];
-  // ChatGPT and Claude stream chat. Google account agents also stream JSONL,
-  // while ordinary Google chat keeps the simpler blocking /api/chat path.
-  const STREAMING_TIERS = ['chatgpt', 'claude'];
+  // Every provider uses the same live chat shell. Native tool streams fill the
+  // activity rail; plain completion backends still get live status and a clean
+  // final handoff instead of a provider-specific frozen spinner.
+  const STREAMING_TIERS = ['fast', 'smart', 'openai', 'gemini', 'vertex',
+                           'chatgpt', 'google', 'claude'];
   const chatSaveQueues = new Map();  // cid -> serialized PUT/DELETE promise
   const chatSaveControllers = new Map();
   const deletedChats = new Set();    // tombstones block every later PUT for a deleted cid
@@ -5334,9 +5336,8 @@
     renderChatSidebar();
     updateSendDisabled();
 
-    // Codex and Claude run their CLI loops live so long turns show reasoning
-    // summaries, activity, and answer text instead of a frozen spinner. The
-    // Google account agent runs stream JSONL; ordinary chat remains blocking.
+    // All tiers share the same response presentation. Providers contribute the
+    // richest safe events they expose; final transcript persistence is uniform.
     if (STREAMING_TIERS.includes(c.tier)) {
       chatStreamSend(cid, c, generation, atts);
       return;
@@ -5399,7 +5400,7 @@
       signal: controller.signal,
       body: JSON.stringify({
         messages: msgs, attachments: atts, edit: c.edit, tier: c.tier,
-        model: (c.cliModel && c.cliModel[c.tier]) || null,
+        model: chatSendModel(c),
       }),
     })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))

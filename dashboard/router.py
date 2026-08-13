@@ -1302,10 +1302,12 @@ def _codex_prompt(messages, system, attachments=None, allow_write=False) -> str:
         parts.append("System instructions:\n" + sys_text)
     if allow_write:
         parts.append(
-            "Regalia Edit mode is ON. You may create, modify, rename, or delete "
-            "files inside the current working root when the user requests it. "
-            "Carry out requested edits with your tools instead of only describing "
-            "them."
+            "Regalia Edit mode is ON. The CLI filesystem is intentionally read-only; "
+            "do not attempt shell or tool writes. Read the relevant files, then use "
+            "the required structured final response to request write, move, or delete "
+            "operations. Regalia validates and applies those operations automatically. "
+            "For a write, return the complete desired file content. Only request edits "
+            "the user actually asked for, and summarize them in the reply field."
         )
     else:
         parts.append(
@@ -1323,13 +1325,128 @@ def _codex_prompt(messages, system, attachments=None, allow_write=False) -> str:
     return "\n\n".join(parts).strip()
 
 
+_CODEX_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reply": {"type": "string"},
+        "operations": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["write", "move", "delete"]},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "destination": {"type": "string"},
+                },
+                "required": ["action", "path", "content", "destination"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["reply", "operations"],
+    "additionalProperties": False,
+}
+
+
+def _write_codex_edit_schema(directory: str) -> str:
+    path = Path(directory) / "edit-response.schema.json"
+    path.write_text(json.dumps(_CODEX_EDIT_SCHEMA), encoding="utf-8")
+    return str(path)
+
+
+def _codex_edit_path(root: Path, raw: str) -> Path:
+    """Resolve one model-supplied relative path inside the configured vault."""
+    value = str(raw or "").strip().replace("\\", "/")
+    if not value or value.startswith("/") or re.match(r"^[A-Za-z]:", value):
+        raise RouterError("ChatGPT returned an invalid edit path.", 502)
+    target = (root / value).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise RouterError("ChatGPT tried to edit outside the vault.", 403)
+    return target
+
+
+def apply_codex_edit_plan(text: str, root: str | None = None) -> tuple[str, list[dict]]:
+    """Validate and atomically apply a structured ChatGPT edit response."""
+    try:
+        payload = json.loads(str(text or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise RouterError("ChatGPT did not return a valid edit plan. No files were changed.", 502)
+    if not isinstance(payload, dict) or not isinstance(payload.get("operations"), list):
+        raise RouterError("ChatGPT returned an invalid edit plan. No files were changed.", 502)
+
+    vault = Path(root or CODEX_CLI_CWD).resolve()
+    planned = []
+    for raw in payload["operations"]:
+        if not isinstance(raw, dict):
+            raise RouterError("ChatGPT returned an invalid edit operation. No files were changed.", 502)
+        action = str(raw.get("action") or "")
+        if action not in ("write", "move", "delete"):
+            raise RouterError("ChatGPT returned an unsupported edit operation. No files were changed.", 502)
+        source = _codex_edit_path(vault, raw.get("path"))
+        destination = (_codex_edit_path(vault, raw.get("destination"))
+                       if action == "move" else None)
+        content = raw.get("content")
+        if action == "write" and not isinstance(content, str):
+            raise RouterError("ChatGPT returned a write without file content. No files were changed.", 502)
+        if action in ("move", "delete") and not source.is_file():
+            raise RouterError(f"ChatGPT tried to {action} a missing file. No files were changed.", 409)
+        planned.append((action, source, destination, content))
+
+    applied = []
+    for action, source, destination, content in planned:
+        rel = source.relative_to(vault).as_posix()
+        try:
+            if action == "write":
+                source.parent.mkdir(parents=True, exist_ok=True)
+                fd, temporary = tempfile.mkstemp(prefix=".regalia-edit-", dir=str(source.parent))
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                        handle.write(content)
+                    os.replace(temporary, source)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                applied.append({"action": action, "path": rel})
+            elif action == "move":
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(source, destination)
+                applied.append({"action": action, "path": rel,
+                                "destination": destination.relative_to(vault).as_posix()})
+            else:
+                source.unlink()
+                applied.append({"action": action, "path": rel})
+        except OSError as e:
+            raise RouterError(f"Regalia could not apply the ChatGPT edit: {e}", 500)
+    return str(payload.get("reply") or "").strip(), applied
+
+
+def _codex_exec_prefix(exe: str, allow_write: bool) -> list[str]:
+    """Global Codex automation policy followed by the headless subcommand.
+
+    Approval is a top-level Codex option, not an ``exec`` option.  The Chat UI
+    cannot service an interactive terminal prompt, so both modes are explicit
+    non-interactive runs: Edit mode auto-approves inside a workspace-write
+    sandbox; normal chat remains auto-approved but read-only.
+    """
+    return [
+        exe,
+        "--ask-for-approval", "never",
+        "--sandbox", "workspace-write" if allow_write else "read-only",
+        "exec",
+    ]
+
+
 def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
                      allow_write=False) -> dict:
     """Run a chat turn through Codex CLI using the signed-in ChatGPT account.
 
     max_tokens is accepted for signature parity but not forwarded; Codex manages
-    its own output budget. Normal chat runs read-only. Edit mode switches Codex
-    to workspace-write so it can change vault files when the user asks.
+    its own output budget. The subprocess stays read-only in both modes. Edit
+    mode requests a structured plan that Regalia validates and applies itself.
     """
     exe = _codex_cli_path()
     if exe is None:
@@ -1344,32 +1461,35 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
     # Frozen builds keep uploads outside the vault. Stage copies in a fresh temp
     # workspace and grant only that directory to this one Codex invocation.
     staged_dir = tempfile.TemporaryDirectory(prefix="regalia-codex-") if attachments else None
+    schema_dir = tempfile.TemporaryDirectory(prefix="regalia-codex-schema-") if allow_write else None
     try:
         staged = _stage_cli_attachments(attachments, staged_dir.name) if staged_dir else []
         prompt = _codex_prompt(messages, system, staged, allow_write=allow_write)
         if not prompt:
             raise RouterError("Nothing to send to ChatGPT.", 400)
 
-        sandbox = "workspace-write" if allow_write else "read-only"
-        cmd = [
-            exe, "exec",
+        # Chat edits are applied by Regalia from the structured response below;
+        # the model process itself never needs a writable filesystem.
+        cmd = _codex_exec_prefix(exe, False) + [
             "--ephemeral",
             "--ignore-user-config",
             "--ignore-rules",
             "--skip-git-repo-check",
-            "--sandbox", sandbox,
             "-C", CODEX_CLI_CWD,
             "-c", 'forced_login_method="chatgpt"',
         ]
         if staged_dir:
             cmd += ["--add-dir", staged_dir.name]
+        if schema_dir:
+            cmd += ["--output-schema", _write_codex_edit_schema(schema_dir.name)]
         mdl = model or _codex_cli_model()
         if mdl:
             cmd += ["-m", mdl]
         cmd.append("-")  # stdin avoids command-line length limits.
 
-        # Headless `codex exec` hardcodes approval policy to Never. Passing the
-        # interactive CLI's --ask-for-approval flag here is a parser error.
+        # Approval belongs before the `exec` subcommand. Keeping it explicit is
+        # important: otherwise a UI toggle can say writable while the spawned
+        # session still reports the inherited policy as read-only.
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
             proc = subprocess.run(
@@ -1413,18 +1533,27 @@ def _codex_exec_chat(messages, system, max_tokens, model, attachments=None,
             reason="Codex CLI is signed in with ChatGPT.", checked_at=time.time(),
         )
         reply = (proc.stdout or "").strip()
-        return {
+        operations = []
+        if allow_write:
+            reply, operations = apply_codex_edit_plan(reply)
+        result = {
             "reply": reply or "…(the model went quiet — try again)",
             "model": mdl or "ChatGPT account",
             "tier": "chatgpt",
         }
+        if operations:
+            result["operations"] = operations
+        return result
     finally:
         if staged_dir:
             staged_dir.cleanup()
+        if schema_dir:
+            schema_dir.cleanup()
 
 
 def codex_agent_stream(prompt, system=None, model=None, cwd=None, allow_write=False,
-                       timeout=None, cancel_event=None, extra_dirs=None):
+                       timeout=None, cancel_event=None, extra_dirs=None,
+                       output_schema=None):
     """Run a scoped Codex account agent and yield its JSONL execution events.
 
     Unlike chat_tools(), Codex drives its own file/shell loop. It runs in an
@@ -1446,15 +1575,16 @@ def codex_agent_stream(prompt, system=None, model=None, cwd=None, allow_write=Fa
     sys_text = _flatten_system(system)
     if sys_text:
         prompt = "System instructions:\n" + sys_text + "\n\nTask:\n" + prompt
-    cmd = [
-        exe, "exec", "--json", "--ephemeral", "--ignore-user-config",
+    cmd = _codex_exec_prefix(exe, allow_write) + [
+        "--json", "--ephemeral", "--ignore-user-config",
         "--ignore-rules", "--skip-git-repo-check",
-        "--sandbox", "workspace-write" if allow_write else "read-only",
         "-C", active_cwd, "-c", 'forced_login_method="chatgpt"',
     ]
     for directory in extra_dirs or ():
         if directory and os.path.isdir(directory):
             cmd += ["--add-dir", str(directory)]
+    if output_schema:
+        cmd += ["--output-schema", str(output_schema)]
     mdl = model or _codex_cli_model()
     if mdl:
         cmd += ["-m", mdl]
@@ -1559,21 +1689,26 @@ def codex_chat_stream(messages, system=None, model=None, attachments=None,
     account chat and remain readable only for this invocation.
     """
     staged_dir = tempfile.TemporaryDirectory(prefix="regalia-codex-") if attachments else None
+    schema_dir = tempfile.TemporaryDirectory(prefix="regalia-codex-schema-") if allow_write else None
     try:
         staged = _stage_cli_attachments(attachments, staged_dir.name) if staged_dir else []
         prompt = _codex_prompt(messages, system, staged, allow_write=allow_write)
         if not prompt:
             raise RouterError("Nothing to send to ChatGPT.", 400)
+        schema = _write_codex_edit_schema(schema_dir.name) if schema_dir else None
         yield from codex_agent_stream(
             prompt,
             model=model,
             cwd=CODEX_CLI_CWD,
-            allow_write=allow_write,
+            allow_write=False,
             extra_dirs=[staged_dir.name] if staged_dir else None,
+            output_schema=schema,
         )
     finally:
         if staged_dir:
             staged_dir.cleanup()
+        if schema_dir:
+            schema_dir.cleanup()
 
 
 # ── Account: Google via Gemini CLI ───────────────────────────────────────────
@@ -1818,6 +1953,26 @@ def _gemini_cli_chat(messages, system, max_tokens, model, attachments=None,
             "model": mdl or "Google account default",
             "tier": "google",
         }
+    finally:
+        if staged_dir:
+            staged_dir.cleanup()
+
+
+def gemini_chat_stream(messages, system=None, model=None, attachments=None,
+                       allow_write=False):
+    """Stream a Google-account chat turn with the same attachment boundary."""
+    staged_dir = tempfile.TemporaryDirectory(prefix="regalia-gemini-") if attachments else None
+    try:
+        staged = _stage_cli_attachments(attachments, staged_dir.name) if staged_dir else []
+        prompt = _gemini_cli_prompt(messages, system, staged, allow_write=allow_write)
+        if not prompt:
+            raise RouterError("Nothing to send to Gemini.", 400)
+        yield from gemini_agent_stream(
+            prompt,
+            model=model,
+            cwd=GEMINI_CLI_CWD,
+            allow_write=allow_write,
+        )
     finally:
         if staged_dir:
             staged_dir.cleanup()

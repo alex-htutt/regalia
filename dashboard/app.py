@@ -2677,6 +2677,29 @@ def _resolve_attachments(raw) -> list:
     return out
 
 
+def _run_chat_turn(messages, tier, user_system=None, model=None, attachments=None,
+                   edit_mode=False, emit=None) -> dict:
+    """Run one normalized chat turn, optionally reporting safe live activity."""
+    attachments = attachments or []
+    use_loop = (tier == "fast"
+                or (tier in ("smart", "openai", "gemini", "vertex") and edit_mode))
+    if use_loop and not attachments:
+        try:
+            return agent.chat_vault(
+                messages, tier=tier, system=user_system, max_tokens=2048, model=model,
+                allow_write=edit_mode, max_steps=8 if edit_mode else 6, emit=emit,
+            )
+        except router.RouterError:
+            if tier != "fast":
+                raise
+
+    system = _vault_chat_system(user_system) if tier == "fast" else user_system
+    return router.chat(
+        messages, tier=tier, system=system, max_tokens=2048,
+        model=model, attachments=attachments, allow_write=edit_mode,
+    )
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """Tier-routed chat for the generic cockpit chat panel."""
@@ -2723,39 +2746,23 @@ def api_chat():
     # other fast-tier hiccup), fall back to outline-grounded plain chat so the panel
     # still answers. Smart-tier failures surface to the user. Attachment turns skip
     # the loop (chat_tools has no attachment path) and use the image-inlining chat.
-    use_loop = (tier == "fast"
-                or (tier in ("smart", "openai", "gemini", "vertex") and edit_mode))
-    if use_loop and not attachments:
-        try:
-            return jsonify(agent.chat_vault(
-                messages, tier=tier, system=user_system, max_tokens=2048, model=model,
-                allow_write=edit_mode, max_steps=8 if edit_mode else 6,
-            ))
-        except router.RouterError as e:
-            if tier != "fast":
-                return jsonify({"error": e.message}), e.status
-            pass  # fast: fall through to plain outline-grounded chat below
-
-    # The weak local model is blind on its own, so ground it with the live vault
-    # structure. The cloud/subscription tiers can read files themselves, so they
-    # keep the caller's system prompt untouched.
-    system = _vault_chat_system(user_system) if tier == "fast" else user_system
     try:
-        result = router.chat(
-            messages, tier=tier, system=system, max_tokens=2048,
-            model=model, attachments=attachments, allow_write=edit_mode,
+        result = _run_chat_turn(
+            messages, tier, user_system, model, attachments, edit_mode,
         )
     except router.RouterError as e:
         return jsonify({"error": e.message}), e.status
     return jsonify(result)
 
 
-# ── Live account-backed chat streams ─────────────────────────────────────────
-# ChatGPT and Claude run their CLI agentic loops here. Rather than block
-# /api/chat for the whole run (and hide everything until it finishes), the panel
+# ── Live provider-neutral chat streams ───────────────────────────────────────
+# Every tier runs behind the same live presentation boundary. Native CLI/tool
+# loops expose their real safe progress; plain completion backends expose status
+# plus their final answer rather than freezing the panel until the request ends.
+# Rather than block /api/chat for the whole run, the panel
 # starts a stream, gets a run_id, then polls for readable summaries, activity,
 # and answer text as they arrive. Mirrors the agent-run store: an in-memory,
-# single-user, capped dict. Local/API tiers stay on blocking /api/chat above.
+# single-user, capped dict. The blocking /api/chat route remains API-compatible.
 _CHAT_STREAMS: dict[str, dict] = {}
 _CHAT_STREAMS_LOCK = threading.Lock()
 _CHAT_STREAMS_MAX = 40
@@ -2871,7 +2878,7 @@ def _codex_tool_label(item: dict) -> tuple[str, dict]:
 
 def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
                         tier="claude"):
-    """Consume an account CLI stream and map its events onto UI steps.
+    """Run any provider and map its richest safe events onto shared UI steps.
 
     `think` is always a provider-supplied readable summary, never hidden
     chain-of-thought. `text` is answer text and `tool` is compact activity
@@ -2886,6 +2893,7 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
     names: dict = {}
     reply = ""
     model_used = ""
+    edits_applied = False
     try:
         if tier == "chatgpt":
             model_used = model or router._codex_cli_model() or "ChatGPT account"
@@ -2937,13 +2945,27 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
                     elif kind == "agent_message":
                         text = _strip_tool_markup(item.get("text") or "")
                         if text:
-                            reply = text
-                            append({"type": "text", "text": text})
+                            if edit_mode:
+                                if edits_applied:
+                                    continue
+                                reply, operations = router.apply_codex_edit_plan(text)
+                                edits_applied = True
+                                for operation in operations:
+                                    detail = operation.get("destination") or operation["path"]
+                                    append({"type": "tool", "tool": "Files",
+                                            "input": {"path": detail}})
+                                    append({"type": "tool_result", "tool": "Files", "ok": True,
+                                            "output": f"{operation['action']} applied"})
+                                if reply:
+                                    append({"type": "text", "text": reply})
+                            else:
+                                reply = text
+                                append({"type": "text", "text": text})
                     elif kind == "error":
                         detail = str(item.get("message") or "").strip()
                         if detail:
                             append({"type": "status", "text": detail[:500]})
-        else:
+        elif tier == "claude":
             for ev in router.claude_code_chat_stream(
                     messages, system=system, model=model,
                     attachments=attachments, allow_write=edit_mode):
@@ -2979,13 +3001,82 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
                     reply = _strip_tool_markup(ev.get("result") or "")
                     # `init` already named the session model — keep it.
                     model_used = model_used or router.primary_model(ev.get("modelUsage"))
+        elif tier == "google":
+            model_used = model or router._gemini_cli_model() or "Google account default"
+            append({"type": "status", "text": "Connecting to Gemini..."})
+            reply_parts = []
+            for ev in router.gemini_chat_stream(
+                    messages, system=system, model=model,
+                    attachments=attachments, allow_write=edit_mode):
+                etype = str(ev.get("type") or "")
+                if etype == "init":
+                    model_used = str(ev.get("model") or model_used)
+                elif etype == "message" and ev.get("role") == "assistant":
+                    text = _strip_tool_markup(ev.get("content") or "")
+                    if text:
+                        if ev.get("delta", True):
+                            reply_parts.append(text)
+                        else:
+                            reply_parts = [text]
+                        append({"type": "text", "text": text})
+                elif etype == "tool_use":
+                    tool_id = str(ev.get("tool_id") or "")
+                    name = str(ev.get("tool_name") or ev.get("name") or "tool")
+                    names[tool_id] = name
+                    append({"type": "tool", "tool": name,
+                            "input": _tool_input_preview(ev.get("parameters"))})
+                elif etype == "tool_result":
+                    name = names.get(str(ev.get("tool_id") or ""), "tool")
+                    status = str(ev.get("status") or "success").lower()
+                    append({
+                        "type": "tool_result", "tool": name,
+                        "ok": status in ("success", "ok", "completed"),
+                        "output": _strip_tool_markup(
+                            agent._tool_result_text(ev.get("output")))[:400],
+                    })
+                elif etype == "error":
+                    detail = ev.get("message") or ev.get("error")
+                    if detail:
+                        append({"type": "status", "text": str(detail)[:500]})
+                elif etype == "result" and str(
+                        ev.get("status") or "success").lower() not in (
+                            "success", "ok", "completed"):
+                    raise router.RouterError(
+                        str(ev.get("error") or ev.get("message") or "Gemini failed."), 502)
+            reply = "".join(reply_parts).strip()
+        else:
+            labels = {
+                "fast": "Local model", "smart": "Anthropic", "openai": "OpenAI",
+                "gemini": "Gemini API", "vertex": "Vertex AI",
+            }
+            append({"type": "status", "text": f"Connecting to {labels.get(tier, tier)}..."})
+
+            def emit(event):
+                event = dict(event or {})
+                if event.get("type") == "tool":
+                    event["input"] = _tool_input_preview(event.get("input"))
+                elif event.get("type") == "tool_result":
+                    event["output"] = _strip_tool_markup(event.get("output") or "")[:400]
+                elif event.get("text"):
+                    event["text"] = _strip_tool_markup(event["text"])[:2000]
+                append(event)
+
+            result = _run_chat_turn(
+                messages, tier, system, model, attachments, edit_mode, emit=emit,
+            )
+            reply = _strip_tool_markup(result.get("reply") or "")
+            model_used = str(result.get("model") or model or "")
+            if reply:
+                append({"type": "text", "text": reply})
         with _CHAT_STREAMS_LOCK:
             run = _CHAT_STREAMS.get(run_id)
             if run is not None:
                 run["status"] = "done"
                 run["reply"] = reply or "…(the model went quiet — try again)"
-                run["model"] = model_used or (
-                    "ChatGPT account" if tier == "chatgpt" else "claude (plan)")
+                run["model"] = model_used or {
+                    "chatgpt": "ChatGPT account", "google": "Google account default",
+                    "claude": "claude (plan)",
+                }.get(tier, tier)
                 _trim_chat_streams_locked()
     except router.RouterError as e:
         with _CHAT_STREAMS_LOCK:
@@ -3005,7 +3096,7 @@ def _chat_stream_worker(run_id, messages, system, model, attachments, edit_mode,
 
 @app.route("/api/chat/stream", methods=["POST"])
 def api_chat_stream():
-    """Start a live account-backed chat run and return a run_id to poll."""
+    """Start a live provider-neutral chat run and return a run_id to poll."""
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Chat payload must be an object."}), 400
@@ -3020,13 +3111,16 @@ def api_chat_stream():
         return jsonify({"error": "Say something to start the conversation."}), 400
 
     tier = str(data.get("tier") or "claude").strip().lower()
-    if tier not in ("chatgpt", "claude"):
-        return jsonify({"error": "Live chat streams support ChatGPT and Claude."}), 400
+    if tier not in router.TIERS:
+        return jsonify({"error": f"Unknown tier '{tier}'."}), 400
     user_system = data.get("system") if isinstance(data.get("system"), str) else None
     edit_mode = bool(data.get("edit"))
     # Per-conversation account model override; empty uses the account/plan default.
     raw_model = data.get("model")
-    model = raw_model.strip() if (isinstance(raw_model, str) and raw_model.strip()) else None
+    model = (raw_model.strip()
+             if (tier in ("fast", "chatgpt", "google", "claude")
+                 and isinstance(raw_model, str) and raw_model.strip())
+             else None)
 
     run_id = uuid.uuid4().hex[:12]
     with _CHAT_STREAMS_LOCK:

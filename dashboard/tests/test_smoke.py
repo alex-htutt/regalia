@@ -2332,7 +2332,10 @@ class ChatGptAccountTierTests(unittest.TestCase):
 
         self.assertEqual(res["tier"], "chatgpt")
         self.assertEqual(res["reply"], "hello from chatgpt")
-        self.assertEqual(seen["cmd"][:2], ["codex", "exec"])
+        self.assertEqual(seen["cmd"][:6], [
+            "codex", "--ask-for-approval", "never",
+            "--sandbox", "read-only", "exec",
+        ])
         self.assertIn("read-only", seen["cmd"])
         self.assertEqual(seen["cmd"][seen["cmd"].index("-C") + 1], seen["cwd"])
         self.assertIn("--skip-git-repo-check", seen["cmd"])
@@ -2340,7 +2343,8 @@ class ChatGptAccountTierTests(unittest.TestCase):
         self.assertIn("--ignore-rules", seen["cmd"])
         self.assertIn('forced_login_method="chatgpt"', seen["cmd"])
         self.assertEqual(seen["cmd"][seen["cmd"].index("-m") + 1], "gpt-test")
-        self.assertNotIn("--ask-for-approval", seen["cmd"])
+        self.assertEqual(
+            seen["cmd"][seen["cmd"].index("--ask-for-approval") + 1], "never")
         self.assertTrue(seen["input"].startswith("System instructions:"))
         self.assertIn("Regalia Edit mode is OFF", seen["input"])
         for name in secret_names:
@@ -2349,7 +2353,7 @@ class ChatGptAccountTierTests(unittest.TestCase):
         self.assertEqual(seen["staged"].parent, seen["add_dir"])
         self.assertFalse(seen["add_dir"].exists())
 
-    def test_chatgpt_edit_mode_sets_writable_root_and_instructs_model(self):
+    def test_chatgpt_edit_mode_applies_structured_plan_inside_vault(self):
         import tempfile
 
         seen = {}
@@ -2359,13 +2363,21 @@ class ChatGptAccountTierTests(unittest.TestCase):
 
         class FakeProc:
             returncode = 0
-            stdout = "edited"
+            stdout = json.dumps({
+                "reply": "Marked complete.",
+                "operations": [{
+                    "action": "write", "path": "notes/today.md",
+                    "content": "status: complete\n", "destination": "",
+                }],
+            })
             stderr = ""
 
         def fake_run(cmd, **kwargs):
             seen["cmd"] = cmd
             seen["input"] = kwargs.get("input")
             seen["cwd"] = kwargs.get("cwd")
+            seen["schema"] = Path(cmd[cmd.index("--output-schema") + 1])
+            self.assertTrue(seen["schema"].is_file())
             return FakeProc()
 
         with tempfile.TemporaryDirectory() as cwd:
@@ -2373,21 +2385,42 @@ class ChatGptAccountTierTests(unittest.TestCase):
             router.subprocess.run = fake_run
             router.CODEX_CLI_CWD = cwd
             try:
-                router.chat(
+                result = router.chat(
                     [{"role": "user", "content": "Update notes/today.md"}],
                     tier="chatgpt",
                     allow_write=True,
                 )
+                seen["written"] = (Path(cwd) / "notes" / "today.md").read_text()
             finally:
                 router._codex_cli_path = original_path
                 router.subprocess.run = original_run
                 router.CODEX_CLI_CWD = original_cwd
 
         cmd = seen["cmd"]
-        self.assertEqual(cmd[cmd.index("--sandbox") + 1], "workspace-write")
+        self.assertEqual(cmd[cmd.index("--sandbox") + 1], "read-only")
+        self.assertEqual(cmd[cmd.index("--ask-for-approval") + 1], "never")
+        self.assertLess(cmd.index("--ask-for-approval"), cmd.index("exec"))
         self.assertEqual(cmd[cmd.index("-C") + 1], seen["cwd"])
         self.assertIn("Regalia Edit mode is ON", seen["input"])
-        self.assertIn("Carry out requested edits", seen["input"])
+        self.assertIn("Regalia validates and applies", seen["input"])
+        self.assertEqual(result["reply"], "Marked complete.")
+        self.assertEqual(seen["written"], "status: complete\n")
+        self.assertFalse(seen["schema"].exists())
+
+    def test_chatgpt_edit_plan_cannot_escape_vault(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as cwd:
+            plan = json.dumps({
+                "reply": "bad", "operations": [{
+                    "action": "write", "path": "../outside.md",
+                    "content": "no", "destination": "",
+                }],
+            })
+            with self.assertRaises(router.RouterError) as raised:
+                router.apply_codex_edit_plan(plan, cwd)
+            self.assertEqual(raised.exception.status, 403)
+            self.assertFalse((Path(cwd).parent / "outside.md").exists())
 
     def test_health_rejects_api_key_login_and_marks_tier_unavailable(self):
         import tempfile
@@ -3354,7 +3387,7 @@ class ChatStreamPresentationTests(unittest.TestCase):
         with dashboard_app._CHAT_STREAMS_LOCK:
             return dashboard_app._CHAT_STREAMS.pop(run_id)
 
-    def _run_chatgpt(self, stream, model="gpt-5.6-sol"):
+    def _run_chatgpt(self, stream, model="gpt-5.6-sol", edit=False):
         original = router.codex_chat_stream
         router.codex_chat_stream = lambda *a, **k: iter(stream)
         run_id = "smoke-chatgpt-stream"
@@ -3366,7 +3399,7 @@ class ChatStreamPresentationTests(unittest.TestCase):
         try:
             dashboard_app._chat_stream_worker(
                 run_id, [{"role": "user", "content": "hi"}],
-                None, model, [], False, "chatgpt",
+                None, model, [], edit, "chatgpt",
             )
         finally:
             router.codex_chat_stream = original
@@ -3501,6 +3534,70 @@ class ChatStreamPresentationTests(unittest.TestCase):
         self.assertEqual(run["status"], "error")
         self.assertIn("limit reached", run["error"])
 
+    def test_chatgpt_stream_applies_structured_edits_and_reports_activity(self):
+        response = json.dumps({"reply": "Marked complete.", "operations": []})
+        stream = [{"type": "item.completed", "item": {
+            "type": "agent_message", "text": response,
+        }}]
+        applied = [{"action": "write", "path": "notes/handoff.md"}]
+        with mock.patch.object(
+                router, "apply_codex_edit_plan",
+                return_value=("Marked complete.", applied)) as apply_plan:
+            run = self._run_chatgpt(stream, edit=True)
+
+        apply_plan.assert_called_once_with(response)
+        self.assertEqual(run["reply"], "Marked complete.")
+        self.assertIn({"type": "tool", "tool": "Files",
+                       "input": {"path": "notes/handoff.md"}}, run["steps"])
+        self.assertIn({"type": "tool_result", "tool": "Files", "ok": True,
+                       "output": "write applied"}, run["steps"])
+
+    def test_plain_completion_tier_uses_shared_rich_stream_shell(self):
+        run_id = "smoke-openai-stream"
+        with dashboard_app._CHAT_STREAMS_LOCK:
+            dashboard_app._CHAT_STREAMS[run_id] = {
+                "id": run_id, "status": "running", "steps": [],
+                "reply": "", "model": "", "error": None, "started": "now",
+            }
+
+        def fake_turn(*args, **kwargs):
+            kwargs["emit"]({"type": "tool", "tool": "read_note",
+                            "input": {"path": "notes/today.md", "content": "private"}})
+            kwargs["emit"]({"type": "tool_result", "tool": "read_note",
+                            "ok": True, "output": "found"})
+            return {"reply": "Finished.", "model": "gpt-api-test", "tier": "openai"}
+
+        with mock.patch.object(dashboard_app, "_run_chat_turn", side_effect=fake_turn):
+            dashboard_app._chat_stream_worker(
+                run_id, [{"role": "user", "content": "hi"}],
+                None, None, [], False, "openai",
+            )
+        with dashboard_app._CHAT_STREAMS_LOCK:
+            run = dashboard_app._CHAT_STREAMS.pop(run_id)
+
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(run["reply"], "Finished.")
+        self.assertEqual(run["model"], "gpt-api-test")
+        self.assertEqual(run["steps"][0]["type"], "status")
+        self.assertEqual(run["steps"][1]["input"], {"path": "notes/today.md"})
+        self.assertEqual(run["steps"][-1], {"type": "text", "text": "Finished."})
+
+    def test_live_stream_endpoint_accepts_every_chat_tier(self):
+        run_ids = []
+        client = dashboard_app.app.test_client()
+        with mock.patch.object(dashboard_app.threading, "Thread") as thread:
+            for tier in router.TIERS:
+                response = client.post("/api/chat/stream", json={
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "tier": tier,
+                })
+                self.assertEqual(response.status_code, 200, tier)
+                run_ids.append(response.get_json()["run_id"])
+            self.assertEqual(thread.call_count, len(router.TIERS))
+        with dashboard_app._CHAT_STREAMS_LOCK:
+            for run_id in run_ids:
+                dashboard_app._CHAT_STREAMS.pop(run_id, None)
+
     def test_chatgpt_stream_stages_attachments_for_one_invocation(self):
         import tempfile
 
@@ -3510,6 +3607,7 @@ class ChatStreamPresentationTests(unittest.TestCase):
             captured["prompt"] = prompt
             captured.update(kwargs)
             captured["exists_during"] = Path(kwargs["extra_dirs"][0]).is_dir()
+            captured["schema_during"] = Path(kwargs["output_schema"]).is_file()
             yield {"type": "turn.completed"}
 
         with tempfile.TemporaryDirectory() as source_dir:
@@ -3527,9 +3625,12 @@ class ChatStreamPresentationTests(unittest.TestCase):
         staged_dir = Path(captured["extra_dirs"][0])
         self.assertEqual(events, [{"type": "turn.completed"}])
         self.assertTrue(captured["exists_during"])
+        self.assertTrue(captured["schema_during"])
         self.assertFalse(staged_dir.exists())
+        self.assertFalse(Path(captured["output_schema"]).exists())
         self.assertIn(str(staged_dir), captured["prompt"])
-        self.assertTrue(captured["allow_write"])
+        self.assertFalse(captured["allow_write"])
+        self.assertIn("Regalia validates and applies", captured["prompt"])
 
 
 if __name__ == "__main__":
