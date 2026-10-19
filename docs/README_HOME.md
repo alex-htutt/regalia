@@ -16,7 +16,7 @@ The vault is a single home for all work: active projects and self-directed resea
 - `research/` — self-directed learning (RAG pipelines, ML, etc.). One subfolder per subject; add `_context_<subject>.md` when a topic gets dense.
 - `archive/courses/` — finished RPI courses (engr2350, ecse2610, focs, phys, writ). Reference-only.
 - `meetings/`, `ideas/`, `attachments/` — cross-cutting.
-- *(local-only, gitignored)* `Internship-Projects/`, `schoolwork/`, and similar private areas — one subfolder per project, each with its own `_context_<project>.md`.
+- *(local-only, gitignored)* `internship-projects/`, `schoolwork/`, and similar private areas — one subfolder per project, each with its own `_context_<project>.md`.
 - `templates/` — note templates (point Obsidian's Templates/Templater plugin here).
 - `.cursor/rules/` — Cursor `.mdc` rules. `global.mdc` always applies; `internship.mdc` and `projects.mdc` scope by path; `archive-*.mdc` are inactive references.
 - `.cursorignore` — keeps `.obsidian/`, `attachments/`, `templates/`, and view files (`*.base`, `*.canvas`) out of Cursor's index.

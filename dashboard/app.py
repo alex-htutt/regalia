@@ -9,6 +9,8 @@ import mimetypes
 import os
 import posixpath
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -24,6 +26,7 @@ import yaml
 from flask import Flask, jsonify, render_template, request, send_file
 
 import agent
+import autostart
 import chats
 import config
 import dispatch_engine
@@ -34,7 +37,9 @@ import news_sources
 import opportunities
 import paths
 import router
+import todos
 import updater
+import voice
 
 app = Flask(__name__)
 
@@ -251,9 +256,129 @@ def api_update_apply():
     return jsonify({**result, "update": updater.snapshot()}), status
 
 
+@app.route("/api/system/launch", methods=["GET", "POST"])
+def api_system_launch():
+    """Open-at-sign-in + desktop shortcut state (Windows). The shortcut files are
+    the source of truth — see autostart.py. POST {login?: bool, desktop?: bool}."""
+    if request.method == "POST":
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Payload must be an object."}), 400
+        try:
+            for kind in ("login", "desktop"):
+                if kind in data:
+                    autostart.set_shortcut(kind, bool(data[kind]))
+        except autostart.LaunchError as e:
+            return jsonify({"error": str(e)}), 400
+    return jsonify(autostart.state())
+
+
+@app.route("/api/voice/status")
+def api_voice_status():
+    """Which speech-to-text engine a clip would use (never loads the model)."""
+    return jsonify(voice.status())
+
+
+@app.route("/api/voice/warm", methods=["POST"])
+def api_voice_warm():
+    """Load the local Whisper model now (the launch loading screen calls this) so
+    the first spoken command doesn't pay the model load. No-op for the OpenAI
+    engine or when no engine is available — warming is never an error."""
+    st = voice.status()
+    if st["engine"] == "local":
+        try:
+            voice.warm()
+        except Exception as e:  # first-run download offline, corrupt cache, …
+            return jsonify({**st, "warm": False, "error": f"Couldn't load the voice model: {e}"})
+    return jsonify({**st, "warm": st["ready"]})
+
+
+@app.route("/api/voice/transcribe", methods=["POST"])
+def api_voice_transcribe():
+    """Raw audio body (the browser's MediaRecorder blob) → transcript.
+
+    `?wake=1` (hands-free mode) also reports whether the clip opened with the
+    wake word and what was said after it, so the page can drop everything else.
+    Audio is transcribed in memory and never written to disk or logged.
+    """
+    if (request.content_length or 0) > voice.MAX_AUDIO_BYTES:
+        return jsonify({"error": "That clip is too long."}), 413
+    try:
+        result = voice.transcribe(request.get_data(cache=False),
+                                  request.mimetype or "audio/webm")
+    except voice.VoiceError as e:
+        return jsonify({"error": e.message}), e.status
+    if request.args.get("wake") == "1":
+        result["wake"], result["command"] = voice.wake_split(result["text"])
+    return jsonify(result)
+
+
 @app.route("/api/tasks")
 def api_tasks():
     return jsonify(load_tasks())
+
+
+def _set_frontmatter_status(content: str, status: str) -> str:
+    """Rewrite the `status:` line in a note's frontmatter, leaving everything
+    else — key order, comments, the body — untouched. Round-tripping through
+    yaml.safe_load + dump would reformat the whole block for a one-line change,
+    so this edits the raw text instead.
+
+    The caller reads and writes with newline="" so the note's own line endings
+    survive the round trip; the patterns below therefore stop at CR as well as
+    LF, and a newly appended line reuses whatever ending the note already uses.
+    Otherwise a CRLF note would come back with one stray LF in it."""
+    end = content.find("---", 3)
+    fm_text = content[3:end]
+    nl = "\r\n" if "\r\n" in content else "\n"
+    if re.search(r"(?m)^status:[^\r\n]*", fm_text):
+        fm_text = re.sub(r"(?m)^status:[^\r\n]*", f"status: {status}", fm_text, count=1)
+    else:
+        fm_text = fm_text.rstrip("\r\n") + f"{nl}status: {status}{nl}"
+    return "---" + fm_text + content[end:]
+
+
+@app.route("/api/tasks/complete", methods=["POST"])
+def api_tasks_complete():
+    """Toggle a task note's frontmatter status between 'active' and 'complete'.
+
+    Powers the "mark as finished" checkbox on the Overview list and the
+    Calendar bars — both render straight from /api/tasks, so writing the
+    status back into the note itself is the only way a checkmark there can
+    stick. Same path resolution + note-eligibility rules as load_tasks(), so
+    this can only touch a file the task list already surfaced."""
+    data = request.get_json(silent=True) or {}
+    rel_text = str(data.get("file") or "").replace("\\", "/").strip("/")
+    if not rel_text:
+        return jsonify({"error": "file path required"}), 400
+    root = VAULT_ROOT.resolve()
+    target = (root / rel_text).resolve()
+    if target != root and root not in target.parents:
+        return jsonify({"error": "path outside vault"}), 400
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        return jsonify({"error": "path outside vault"}), 400
+    name = target.name.lower()
+    if (target.suffix.lower() != ".md" or any(part in IGNORE_DIRS for part in rel.parts)
+            or target.name in IGNORE_FILES or name.startswith("_context_") or name.startswith("readme")):
+        return jsonify({"error": "not a task note"}), 400
+    if not target.is_file():
+        return jsonify({"error": "file not found"}), 404
+    try:
+        # newline="" on both sides keeps the note's own line endings: the
+        # default text mode would translate them on read and again on write,
+        # rewriting every line of the file for a one-line change.
+        # (Path.read_text gained newline= only in 3.13; CI builds on 3.12.)
+        with target.open(encoding="utf-8", newline="") as fh:
+            content = fh.read()
+    except OSError as e:
+        return jsonify({"error": f"couldn't read the note: {e}"}), 500
+    if not content.startswith("---") or content.find("---", 3) == -1:
+        return jsonify({"error": "note has no frontmatter"}), 400
+    status = "complete" if data.get("done") else "active"
+    target.write_text(_set_frontmatter_status(content, status), encoding="utf-8", newline="")
+    return jsonify({"file": rel.as_posix(), "status": status})
 
 
 def _excerpt(body: str, limit: int = 120) -> str:
@@ -370,6 +495,55 @@ def api_browse_upload():
 
     saved_rel = dest.relative_to(root).as_posix()
     return jsonify({"path": saved_rel, "name": dest.name, "folder": dest_rel.as_posix() if dest_rel.parts else "", "size": size})
+
+
+@app.route("/api/browse/move", methods=["POST"])
+def api_browse_move():
+    """Move one visible file to an existing vault folder without overwriting."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("path"), str) or not isinstance(data.get("folder"), str):
+        return jsonify({"error": "Provide a file path and destination folder."}), 400
+    root = VAULT_ROOT.resolve()
+    paths_to_move = []
+    for raw in (data["path"], data["folder"]):
+        rel = Path(raw.replace("\\", "/"))
+        if rel.is_absolute() or rel.drive or ".." in rel.parts or any(":" in part for part in rel.parts):
+            return jsonify({"error": "Invalid vault path."}), 400
+        candidate = root / rel
+        if any(p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
+               for p in (candidate, *candidate.parents) if p != root and root in p.parents):
+            return jsonify({"error": "Can't move through linked paths."}), 400
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError, RuntimeError):
+            return jsonify({"error": "Invalid vault path."}), 400
+        paths_to_move.append(resolved)
+    source, folder = paths_to_move
+    if not _browser_rel_allowed(source.relative_to(root)) or not _browser_rel_allowed(folder.relative_to(root) / "_"):
+        return jsonify({"error": "Can't move files in that location."}), 400
+    if source == root / "Home.md":
+        return jsonify({"error": "The Home note must stay at the vault root."}), 400
+    if not source.is_file() or not folder.is_dir():
+        return jsonify({"error": "File or destination folder not found."}), 404
+    destination = folder / source.name
+    if destination == source:
+        return jsonify({"error": "File is already in that folder."}), 409
+    try:
+        # Creating a hard link reserves the destination atomically: unlike
+        # POSIX rename, it never replaces a file created by another writer.
+        os.link(source, destination)
+        try:
+            source.unlink()
+        except OSError:
+            destination.unlink()
+            raise
+    except FileExistsError:
+        return jsonify({"error": "A file with that name already exists in that folder."}), 409
+    except OSError:
+        return jsonify({"error": "Couldn't move the file. Check folder permissions and filesystem support."}), 400
+    return jsonify({"path": destination.relative_to(root).as_posix(), "name": source.name,
+                    "folder": folder.relative_to(root).as_posix() if folder != root else ""})
 
 
 def _browser_preview_kind(path: Path) -> str:
@@ -620,6 +794,50 @@ def api_vault_preview():
     return response
 
 
+def _launch_default_app(target: Path) -> None:
+    """Hand a path to the OS launcher. No shell — the handler is chosen by the
+    desktop environment, never by a command string we build."""
+    if sys.platform == "win32":
+        os.startfile(str(target))  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(target)])
+    else:
+        subprocess.Popen(["xdg-open", str(target)])
+
+
+@app.route("/api/vault-open", methods=["POST"])
+def api_vault_open():
+    """Hand a vault file (or folder) to this machine's default application.
+
+    Powers double-click in Browse. Same resolution + traversal + browser-filter
+    guards as /api/vault-preview, so only paths the map already exposes can be
+    opened; the launch itself is fire-and-forget (the OS picks the handler, we
+    never build a shell command from the path). Local, single-user trust model —
+    same as /api/pick-folder."""
+    root = VAULT_ROOT.resolve()
+    data = request.get_json(silent=True) or {}
+    rel_text = (data.get("path") or "").replace("\\", "/").strip("/")
+    if not rel_text:
+        return jsonify({"error": "file path required"}), 400
+    target = (root / rel_text).resolve()
+    if target != root and root not in target.parents:
+        return jsonify({"error": "path outside vault"}), 400
+    if not target.exists():
+        return jsonify({"error": "file not found"}), 404
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        return jsonify({"error": "path outside vault"}), 400
+    if not _browser_rel_allowed(rel) and rel.as_posix().lower() != "home.md":
+        return jsonify({"error": "file is excluded from browser"}), 404
+
+    try:
+        _launch_default_app(target)
+    except OSError as e:
+        return jsonify({"error": f"Could not open that file: {e}"}), 500
+    return jsonify({"opened": rel.as_posix()})
+
+
 def _rel_time(epoch: float) -> str:
     """Human 'time since' for a file mtime — coarse, no external deps."""
     delta = max(0.0, time.time() - epoch)
@@ -765,7 +983,12 @@ def _vault_revision() -> dict:
 
 @app.route("/api/vault-revision")
 def api_vault_revision():
-    return jsonify(_vault_revision())
+    # The to-do store rides along on the same poll rather than getting a second
+    # one: chat and agents append to it out of band, so the To-do view has to
+    # notice writes it didn't make. todos.revision() is a single stat (no read,
+    # no parse) and sits outside the cached vault walk, which stays purely about
+    # the vault so a to-do write can never invalidate the expensive scan.
+    return jsonify(dict(_vault_revision(), todos=todos.revision()))
 
 
 def _price_for(model: str) -> tuple[float, float, float, float] | None:
@@ -1474,7 +1697,7 @@ def api_news():
 
 # Areas are the vault's real top-level folders — discovered, not hardcoded.
 # One legacy short name survives so old agent prompts/API callers keep working.
-AREA_ALIASES = {"internship": "Internship-Projects"}
+AREA_ALIASES = {"internship": "internship-projects"}
 # Folder-name → area-tag continuity: existing notes tag area/internship, not
 # area/internship-projects, so new projects under that folder must match.
 AREA_TAG_OVERRIDES = {"internship-projects": "internship"}
@@ -1491,11 +1714,12 @@ def _area_tag(folder: str) -> str:
 def _safe_area(area: str) -> str:
     """Validate an area name and canonicalize it to a real top-level folder.
 
-    Accepts any sane folder name (created on demand); reuses an existing
+    New area names are lowercase. Accepts any sane folder name (created on
+    demand); reuses an existing
     top-level folder case-insensitively so `projects` and `Projects` never
     end up side by side on a case-sensitive filesystem. Raises ValueError
     on anything empty, ignored, or path-shaped."""
-    area = str(area or "").strip()
+    area = str(area or "").strip().lower()
     area = AREA_ALIASES.get(area.lower(), area)
     if not _AREA_NAME_RE.match(area):
         raise ValueError(
@@ -1558,7 +1782,10 @@ def _add_home_link(rel_context: str, name: str, topic: str) -> bool:
                 j += 1
             lines.insert(j, bullet)
             try:
-                home.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                # newline="" — splitlines() already dropped the original
+                # endings, so text mode would rewrite all of Home.md just to
+                # insert one bullet.
+                home.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
             except OSError:
                 return False
             return True
@@ -1595,7 +1822,7 @@ def create_project_core(name: str, area: str, topic: str = "", deadline: str = "
             (target / sub).mkdir(parents=True, exist_ok=True)
         context_name = f"_context_{slug}.md"
         (target / context_name).write_text(
-            _context_md(name, _area_tag(area), topic, deadline), encoding="utf-8"
+            _context_md(name, _area_tag(area), topic, deadline), encoding="utf-8", newline=""
         )
     except OSError as e:
         raise ValueError(f"Couldn't create the project: {e}")
@@ -1646,6 +1873,7 @@ def _scaffold_external_context(name: str) -> tuple[str, bool]:
     context.write_text(
         _context_md(name, "external", "Connected external workspace", ""),
         encoding="utf-8",
+        newline="",
     )
     return rel, True
 
@@ -3200,6 +3428,63 @@ def api_chat_one(cid: str):
     return jsonify(chats.save_chat(data))
 
 
+# ── To-do list ───────────────────────────────────────────────────────────────
+# Thin CRUD over todos.py. Deliberately separate from /api/tasks: that one is
+# *derived* from vault frontmatter and is read-only, while this list is things
+# the user or the chat put on it by hand. Validation lives entirely in the store
+# so the chat tools in agent.py can't take a shortcut around it.
+
+@app.errorhandler(todos.TodoStoreError)
+def _todo_store_error(e: todos.TodoStoreError):
+    return jsonify({"error": e.message}), e.status
+
+
+@app.route("/api/todos", methods=["GET", "POST"])
+def api_todos():
+    """List every to-do (GET) or add one (POST)."""
+    if request.method == "POST":
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "To-do payload must be an object."}), 400
+        return jsonify(todos.add_todo(
+            title=data.get("title", ""),
+            due=data.get("due", ""),
+            note=data.get("note", ""),
+            source="manual",
+        ))
+    # The fingerprint is read *before* the list on purpose. If a write lands
+    # between the two, the client adopts a revision older than the data it got,
+    # so the next poll sees movement and refetches — the safe direction. Reading
+    # it after would hand back a revision newer than the list and lose the edit.
+    rev = todos.revision()
+    return jsonify({"rev": rev, "todos": todos.list_todos()})
+
+
+@app.route("/api/todos/<tid>", methods=["PATCH", "DELETE"])
+def api_todo_one(tid: str):
+    """Update one to-do's fields, or remove it."""
+    if request.method == "DELETE":
+        return jsonify({"deleted": todos.delete_todo(tid)})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "To-do payload must be an object."}), 400
+    fields = {k: data[k] for k in ("title", "due", "note", "done") if k in data}
+    if not fields:
+        return jsonify({"error": "Nothing to update."}), 400
+    return jsonify(todos.update_todo(tid, **fields))
+
+
+@app.route("/api/todos/clear-done", methods=["POST"])
+def api_todos_clear_done():
+    """Drop every completed item at once."""
+    return jsonify({"removed": todos.clear_done()})
+
+
 if __name__ == "__main__":
     print(f"Dashboard running at http://localhost:5000  (vault: {VAULT_ROOT})")
-    app.run(debug=True, port=5000)
+    # threaded=True: the UI polls several endpoints concurrently (chat stream
+    # status, vault-revision sync, per-view data loads) — a single-threaded dev
+    # server serializes them, so a slow request (a vault walk, an inbox/news
+    # fetch) blocks the chat poll and makes generation look stalled or dead.
+    # desktop.py already carries this fix for the pywebview path.
+    app.run(debug=True, port=5000, threaded=True)

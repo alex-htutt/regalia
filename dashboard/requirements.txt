@@ -21,3 +21,9 @@ google-auth>=2.30.0
 # imported by mail_mcp.py — a subprocess the Claude CLI spawns — never by the app.
 # FastMCP's v1 import path is used here; MCP v2 is a breaking API migration.
 mcp>=1.27,<2
+
+# Voice agent (voice.py) — local, offline speech-to-text on the CPU. Lazily
+# imported: without it, voice falls back to the OpenAI transcription API when a
+# key is set, and the rest of the app is unaffected. Downloads the Whisper model
+# (base.en, ~145 MB) on first use.
+faster-whisper>=1.1

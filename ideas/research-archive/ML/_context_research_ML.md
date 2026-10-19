@@ -28,4 +28,4 @@ Self-directed study on machine learning. Mirrors the RAG-pipelines structure: le
 - TBD
 
 ---
-↑ [[research/_context_research|Research]]
+↑ [[ideas/research-archive/_context_research-archive|Research Archive]]

@@ -3,6 +3,19 @@
 
 **Theme:** dark
 
+> **Regalia diverges from this reference (flat restyle, Oct 2026).** The palette,
+> the single amber accent and the accent economy below still hold. These do not:
+>
+> | Here | Regalia |
+> |---|---|
+> | Radii 8 / 20 / 99px | One token, `--r: 0px`. Square everything; only status dots stay round |
+> | Aeonik for nav, buttons, labels | Mono (`--font-mono`) uppercase chrome at `0.1em` tracking; Inter for reading text only |
+> | Light Aeonik display headlines | `--font-display` (Barlow Condensed 200–300) for view titles and stat numbers |
+> | Separate feature cards, pill buttons | Hairline grids and rows that share edges; segmented (butted) filter controls |
+> | Small line icons | No icons or emoji in chrome; numbered nav (`01`–`09`) |
+>
+> `UI_STANDARDS.md` §5 and §5.1 are authoritative where they disagree with this file.
+
 Hyperstudio operates in a near-monochrome dark mode: an almost black canvas with a single warm amber accent that feels like a desk lamp left on in a design studio. Typography carries the entire visual weight — Aeonik at light, tightly tracked headlines, paired with a monospace-feeling secondary face (Input) for meta labels and technical annotations. Components are flat, ghosted, and borderless on the canvas; surface differentiation comes from slightly lighter grays rather than shadows or fills. The layout is generous, centered, and gallery-like, letting the typographic hierarchy and small functional punctuation (a green status dot, a warm tan accent, a thin white border on a CTA) do all the work. Color is rationed aggressively — this is a system that trusts restraint.
 
 ## Tokens — Colors

@@ -3,7 +3,8 @@
 **For:** any agent adding or changing UI in `dashboard/templates/index.html`.
 
 **Where it sits:** `CLAUDE.md` = architecture. `Assets/DESIGN.md` = the Hyperstudio
-visual language. **This file = the micro layer** — what to reuse instead of rolling
+visual language (palette and accent economy; this file's §5/§5.1 override its radii,
+type roles and components). **This file = the micro layer** — what to reuse instead of rolling
 your own. Before writing a component, search here, then search `index.html` for
 something that already does it.
 
@@ -47,7 +48,7 @@ free. A raw hex doesn't — and the light theme is where it surfaces as black-on
 | `--accent` / `--accent-fg` | **high-emphasis fills** — the white (dark) or near-black (light) button. *Not a chromatic color.* |
 | `--amber` / `--amber-fg` | the **sole chromatic accent**. `--amber` for fills/borders, `--amber-fg` for text |
 | `--red` / `--green` | overdue signal / status dot. Not decoration |
-| `--*-bg` / `--*-fg` pairs | tag chips only (`--blue-*`, `--green-*`, `--purple-*`, `--amber-*`, `--gray-*`) |
+| `--*-bg` / `--*-fg` pairs | legacy chip tints (`--blue-*`, `--green-*`, `--purple-*`, `--amber-*`, `--gray-*`). Task tags no longer use them (§2.2); don't add new uses |
 
 - **Accent economy is a constraint, not a preference.** A component that "needs" a
   second chromatic color usually needs hierarchy (weight, size, `--muted`) instead.
@@ -115,8 +116,8 @@ already does), and use `:focus-visible` on it since it's a button.
 | Inline status | `.np-msg` + `.ok`/`.err` | already `--green-fg`/`--red`; give it an id, set `textContent` |
 | Empty state | `.empty-sm` | `--faint`, 12.5px — every list has one |
 | Section label | `.activity-head` / `.proj-list-head` | uppercase, `--muted`, 11px |
-| Tag chip | `.tag` + `.a0`/`.a1`/`.a2`/`.course` | uses the `--*-bg`/`--*-fg` pairs |
-| Glass surface | `.glass` | see §5 |
+| Tag | `.tag` | plain mono text, `·`-separated; the `.a0`/`.a1`/`.a2`/`.course` classes carry no color |
+| Panel surface | `.glass` (flat alias) | see §5 |
 
 Field styling in `.np-form` / `.bento-card` / `.dispatch-form` / `.inbox-bar` is
 defined for `input, select, textarea, .acx-trigger` as a group — put your field in
@@ -224,22 +225,44 @@ enter/exit. Match them.
 
 ## 5. Surfaces and the background
 
-A fixed `.beams` SVG layer sits at `z-index: 0` behind the dashboard; overview
-surfaces are translucent so it reads through. Add `.glass`, or:
+**Flat, square, hairline.** No translucency, no drop shadows, no hover lift. Boxes
+are separated by 1px `--border` lines; hover changes a border or a background, never
+the position or a shadow. The `.beams` layer is hidden (`display: none`, kept so it can
+return as an Appearance option).
 
-```css
-background: var(--glass);
-backdrop-filter: var(--glass-blur);
--webkit-backdrop-filter: var(--glass-blur);
-border: 1px solid var(--glass-border);
-```
+- **Corners:** every `border-radius` is `var(--r)` (currently `0px`). Never a px
+  literal: 22 hand-picked radii had drifted in before the token existed. Circles
+  (status dots) stay `50%`.
+- **The `--glass*` tokens are flat aliases now** (`--glass` = `--bg`, `--glass-inset`
+  = `--surface`, `--glass-elev` = `--elevated`, `--glass-blur` = `none`). Existing
+  `.glass` / `var(--glass)` rules keep working; new UI should use the plain
+  surface tokens instead.
+- **Lists are rows on a rule, not stacked cards** (`.task-list`): one top border on
+  the list, a bottom border per row. Stat-style grids share edges (`#stats`: `gap: 0`
+  plus a `-1px` margin fold) rather than floating separate cards.
+- **Floating panels** (dropdown menus, the voice panel) are opaque and separated by
+  a `--border-hover` hairline, not a shadow.
 
-`--glass-inset` for a mini-card on glass, `--glass-elev` for its hover.
+## 5.1 Type and labels
 
-**Glass vs solid is a decision, not a default.** Chrome (header, sidebar) and dense
-working views are solid `--surface` so text stays crisp; ambient overview panels are
-glass. Copy whichever neighbour you sit next to. Anything that must fully occlude the
-beams (the landing stage) uses opaque `var(--bg)`.
+- `--font-sans` (Inter) for reading text: titles, bodies, chat replies.
+- `--font-mono` for chrome: nav, pills, section labels, tags, deadlines, role labels.
+  Uppercase chrome uses `letter-spacing: var(--label-track)` (0.1em).
+- `--font-display` (Barlow Condensed, weight 200–300) **only** for view `<h2>`s and
+  stat numerals. Never body text.
+- The view-header `<p>` renders as a `// ` mono meta line, so keep it to a fragment
+  (§7.1).
+- **No colour emoji anywhere in the UI** — markup, JS strings, `<option>` text. Use a
+  monochrome text glyph that takes `currentColor`, an inline stroke SVG
+  (the attach paperclip), or plain words. The nav uses a numbered `.nav-idx`
+  (`01`–`09`); folders read as `DIR` (tree), `▸`/`▾` (graph), or `name/` (scope
+  pickers); external roots as `↗ name`.
+- **Pick glyphs the fonts actually have.** A glyph missing from JetBrains Mono/Inter
+  falls back to Segoe UI Emoji on Windows and paints in colour even without an
+  emoji selector (`◈` did). `body { font-variant-emoji: text }` covers glyphs that
+  have both forms (`↗ ☰ ✓`), not ones the font lacks. The tier set is
+  `○ ◆ ◐ ✦ ▲ ● ◇ ✱` (fast, smart, gpt, gemini, vertex, chatgpt, google, claude);
+  the activity rail uses `$ ≡ ✎ ⌕ ☰ @ ✓ ! ›`. Reuse these before inventing more.
 
 ---
 

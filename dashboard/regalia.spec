@@ -12,18 +12,36 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
 HERE = Path(SPECPATH)  # noqa: F821 — provided by PyInstaller
+
+# Voice agent: voice.py imports faster-whisper lazily, so Analysis can't see it,
+# and its runtime needs files a plain import scan misses — CTranslate2's native
+# DLLs, the Silero VAD .onnx model under faster_whisper/assets, and onnxruntime's
+# binaries. collect_all pulls each package's modules, data, and binaries. Skipped
+# (voice falls back to the OpenAI API) when faster-whisper isn't installed.
+_voice_datas, _voice_binaries, _voice_hidden = [], [], []
+for _pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "tokenizers"):
+    try:
+        _d, _b, _h = collect_all(_pkg)
+    except Exception:
+        continue
+    _voice_datas += _d
+    _voice_binaries += _b
+    _voice_hidden += _h
 
 a = Analysis(
     ["desktop.py"],
     pathex=[str(HERE)],
+    binaries=_voice_binaries,
     datas=[
         ("templates", "templates"),
         ("static", "static"),
         ("Assets", "Assets"),
-    ],
-    hiddenimports=[
+    ] + _voice_datas,
+    hiddenimports=_voice_hidden + [
         # Imported lazily at runtime (inbox connect), so Analysis can't see them.
         "google_auth_oauthlib.flow",
         "msal",

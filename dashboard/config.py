@@ -86,6 +86,11 @@ DEFAULTS: dict = {
     "claude_cli_model": "",    # empty = plan default
     "claude_cli_timeout": "",  # seconds (stored as string; "" = default)
     "news_ttl": "",            # briefing cache seconds ("" = default)
+    # ── voice agent ──
+    "voice_wake": False,       # hands-free: listen for "Regalia, …" while the window is open
+    "voice_speak": True,       # read replies aloud (browser speechSynthesis)
+    "voice_edit": False,       # let spoken requests change vault notes (chat Edit mode)
+    "whisper_model": "",       # faster-whisper model ("" = base.en)
     "personalization": copy.deepcopy(DEFAULT_PERSONALIZATION),  # overview briefing profile
     # ── email OAuth client (app identity, not per-user tokens) ──
     "ms_oauth_client_id": "",     # Azure public-client app id (not a secret)
@@ -107,7 +112,8 @@ _VALID_TIERS = ("fast", "smart", "openai", "gemini", "vertex", "chatgpt", "googl
 
 # Store keys that are plain booleans (coerced from any truthy value, never
 # string-stripped like the rest).
-_BOOL_KEYS = ("landing_enabled", "autoupdate", "onboarded")
+_BOOL_KEYS = ("landing_enabled", "autoupdate", "onboarded",
+              "voice_wake", "voice_speak", "voice_edit")
 
 # Store keys that must parse as a positive integer when non-empty.
 _INT_KEYS = ("codex_cli_timeout", "claude_cli_timeout", "gemini_cli_timeout", "news_ttl")

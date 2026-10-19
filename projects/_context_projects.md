@@ -10,6 +10,7 @@ Personal / side projects outside of internship work. Some of these will be tied 
 
 ## Projects
 - [[packet-loss-monitor/_context_packet-loss-monitor]] — CLI script that pings a host on a loop and reports packet loss over time
+- [[leetcode-prep/_context_leetcode-prep]] — dual-language (C++/Python) LeetCode practice harness; one tests.json judges both
 
 ---
 ↑ [[Home]]

@@ -38,4 +38,4 @@ Self-directed study on retrieval-augmented generation. Primary resource: `resour
 - Self-paced; aim for ~1 chapter + build per day
 
 ---
-↑ [[research/_context_research|Research]]
+↑ [[ideas/research-archive/_context_research-archive|Research Archive]]

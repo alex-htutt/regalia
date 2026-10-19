@@ -35,6 +35,11 @@ build/
 Thumbs.db
 Desktop.ini
 
+# --- Syncthing (per-machine sync markers, ignore rules, and file versions) ---
+.stfolder/
+.stignore
+.stversions/
+
 # --- Logs ---
 *.log
 
@@ -43,6 +48,9 @@ dashboard/.chat_attachments/
 
 # --- Chat transcripts (multi-chat store; personal, never committed) ---
 dashboard/.chats/
+
+# --- To-do list (personal task store; never committed) ---
+dashboard/.todos.json
 
 # Agent dispatch database + isolated/staged worker folders (personal, never committed)
 dashboard/.dispatches.sqlite3*
@@ -62,19 +70,22 @@ dashboard/tools/*.exe
 
 # --- Private content: only the skeleton (dashboard + vault framework) is pushed ---
 # Classes, internships, personal projects, persona files, and the resume stay local only.
-Internship-Projects/
+internship-projects/
 schoolwork/
-Roblox_Dev/
-My_Evil_Twin/
-Resume/
+research/
+roblox_dev/
+my_evil_twin/
+resume/
 archive/courses/
 
 # --- Vendored third-party reading material (own license; fetch upstream instead) ---
-research/RAG-pipelines/resources/ai-system-design-guide-main/
+ideas/research-archive/RAG-pipelines/resources/ai-system-design-guide-main/
 
 # --- Regalia settings store (may hold API keys; per-machine) ---
 dashboard/.config.json
 dashboard/.external.json
+# launch-shortcut icon generated from Assets/Regalia_Icon.png (autostart.py)
+dashboard/.regalia.ico
 
 # --- PyInstaller build outputs (regalia.spec stays tracked) ---
 dashboard/build/
@@ -88,8 +99,8 @@ dashboard/Regalia-macos-arm64.zip
 # parts lives in founders-edition/ (tracked). These in-place originals stay on
 # disk so the creator's own Cursor/Claude setup keeps working, but never ship.
 /projects/CLAUDE.md
-/research/CLAUDE.md
-/research/claude-cursor-rules-levels.md
+/ideas/research-archive/CLAUDE.md
+/ideas/research-archive/claude-cursor-rules-levels.md
 /.cursor/rules/internship.mdc
 /.cursor/rules/projects.mdc
 /.cursor/rules/research.mdc

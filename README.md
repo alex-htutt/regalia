@@ -42,7 +42,7 @@ python app.py          # → http://localhost:5000
 # or: python desktop.py  → native desktop window
 ```
 
-From source, the dashboard indexes the vault it lives inside (the repo root) unless `REGALIA_VAULT` or the Settings vault field says otherwise. Point Obsidian at the same folder to edit the same notes, or just start dropping `.md` files with the frontmatter schema (see [USAGE.md](USAGE.md)).
+From source, the dashboard indexes the vault it lives inside (the repo root) unless `REGALIA_VAULT` or the Settings vault field says otherwise. Point Obsidian at the same folder to edit the same notes, or just start dropping `.md` files with the frontmatter schema (see [docs/USAGE.md](docs/USAGE.md)).
 
 ## Model tiers
 
@@ -79,7 +79,7 @@ Settings save to a local, gitignored store and apply to the next request — no 
 
 ## The vault
 
-The repo doubles as a working example of the vault conventions Regalia expects: per-folder `_context_*.md` status files, a small frontmatter schema, a `category/subcategory` tag taxonomy, and note templates. Start at [Home.md](Home.md); day-to-day usage is in [USAGE.md](USAGE.md); structure and conventions in [README_HOME.md](README_HOME.md). Private areas (internships, coursework) are gitignored — only the skeleton is public.
+The repo doubles as a working example of the vault conventions Regalia expects: per-folder `_context_*.md` status files, a small frontmatter schema, a `category/subcategory` tag taxonomy, and note templates. Start at [Home.md](Home.md); day-to-day usage is in [docs/USAGE.md](docs/USAGE.md); structure and conventions in [docs/README_HOME.md](docs/README_HOME.md). Private areas (internships, coursework) are gitignored — only the skeleton is public.
 
 ## Development
 

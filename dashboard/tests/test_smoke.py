@@ -70,7 +70,9 @@ class RouteSmokeTests(unittest.TestCase):
         for marker in ('id="vault-graph"', 'id="vault-tree"', 'id="vault-inspector"',
                        '/static/d3.v7.9.0.min.js', '/static/icon-anthropic.svg',
                        '/static/icon-openai.svg', "fetch('/api/vault-activity')",
-                       '.vault-graph-state[hidden]', 'vaultSetFolderExpanded', '📁'):
+                       '.vault-graph-state[hidden]', 'vaultSetFolderExpanded',
+                       # folder marker in the tree/graph (monochrome since the v2.0 restyle)
+                       "'DIR'"):
             self.assertIn(marker, body)
         for path in ("/static/d3.v7.9.0.min.js", "/static/icon-anthropic.svg", "/static/icon-openai.svg"):
             asset = self.client.get(path)
@@ -392,6 +394,146 @@ class BrowseUploadTests(unittest.TestCase):
             shutil.rmtree(folder, ignore_errors=True)
 
 
+class BrowseMoveTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        patch = mock.patch.object(dashboard_app, "VAULT_ROOT", self.root)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.client = dashboard_app.app.test_client()
+        (self.root / "from").mkdir()
+        (self.root / "to").mkdir()
+        (self.root / "from" / "note.md").write_bytes(b"---\nstatus: active\n---\n# Note\n")
+
+    def move(self, path="from/note.md", folder="to"):
+        return self.client.post("/api/browse/move", json={"path": path, "folder": folder})
+
+    def test_move_preserves_content_and_updates_inventory(self):
+        content = (self.root / "from/note.md").read_bytes()
+        before = dashboard_app._scan_vault_revision()
+        response = self.move()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["path"], "to/note.md")
+        self.assertFalse((self.root / "from/note.md").exists())
+        self.assertEqual((self.root / "to/note.md").read_bytes(), content)
+        self.assertNotEqual(before, dashboard_app._scan_vault_revision())
+        self.assertIn("to/note.md", [n["path"] for n in dashboard_app._vault_map()["nodes"]])
+        self.assertEqual(self.move("to/note.md", "").status_code, 200)
+        self.assertEqual((self.root / "note.md").read_bytes(), content)
+
+    def test_collision_and_same_folder_leave_source_intact(self):
+        (self.root / "to/note.md").write_bytes(b"existing")
+        self.assertEqual(self.move().status_code, 409)
+        self.assertEqual(self.move(folder="from").status_code, 409)
+        self.assertEqual((self.root / "to/note.md").read_bytes(), b"existing")
+        self.assertTrue((self.root / "from/note.md").exists())
+
+    def test_invalid_or_protected_paths(self):
+        (self.root / "dashboard").mkdir()
+        (self.root / ".hidden").mkdir()
+        (self.root / "Home.md").write_text("home")
+        for path, folder in [("../outside.md", "to"), ("from/note.md", "../outside"),
+                             ("from/note.md", str(self.root)), ("from/note.md", "dashboard"),
+                             ("from/note.md", ".hidden"), ("Home.md", "to"),
+                             ("from/note.md", "to:stream")]:
+            with self.subTest(path=path, folder=folder):
+                self.assertEqual(self.move(path, folder).status_code, 400)
+        for payload in [[], {}, {"path": 4, "folder": "to"}, {"path": "from/note.md", "folder": None}]:
+            self.assertEqual(self.client.post("/api/browse/move", json=payload).status_code, 400)
+        self.assertEqual(self.move(folder="missing").status_code, 404)
+        self.assertEqual(self.move(path="from").status_code, 404)
+
+    def test_failure_does_not_remove_source(self):
+        with mock.patch.object(dashboard_app.os, "link", side_effect=PermissionError):
+            self.assertEqual(self.move().status_code, 400)
+        self.assertTrue((self.root / "from/note.md").exists())
+        self.assertFalse((self.root / "to/note.md").exists())
+
+    def test_symlink_paths_rejected(self):
+        try:
+            (self.root / "alias").symlink_to(self.root / "to", target_is_directory=True)
+        except OSError:
+            self.skipTest("Symlinks unavailable")
+        self.assertEqual(self.move(folder="alias").status_code, 400)
+
+
+class TaskCompleteTests(unittest.TestCase):
+    """Marking a task finished from Overview/Calendar writes straight into the
+    note's frontmatter — /api/tasks stays a read-only derived view."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        patch = mock.patch.object(dashboard_app, "VAULT_ROOT", self.root)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.client = dashboard_app.app.test_client()
+        (self.root / "note.md").write_text(
+            "---\ndate: 2026-01-01\nstatus: active\ndeadline: 2026-02-01\n---\n# Note\n",
+            encoding="utf-8")
+        (self.root / "plain.md").write_text("# No frontmatter\n", encoding="utf-8")
+
+    def complete(self, file, done=True):
+        return self.client.post("/api/tasks/complete", json={"file": file, "done": done})
+
+    def test_marks_done_and_reopens(self):
+        r = self.complete("note.md", True)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["status"], "complete")
+        content = (self.root / "note.md").read_text(encoding="utf-8")
+        self.assertIn("status: complete", content)
+        self.assertIn("deadline: 2026-02-01", content)  # rest of frontmatter untouched
+        self.assertEqual(self.client.get("/api/tasks").get_json()[0]["status"], "complete")
+
+        r2 = self.complete("note.md", False)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.get_json()["status"], "active")
+        self.assertIn("status: active", (self.root / "note.md").read_text(encoding="utf-8"))
+
+    def test_preserves_line_endings(self):
+        """A one-line status change must not rewrite the rest of the file.
+
+        Asserted on bytes on purpose: read_text() normalises line endings, so
+        the assertIn checks above stay green even when text-mode writing has
+        flipped every \\n in the note to \\r\\n (or back)."""
+        for name, nl in (("lf.md", b"\n"), ("crlf.md", b"\r\n")):
+            with self.subTest(endings=name):
+                note = self.root / name
+                body = nl.join(
+                    [b"---", b"date: 2026-01-01", b"status: active",
+                     b"deadline: 2026-02-01", b"---", b"# Note", b"body", b""])
+                note.write_bytes(body)
+                self.assertEqual(self.complete(name, True).status_code, 200)
+                self.assertEqual(note.read_bytes(), body.replace(b"active", b"complete"))
+                self.assertEqual(self.complete(name, False).status_code, 200)
+                self.assertEqual(note.read_bytes(), body)  # full round trip, byte for byte
+
+    def test_appended_status_matches_the_notes_line_endings(self):
+        """Frontmatter with no status: line gets one appended — in the note's
+        own ending, not a hardcoded \\n that would leave a CRLF file mixed."""
+        note = self.root / "nostatus.md"
+        note.write_bytes(b"---\r\ndate: 2026-01-01\r\n---\r\n# Note\r\n")
+        self.assertEqual(self.complete("nostatus.md", True).status_code, 200)
+        after = note.read_bytes()
+        self.assertIn(b"status: complete\r\n", after)
+        self.assertNotIn(b"\n", after.replace(b"\r\n", b""))  # no stray bare LF
+
+    def test_rejects_notes_without_frontmatter(self):
+        self.assertEqual(self.complete("plain.md").status_code, 400)
+
+    def test_rejects_missing_and_traversal_paths(self):
+        self.assertEqual(self.complete("missing.md").status_code, 404)
+        self.assertEqual(self.complete("../outside.md").status_code, 400)
+        self.assertEqual(self.complete("..\\outside.md").status_code, 400)
+        self.assertEqual(self.complete("note.txt").status_code, 400)
+        self.assertEqual(self.complete("").status_code, 400)
+
+
 class VaultMapTests(unittest.TestCase):
     """The visual browser maps every relevant type without escaping the vault."""
 
@@ -469,6 +611,29 @@ class VaultMapTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/vault-preview?path=Projects/App/manual.pdf").status_code, 415)
         self.assertEqual(self.client.get("/api/vault-preview?path=../../outside.txt").status_code, 400)
         self.assertEqual(self.client.get("/api/vault-preview?path=.hidden/secret.txt").status_code, 404)
+
+    def test_open_hands_allowed_paths_to_the_os_and_refuses_the_rest(self):
+        # Double-clicking a file in Browse launches it with the default app. The
+        # endpoint reuses the browser's own path filter, so nothing the map hides
+        # (or anything outside the vault) can be launched.
+        launched = []
+        original = dashboard_app._launch_default_app
+        dashboard_app._launch_default_app = launched.append
+        try:
+            ok = self.client.post("/api/vault-open", json={"path": "Projects/App/manual.pdf"})
+            self.assertEqual(ok.status_code, 200)
+            self.assertEqual(ok.get_json()["opened"], "Projects/App/manual.pdf")
+            self.assertEqual(launched, [Path(self._tmp.name).resolve() / "Projects" / "App" / "manual.pdf"])
+            self.assertEqual(self.client.post("/api/vault-open", json={}).status_code, 400)
+            self.assertEqual(
+                self.client.post("/api/vault-open", json={"path": "../../outside.txt"}).status_code, 400)
+            self.assertEqual(
+                self.client.post("/api/vault-open", json={"path": ".hidden/secret.txt"}).status_code, 404)
+            self.assertEqual(
+                self.client.post("/api/vault-open", json={"path": "Notes/missing.md"}).status_code, 404)
+            self.assertEqual(len(launched), 1)
+        finally:
+            dashboard_app._launch_default_app = original
 
     def test_text_preview_is_bounded(self):
         big = Path(self._tmp.name) / "Projects" / "App" / "large.txt"
@@ -1964,14 +2129,33 @@ class UiConfigTests(unittest.TestCase):
         self.assertIn("const p = /^(\\d{4})-(\\d{2})-(\\d{2})/.exec(String(s || ''));", html)
         self.assertIn("return p ? calOrd(+p[1], +p[2] - 1, +p[3]) : null;", html)
 
-    def test_calendar_spans_creation_date_through_deadline(self):
-        # An assignment occupies every day from its `date:` to its `deadline:`,
-        # so open work shows on today's column rather than only on its due day.
-        # A missing/backwards `date:` collapses to a single day on the deadline.
+    def test_browse_double_click_opens_files_in_the_default_app(self):
+        # The tree is rebuilt on every selection, so a native dblclick listener
+        # would never fire there; both panes route clicks through vaultClickNode,
+        # which pairs them itself and only opens files.
         html = (Path(dashboard_app.__file__).parent / "templates" / "index.html").read_text(
             encoding="utf-8")
-        self.assertIn("const start = calParseOrd(t.date);", html)
-        self.assertIn("start: (start === null || start > end) ? end : start", html)
+        self.assertIn("function vaultClickNode(node, reveal = false)", html)
+        self.assertIn("if (isDouble) vaultOpenExternally(node);", html)
+        self.assertIn("if (!node || node.kind === 'folder' || !node.path) return;", html)
+        self.assertIn("fetch('/api/vault-open', {", html)
+        self.assertIn("vaultClickNode(d, true)", html)          # graph node
+        self.assertIn("vaultClickNode(node, true)", html)       # tree row
+
+    def test_calendar_spans_creation_date_through_deadline(self):
+        # An assignment occupies every day from its `date:` to its `deadline:`,
+        # so open work shows on today's column rather than only on its due day —
+        # but no further back than CAL_MAX_LEAD_DAYS, so a note assigned months
+        # ahead draws a two-week run into its deadline instead of an unbroken
+        # band across every month. Exams collapse to their deadline day, and so
+        # does a missing/backwards `date:`.
+        html = (Path(dashboard_app.__file__).parent / "templates" / "index.html").read_text(
+            encoding="utf-8")
+        self.assertIn("const CAL_MAX_LEAD_DAYS = 14;", html)
+        self.assertIn("const dated = isExam ? end : calParseOrd(t.date);", html)
+        self.assertIn(
+            "const start = (dated === null || dated > end) ? end "
+            ": Math.max(dated, end - CAL_MAX_LEAD_DAYS);", html)
         # repeat(0, ...) is invalid CSS and would drop the whole track list.
         self.assertIn("const tracks = rows ? `auto repeat(${rows}, auto)` : 'auto';", html)
 
@@ -3296,12 +3480,12 @@ class ProjectScaffoldTests(unittest.TestCase):
 
     def test_custom_area_created_with_slug_tag(self):
         res = dashboard_app.create_project_core("Thing", "My Stuff")
-        self.assertEqual(res["path"], "My Stuff/thing")
+        self.assertEqual(res["path"], "my stuff/thing")
         self.assertIn("area/my-stuff", self._context_text(res["context_file"]))
 
     def test_legacy_internship_alias(self):
         res = dashboard_app.create_project_core("Intern Work", "internship")
-        self.assertEqual(res["path"], "Internship-Projects/intern_work")
+        self.assertEqual(res["path"], "internship-projects/intern_work")
         # Tag continuity: existing notes tag area/internship, not the folder slug.
         self.assertIn("area/internship", self._context_text(res["context_file"]))
 
@@ -3336,7 +3520,7 @@ class ProjectScaffoldTests(unittest.TestCase):
     def test_browse_root_lists_new_area(self):
         dashboard_app.create_project_core("App", "Side Quests")
         names = [f["name"] for f in self.client.get("/api/browse").get_json()["folders"]]
-        self.assertIn("Side Quests", names)
+        self.assertIn("side quests", names)
 
 
 class ChatStreamPresentationTests(unittest.TestCase):
@@ -3631,6 +3815,217 @@ class ChatStreamPresentationTests(unittest.TestCase):
         self.assertIn(str(staged_dir), captured["prompt"])
         self.assertFalse(captured["allow_write"])
         self.assertIn("Regalia validates and applies", captured["prompt"])
+
+
+class TodoStoreTests(unittest.TestCase):
+    """The to-do list — the one thing in Regalia the user keeps by hand.
+
+    Unlike /api/tasks (derived from vault frontmatter, read-only), this store is
+    written by the UI *and* by the chat's add_todo tool, so validation has to
+    live in the store rather than in either caller.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        dashboard_app.app.config["TESTING"] = True
+        cls.client = dashboard_app.app.test_client()
+
+    def setUp(self):
+        import tempfile
+        import todos
+        self._todos = todos
+        self._orig = todos.TODOS_FILE
+        self._tmp = tempfile.TemporaryDirectory()
+        todos.TODOS_FILE = Path(self._tmp.name) / ".todos.json"
+
+    def tearDown(self):
+        self._todos.TODOS_FILE = self._orig
+        self._tmp.cleanup()
+
+    def test_missing_store_is_an_empty_list_not_an_error(self):
+        self.assertEqual(self._todos.list_todos(), [])
+        r = self.client.get("/api/todos")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["todos"], [])
+
+    def test_add_update_delete_round_trip(self):
+        created = self.client.post(
+            "/api/todos", json={"title": "  Email  the   advisor ", "due": "2026-09-10"})
+        self.assertEqual(created.status_code, 200)
+        item = created.get_json()
+        # Whitespace is squashed so a pasted or model-written title stays one line.
+        self.assertEqual(item["title"], "Email the advisor")
+        self.assertEqual(item["due"], "2026-09-10")
+        self.assertFalse(item["done"])
+        self.assertEqual(item["source"], "manual")
+
+        patched = self.client.patch(f"/api/todos/{item['id']}", json={"done": True})
+        self.assertTrue(patched.get_json()["done"])
+        self.assertTrue(self.client.delete(f"/api/todos/{item['id']}").get_json()["deleted"])
+        self.assertEqual(self._todos.list_todos(), [])
+
+    def test_invalid_titles_and_dates_are_refused(self):
+        self.assertEqual(self.client.post("/api/todos", json={"title": "   "}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/todos", json={"title": "x", "due": "2026-13-40"}).status_code, 400)
+        self.assertEqual(
+            self.client.post("/api/todos", json={"title": "x", "due": "next tuesday"}).status_code, 400)
+        self.assertEqual(self.client.post("/api/todos", json=[]).status_code, 400)
+
+    def test_a_bogus_id_is_refused_rather_than_matched(self):
+        # The id shape is strict so nothing path-like or wildcard-ish can be
+        # passed through from a model-supplied argument. A path-shaped id never
+        # even reaches the handler (Flask's <tid> matches one segment), so both
+        # a routing 404 and the store's own 400 are correct — what matters is
+        # that no bogus id is ever matched against a real item.
+        real = self._todos.add_todo("keep me")
+        for bad in ("../../etc/passwd", "t_short", "", "*", real["id"][:-1]):
+            with self.subTest(bad=bad):
+                r = self.client.patch(f"/api/todos/{bad}", json={"done": True})
+                self.assertIn(r.status_code, (400, 404))
+        self.assertFalse(self._todos.list_todos()[0]["done"])
+
+    def test_open_items_sort_before_done_and_soonest_due_first(self):
+        self._todos.add_todo("later", due="2026-12-01")
+        soon = self._todos.add_todo("soon", due="2026-09-05")
+        self._todos.add_todo("undated")
+        done = self._todos.add_todo("finished", due="2026-09-04")
+        self._todos.update_todo(done["id"], done=True)
+        self.assertEqual([t["title"] for t in self._todos.list_todos()],
+                         ["soon", "later", "undated", "finished"])
+        self.assertEqual(self._todos.list_todos()[0]["id"], soon["id"])
+
+    def test_clear_done_removes_only_completed_items(self):
+        keep = self._todos.add_todo("keep")
+        gone = self._todos.add_todo("gone")
+        self._todos.update_todo(gone["id"], done=True)
+        self.assertEqual(self.client.post("/api/todos/clear-done").get_json()["removed"], 1)
+        self.assertEqual([t["id"] for t in self._todos.list_todos()], [keep["id"]])
+
+    def test_the_list_is_capped(self):
+        self._todos._write_all([
+            {"id": f"t_{i:032x}", "title": str(i), "due": "", "note": "",
+             "done": False, "source": "manual", "created": 0, "updated": 0}
+            for i in range(self._todos.MAX_TODOS)
+        ])
+        self.assertEqual(self.client.post("/api/todos", json={"title": "one more"}).status_code, 400)
+
+    def test_revision_moves_on_a_write_and_only_on_a_write(self):
+        # This fingerprint is what makes a chat-added item appear in the open
+        # window; if it didn't move, the To-do view would silently go stale.
+        before = self._todos.revision()
+        self.assertEqual(before, self._todos.revision())
+        self._todos.add_todo("something")
+        self.assertNotEqual(before, self._todos.revision())
+        after = self._todos.revision()
+        self._todos.list_todos()
+        self.assertEqual(after, self._todos.revision())
+
+    def test_vault_revision_carries_the_todos_fingerprint(self):
+        d = self.client.get("/api/vault-revision").get_json()
+        self.assertIn("todos", d)
+        self.assertEqual(d["todos"], self._todos.revision())
+
+    def test_list_response_revision_is_never_newer_than_its_data(self):
+        # Read the fingerprint before the rows: a stale revision costs one extra
+        # refetch, a fresh one loses the write entirely.
+        self._todos.add_todo("first")
+        d = self.client.get("/api/todos").get_json()
+        self.assertEqual(d["rev"], self._todos.revision())
+        self.assertEqual(len(d["todos"]), 1)
+
+    def test_a_corrupt_store_reports_instead_of_returning_a_silent_empty_list(self):
+        self._todos.TODOS_FILE.write_text("{not json", encoding="utf-8")
+        self.assertEqual(self.client.get("/api/todos").status_code, 500)
+
+
+class TodoChatToolTests(unittest.TestCase):
+    """The chat can put things on the list — the second half of the feature.
+
+    add_todo/complete_todo are the only writing tools on a plain (non-Edit-mode)
+    chat turn. That's deliberate: they touch an app-owned JSON list, never the
+    vault. If this set ever grows a vault-writing tool, that exemption is gone.
+    """
+
+    def setUp(self):
+        import tempfile
+        import todos
+        self._todos = todos
+        self._orig = todos.TODOS_FILE
+        self._tmp = tempfile.TemporaryDirectory()
+        todos.TODOS_FILE = Path(self._tmp.name) / ".todos.json"
+
+    def tearDown(self):
+        self._todos.TODOS_FILE = self._orig
+        self._tmp.cleanup()
+
+    def test_todo_tools_are_available_on_a_plain_chat_turn(self):
+        for name in ("list_todos", "add_todo", "complete_todo"):
+            with self.subTest(tool=name):
+                self.assertIn(name, agent.CHAT_TOOLS)
+                self.assertIn(name, agent.TOOL_FNS)
+                self.assertIn(name, agent.TOOL_SCHEMAS)
+
+    def test_no_vault_writing_tool_leaked_into_the_plain_chat_set(self):
+        for name in agent.CHAT_WRITE_TOOLS:
+            self.assertNotIn(name, agent.CHAT_TOOLS)
+
+    def test_add_todo_tool_writes_a_real_item_tagged_as_chat(self):
+        out = agent.TOOL_FNS["add_todo"](title="Submit the form", due="2026-09-20")
+        self.assertIn("Submit the form", out)
+        items = self._todos.list_todos()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["due"], "2026-09-20")
+        self.assertEqual(items[0]["source"], "chat")
+
+    def test_add_todo_tool_reports_bad_input_instead_of_raising(self):
+        # A tool that raises kills the whole chat turn; a model that guessed a
+        # date format needs to see the error and retry.
+        self.assertTrue(agent.TOOL_FNS["add_todo"](title="x", due="soon").startswith("Error:"))
+        self.assertTrue(agent.TOOL_FNS["add_todo"](title="  ").startswith("Error:"))
+        self.assertTrue(agent.TOOL_FNS["complete_todo"](id="nope").startswith("Error:"))
+        self.assertEqual(self._todos.list_todos(), [])
+
+    def test_list_todos_hides_completed_items_by_default(self):
+        added = agent.TOOL_FNS["add_todo"](title="Ship it")
+        tid = self._todos.list_todos()[0]["id"]
+        # The id has to appear in the tool output, or the model has no way to
+        # name the item it wants to complete.
+        self.assertIn(tid, added)
+        self.assertIn("Ship it", agent.TOOL_FNS["list_todos"]())
+        agent.TOOL_FNS["complete_todo"](id=tid)
+        self.assertEqual(agent.TOOL_FNS["list_todos"](), "No open to-dos.")
+        self.assertIn("Ship it", agent.TOOL_FNS["list_todos"](include_done=True))
+
+
+class TodoUiTests(unittest.TestCase):
+    """The To-do view is wired into the shell and stays live on its own."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = dashboard_app.app.test_client()
+
+    def test_the_view_and_its_nav_entry_exist(self):
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn('data-view="todo"', body)
+        self.assertIn("""onclick="setView('todo')\"""", body)
+        self.assertIn('<section class="view" data-view="todo" hidden>', body)
+        self.assertIn('onsubmit="todoAdd(event)"', body)
+
+    def test_the_list_refreshes_on_the_todos_fingerprint(self):
+        # The store lives outside the vault, so neither the notes nor the tree
+        # hash covers it — without this hook an item the chat added would not
+        # appear until the view was reopened.
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn("todoSyncCheck(rev.todos)", body)
+        self.assertIn("if (todoWork) work.push(todoWork);", body)
+
+    def test_the_filter_pills_are_resynced_from_state_not_rerendered(self):
+        # Same class of bug as the course pills: the poller re-renders this list
+        # under the user's hands, so a hardcoded active pill would contradict
+        # the filter actually in force.
+        body = self.client.get("/").get_data(as_text=True)
+        self.assertIn("b.classList.toggle('on', b.dataset.v === todoState.filter)", body)
 
 
 if __name__ == "__main__":

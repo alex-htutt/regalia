@@ -4,14 +4,12 @@
 last cut release**, for other agents (and humans) to read without diffing git.
 This is the staging ground for the *next* release's notes.
 
-**Baseline release:** **v1.35** (Vertex AI tier, live activity timeline,
-calendar, live vault sync). Everything added below is on top of v1.35 and is
-**not yet in a released build**.
+**Baseline release:** **v2.0** (flat restyle, to-do list, voice agent, launch
+screen). Everything added below is on top of v2.0 and is **not yet in a
+released build**.
 
 **When the next release is cut:** fold these entries into `VERSION_HISTORY.md`
 under the new version heading, bump `version.py`, then clear this file back to
 this template.
 
 ---
-
-No unreleased changes yet.

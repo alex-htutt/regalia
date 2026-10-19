@@ -16,9 +16,9 @@ Map of content for the **Regalia** vault. Start here.
 ## Active areas
 
 - [[projects/_context_projects|Projects]] — personal / side projects.
-- [[research/_context_research|Research]] — self-directed learning (RAG, ML, etc.).
 - [[meetings/_context_meetings|Meetings]] — meeting notes.
 - [[ideas/_context_ideas|Ideas]] — unsorted ideas.
+- [[research/_context_research|Research]] — cross-course research and study projects.
 
 > Private areas (internships, coursework, personal projects) live only in the local copy of this vault — they are gitignored, so their links don't appear here. Add yours back locally as needed.
 
@@ -32,6 +32,7 @@ Map of content for the **Regalia** vault. Start here.
 
 ## Reference
 
+- [[docs/_context_docs|Docs]] — repo-level docs (usage, vault structure, release prep).
 - [[USAGE]] — how to use the vault day-to-day.
 - [[README_HOME]] — vault structure, context model, tag taxonomy.
 

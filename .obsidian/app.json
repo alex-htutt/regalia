@@ -1,7 +1,7 @@
 {
   "userIgnoreFilters": [
     "archive/",
-    "Internship-Projects/example-project/",
+    "internship-projects/example-project/",
     "templates/"
   ],
   "alwaysUpdateLinks": true

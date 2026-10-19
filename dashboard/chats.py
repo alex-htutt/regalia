@@ -156,7 +156,7 @@ def create_chat(tier: str = "fast") -> dict:
         "tier": tier if tier in VALID_TIERS else "fast",
         "model": None,
         "cliModel": {},
-        "edit": False,
+        "edit": True,
         "messages": [],
     }
     _write_chat(_chat_path(obj["id"]), obj)

@@ -7,7 +7,7 @@ be automated safely from inside a session.
 
 ## What's still in history (as of 2026-07-17)
 
-- `Resume/**` in every commit since the initial one — full legal name, home address,
+- `resume/**` in every commit since the initial one — full legal name, home address,
   phone number, personal email, resume PDFs, and an internship writeup naming employers.
 - `.claude/settings.local.json` in commits `d905942` and `b49517b` — a machine username
   and local paths.

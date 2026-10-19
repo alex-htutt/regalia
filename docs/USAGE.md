@@ -10,9 +10,9 @@ Quick reference for running this vault day-to-day. See [[Home]] for the map and 
 
 ## Daily flow
 1. Open the vault folder in **Cursor** (indexes all `.md` for `@codebase`).
-2. Start the day: new note from `templates/daily-log.md` in `Internship-Projects/`.
+2. Start the day: new note from `templates/daily-log.md` in `internship-projects/`.
 3. Log meetings as you go with `templates/meeting-note.md` → save in `meetings/`.
-4. End of day: update `Internship-Projects/_context_internship_projects.md` (active task, blockers, next deadline).
+4. End of day: update `internship-projects/_context_internship_projects.md` (active task, blockers, next deadline).
 
 ## Creating a note
 Use Obsidian's **Templates** core plugin (or Templater): Settings → Templates → set folder to `templates/`. Then `Cmd/Ctrl+P → Insert template`. Every template carries the frontmatter schema and a footer `Part of [[_context_<project>]] · [[Home]]` — replace `<project>` with the folder's context name (e.g. `[[_context_payments_api]]`) so the note links into the graph. `[[Home]]` always resolves.
@@ -20,7 +20,7 @@ Use Obsidian's **Templates** core plugin (or Templater): Settings → Templates 
 Pick the template by purpose: `daily-log`, `standup-note`, `meeting-note`, `project-note`, `lab-note`, `lecture-note`, `problem-set`.
 
 ## Starting a new internship project
-1. Make a subfolder under `Internship-Projects/` (e.g. `Internship-Projects/payments-api/`).
+1. Make a subfolder under `internship-projects/` (e.g. `internship-projects/payments-api/`).
 2. Copy `templates/_context_TEMPLATE.md` into it, rename it to `_context_<folder>.md` (e.g. `_context_payments_api.md`), and fill in current state, deliverable, deadline.
 3. Add a link to it from the Active section of [[Home]].
 4. Drop project notes alongside it using `project-note.md`.
@@ -46,8 +46,8 @@ Use `[[wikilinks]]`, not file paths. Each folder's context file is `_context_<fo
 
 ## Using Cursor
 - **`@codebase`** — semantic search across the whole vault ("what did I note about the I2C ranger?").
-- **`@file Internship-Projects/_context_internship_projects.md`** — prime a chat with current status without searching.
-- **Rules apply automatically** by folder: working in `Internship-Projects/` loads `internship.mdc`; `projects/` loads `projects.mdc`; archived courses load their reference rules. No action needed.
+- **`@file internship-projects/_context_internship_projects.md`** — prime a chat with current status without searching.
+- **Rules apply automatically** by folder: working in `internship-projects/` loads `internship.mdc`; `projects/` loads `projects.mdc`; archived courses load their reference rules. No action needed.
 - **Chat (Cmd+L)** to understand, **Composer (Cmd+I)** to make multi-file edits — don't mix.
 
 ## Dashboard

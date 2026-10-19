@@ -10,4 +10,4 @@ Conventions:
 - Standard library first. Don't add a third-party dependency without asking — reach for `urllib`/`json`/`xml.etree` etc. before a package. (The `dashboard/` footprint is deliberately minimal; see `dashboard/CLAUDE.md`.)
 - Don't restate formatting/linting an automated tool already enforces — spend rules on what the agent can't infer.
 - Pair changes with a verification command (e.g. the dashboard's `python -m unittest discover -s tests`).
-- Privacy still applies under `Internship-Projects/**`: never log, quote, or reproduce patient/claim data or credentials (see `Internship-Projects/CLAUDE.md`).
+- Privacy still applies under `internship-projects/**`: never log, quote, or reproduce patient/claim data or credentials (see `internship-projects/CLAUDE.md`).

@@ -298,7 +298,9 @@ def _tool_write_note(path: str = "", content: str = "",
     existed = target.exists()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        # newline="" keeps the model's \n as-is: overwriting an existing LF
+        # note shouldn't silently flip every line ending to CRLF on Windows.
+        target.write_text(content, encoding="utf-8", newline="")
     except OSError as e:
         return f"Error writing '{path}': {e}"
     return f"{'Overwrote' if existed else 'Created'} {_rel_label(target, _scope)} ({len(content)} chars)."
@@ -416,7 +418,7 @@ def _tool_write_file(path: str = "", content: str = "",
         return "Error: agent writes cannot target .git metadata."
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(content or ""), encoding="utf-8")
+        target.write_text(str(content or ""), encoding="utf-8", newline="")
     except OSError as e:
         return f"Error writing '{path}': {e}"
     return f"Wrote {_rel_label(target, scope)} ({len(str(content or ''))} characters)."
@@ -634,6 +636,51 @@ def _tool_stage_email_draft(account_id: str = "", to: str = "", subject: str = "
     )
 
 
+# ── To-do tools ──────────────────────────────────────────────────────────────
+# The user's own to-do list (the To-do view), not vault notes. These are the one
+# writing pair exposed on a plain chat turn: "add that to my to-dos" is the whole
+# point of the feature, and the target is a small app-owned JSON store outside
+# the vault — no note is created, overwritten, or scaffolded. Validation is the
+# store's, so a model can't write a malformed date or an empty title.
+
+
+def _todo_line(t: dict) -> str:
+    due = f" — due {t['due']}" if t.get("due") else ""
+    note = f" ({t['note']})" if t.get("note") else ""
+    return f"[{'x' if t.get('done') else ' '}] {t['id']}  {t['title']}{due}{note}"
+
+
+def _tool_list_todos(include_done: bool = False, **_) -> str:
+    """Read the to-do list, open items first."""
+    import todos
+    items = todos.list_todos()
+    if not include_done:
+        items = [t for t in items if not t.get("done")]
+    if not items:
+        return "The to-do list is empty." if include_done else "No open to-dos."
+    return "\n".join(_todo_line(t) for t in items)
+
+
+def _tool_add_todo(title: str = "", due: str = "", note: str = "", **_) -> str:
+    """Add one item to the to-do list."""
+    import todos
+    try:
+        t = todos.add_todo(title, due=due, note=note, source="chat")
+    except todos.TodoStoreError as e:
+        return f"Error: {e.message}"
+    return f"Added to-do: {_todo_line(t)}"
+
+
+def _tool_complete_todo(id: str = "", **_) -> str:
+    """Mark one to-do done (by the id list_todos reports)."""
+    import todos
+    try:
+        t = todos.update_todo(str(id or "").strip(), done=True)
+    except todos.TodoStoreError as e:
+        return f"Error: {e.message}"
+    return f"Marked done: {t['title']}"
+
+
 TOOL_FNS = {
     "search_vault": _tool_search_vault,
     "read_note": _tool_read_note,
@@ -654,6 +701,9 @@ TOOL_FNS = {
     "read_email": _tool_read_email,
     "draft_email": _tool_draft_email,
     "stage_email_draft": _tool_stage_email_draft,
+    "list_todos": _tool_list_todos,
+    "add_todo": _tool_add_todo,
+    "complete_todo": _tool_complete_todo,
 }
 
 # Anthropic-style tool schemas. router.chat_tools translates these for Ollama.
@@ -847,6 +897,38 @@ TOOL_SCHEMAS = {
                 "reply_to": {"type": "string", "description": "Message id to reply to (optional)."},
             },
             "required": ["account_id", "body"],
+        },
+    },
+    "list_todos": {
+        "name": "list_todos",
+        "description": "Read the user's to-do list (the To-do view) — the things they've explicitly put on it, with due dates. Not the same as vault notes. Each line starts with the to-do's id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_done": {"type": "boolean", "description": "Include completed items (default false)."},
+            },
+        },
+    },
+    "add_todo": {
+        "name": "add_todo",
+        "description": "Add one item to the user's to-do list. Use this when they ask you to remember, track, or add something to do — one call per item. Keep the title short and actionable; put detail in note.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short actionable title, e.g. 'Email the advisor about the transfer form'."},
+                "due": {"type": "string", "description": "Due date as YYYY-MM-DD. Omit if there's no deadline — never guess one."},
+                "note": {"type": "string", "description": "Optional one-line detail or context."},
+            },
+            "required": ["title"],
+        },
+    },
+    "complete_todo": {
+        "name": "complete_todo",
+        "description": "Mark one to-do as done, by the id list_todos reports. Call list_todos first to find it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "The to-do id, e.g. 't_1a2b…'."}},
+            "required": ["id"],
         },
     },
 }
@@ -1122,9 +1204,13 @@ def list_agents() -> list:
 # ── Vault-reading chat (read-only tool loop) ─────────────────────────────────
 # Used by /api/chat's fast (local) tier so the local model can actually open
 # notes instead of only seeing the folder outline. Only the read-only tools are
-# exposed — a chat turn must never silently write or scaffold.
+# exposed — a chat turn must never silently write or scaffold. The to-do tools
+# are the deliberate exception (see the to-do tool block above): they write to a
+# small app-owned list, not the vault, and "add that to my to-dos" has to work
+# without the user first finding and toggling Edit mode.
 
-CHAT_TOOLS = ["search_vault", "read_note", "list_notes", "list_folder"]
+CHAT_TOOLS = ["search_vault", "read_note", "list_notes", "list_folder",
+              "list_todos", "add_todo", "complete_todo"]
 
 # Extra tools unlocked only when the caller passes allow_write=True (the chat
 # panel's "Edit mode" toggle). These mutate the vault, so they're never exposed
@@ -1139,6 +1225,10 @@ CHAT_SYSTEM = (
     "then read_note to quote or summarize what it actually contains. Never invent "
     "file contents or paths; if you can't find something, say so. You don't need a "
     "tool for small talk or general questions — answer those directly in plain prose. "
+    "You also keep the user's to-do list: when they ask you to track, remember, or add "
+    "something to do, call add_todo (one call per item, with a due date only if they "
+    "gave one), and read it with list_todos before answering questions about what's on "
+    "it. Don't add to-dos they didn't ask for. "
     "The vault's current folder/file structure is below to help you target reads.\n\n"
     "=== VAULT STRUCTURE ===\n{outline}\n=== END VAULT STRUCTURE ===\n\n" + _VAULT_RULES
 )

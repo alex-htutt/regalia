@@ -12,6 +12,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Linking:** use `[[wikilinks]]`, never relative paths. Each folder has a `_context_<folder>.md` — read the nearest one before working in that folder.
 
+**Vault root stays bare.** Only four files live at the root, each because something loads it from there: `README.md` (GitHub), `CLAUDE.md` / `AGENTS.md` (auto-loaded by Claude Code / Cursor), and `Home.md` (the vault map's graph root; `POST /api/project` appends new project links to it). Every other repo-level doc goes in `docs/` (`USAGE.md`, `README_HOME.md`, `RELEASE.md`), and notes go in their area folder. Never leave a loose `.md` at the root. The dashboard's `IGNORE_FILES` (`dashboard/app.py`) matches by basename, so moving a listed file keeps it out of the task list. *Why:* loose root files accumulated until the root mixed tool entry points, docs and stray notes.
+
+**Folder naming:** vault top-level folder names are lowercase. Preserve existing hyphens and underscores when normalizing case; this convention does not rename folders inside individual projects. New top-level areas must use lowercase names.
+
 **New project folder:** copy `templates/_context_TEMPLATE.md` → rename to `_context_<folder>.md` → add link in `Home.md`. Layout under each project: `code/`, `data/`, `notes/`, `research/`.
 
 **Frontmatter schema** (required on every note):
