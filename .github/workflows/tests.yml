@@ -13,7 +13,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install runtime deps (browser path — no pywebview needed)
-        run: pip install flask pyyaml anthropic google-auth-oauthlib msal mcp
+        # mcp pinned below 2 to match requirements.txt: mail_mcp.py uses the v1
+        # FastMCP import path, which mcp 2.x renamed (MCPServer).
+        run: pip install flask pyyaml anthropic google-auth-oauthlib msal "mcp>=1.27,<2"
       - name: Smoke suite (the trust floor)
         working-directory: dashboard
         run: python -m unittest discover -s tests -v
